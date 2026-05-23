@@ -34,22 +34,44 @@ AI's judgment. That's what makes it trustworthy for long unattended runs.
 
 ## Install
 
-Drop the folder into your Claude Code skills directory:
+**One command — works for Claude Code, Codex, or both:**
 
-```
-git clone <your-copy> ~/.claude/skills/bugsweep
-# or just copy this folder to ~/.claude/skills/bugsweep
+```bash
+curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash
 ```
 
-Claude Code auto-discovers skills in `~/.claude/skills/`. Make the scripts executable:
+The script auto-detects which AI tools you have installed (`~/.claude` → Claude Code,
+`~/.codex` → Codex) and sets up each one. Re-running it updates in place.
 
+**Force a specific tool:**
+
+```bash
+# Claude Code only
+curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash -s -- --claude
+
+# Codex only
+curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash -s -- --codex
+
+# Both
+curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash -s -- --all
 ```
-chmod +x ~/.claude/skills/bugsweep/scripts/*.sh
+
+**Manual install (if you prefer to inspect first):**
+
+```bash
+git clone https://github.com/shanemhamilton/bugsweep.git
+bash bugsweep/install.sh          # then delete the clone — it installs to ~/.claude or ~/.codex
 ```
+
+**What the installer does:**
+- *Claude Code* — clones to `~/.claude/skills/bugsweep/`. Claude Code auto-discovers skills
+  there; no config needed.
+- *Codex* — clones to `~/.codex/skills/bugsweep/` and appends a stub to
+  `~/.codex/instructions.md` so Codex knows where the scripts live.
 
 ## Use
 
-Open Claude Code in your project and type one of:
+Open Claude Code (or start Codex) in your project and type one of:
 
 | Command | What it does |
 | --- | --- |
