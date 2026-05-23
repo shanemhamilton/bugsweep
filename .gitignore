@@ -1,0 +1,14 @@
+# bugsweep runtime artifacts (created inside repos it scans, never committed)
+.bugsweep/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Node (only present if tooling is added later)
+node_modules/
+npm-debug.log*

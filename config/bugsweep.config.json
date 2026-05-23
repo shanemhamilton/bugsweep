@@ -1,0 +1,33 @@
+{
+  "_comment": "bugsweep configuration. Empty command strings mean auto-detect. Edit caps to bound cost/runtime on unattended runs.",
+  "caps": {
+    "max_iterations": 10,
+    "max_runtime_minutes": 120,
+    "max_fixes_per_run": 50,
+    "no_progress_streak_to_stop": 2
+  },
+  "severity_floor": "low",
+  "protected_branches": ["main", "master", "develop", "production", "prod", "release"],
+  "exclude_globs": [
+    "node_modules/**", "dist/**", "build/**", ".git/**", "vendor/**",
+    "Pods/**", ".next/**", "coverage/**", "*.lock", "*.min.js", "**/__generated__/**"
+  ],
+  "adversarial": {
+    "challenge_enabled": true,
+    "referee_enabled": true,
+    "referee_spotchecks_upheld": true
+  },
+  "research": {
+    "antipattern_priming": true,
+    "allow_web_research": false
+  },
+  "session": {
+    "checkpoint_every_iterations": 3
+  },
+  "commands": {
+    "test": "",
+    "build": "",
+    "typecheck": "",
+    "lint": ""
+  }
+}
