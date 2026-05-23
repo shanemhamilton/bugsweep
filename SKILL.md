@@ -91,6 +91,15 @@ boundaries, sensitive sinks, call chains, import graph, key data flows, and
 what lets the hunt find **large** cross-file bugs, and it is small enough to survive a
 context reset. Append a `context_built` event.
 
+**Coverage-first scope (read `prior-coverage.json` first).** Preflight wrote
+`<RUN_DIR>/prior-coverage.json` from bugsweep's cross-run state (`.bugsweep/state/`). The
+whole repo is ALWAYS in scope — bugsweep finds latent bugs in old, unchanged code, it is
+not a diff scanner. Prior coverage only *reorders* batches: put never-audited, stale (older
+catalog version or audited too long ago), high-risk, and all sink-bearing files in the
+critical tier; put already-audited-and-fresh files in a final cheap re-confirmation tier.
+Never drop a file from the plan. The repo is never permanently "done" while a frontier
+remains. See `references/context-and-continuity.md`.
+
 ### Step 3 — Research anti-patterns for this stack (once)
 Follow `prompts/research.md`. Detect the languages/frameworks, load the matching catalogs
 from `references/antipatterns/` (always include `generic.md`), optionally augment with
@@ -146,8 +155,10 @@ single pass over all batches and then stop.
 bash scripts/finalize.sh "<RUN_DIR>"
 ```
 Restores the user's stashed work onto their original branch, preserves all fix commits on
-`bugsweep/<timestamp>`, and points to the report. Present the summary and tell the user to
-review with `git diff <original-branch>..bugsweep/<timestamp>`.
+`bugsweep/<timestamp>`, and points to the report. It also persists this run's audit
+coverage + risk into `.bugsweep/state/` so the next run resumes the whole-repo frontier
+instead of starting blind. Present the summary and tell the user to review with
+`git diff <original-branch>..bugsweep/<timestamp>`.
 
 ## What counts as a bug (and what to ignore)
 FIND: security (injection, auth/authz bypass, SSRF, traversal, hardcoded secrets, unsafe

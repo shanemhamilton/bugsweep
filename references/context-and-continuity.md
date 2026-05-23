@@ -36,3 +36,39 @@ A reset can only drop disposable working memory. The branch, the committed fixes
 coverage map, and the findings are all on disk and on the git branch. Combined with the
 trust contract (throwaway branch, per-fix auto-revert), an interrupted or reset run is
 always recoverable and never destructive.
+
+## Two layers of persistence: intra-run vs cross-run
+
+There are two distinct durable stores, and they answer different questions:
+
+- **Intra-run** — `.bugsweep/run-<ts>/` (everything above: `repo-context.md`,
+  `recon.json`, `ledger.jsonl`, `SESSION.md`). Scoped to ONE run. Answers *"where am I in
+  this run, and how do I resume after a reset?"* Disposable once the run finalizes.
+- **Cross-run** — `.bugsweep/state/` (`audit-log.jsonl`, `risk.jsonl`, `meta.json`).
+  Survives *across* runs. Answers *"what has ever been audited, at which catalog version,
+  and where have bugs historically clustered?"* This is what makes bugsweep accumulate
+  understanding instead of starting blind every time.
+
+Both are kept out of git by the same `info/exclude` entry preflight installs (`.bugsweep/`).
+
+## The coverage-first contract (why bugsweep keeps finding latent bugs)
+
+bugsweep is **not** a diff scanner. Its scope is the WHOLE repo on every run; cross-run
+state only *reprioritizes* the queue, it never shrinks it.
+
+- `preflight.sh` runs `state.sh prime`, producing `prior-coverage.json` in the run dir:
+  the files audited at the current catalog version (recently), the stale ones, and the
+  historically risky ones.
+- `context-build.md` puts `never-audited ∪ stale ∪ high-risk ∪ all sink-bearing` files at
+  the front, and already-audited-and-fresh files in a final cheap re-confirmation tier —
+  but **every** in-scope file stays in the plan.
+- `finalize.sh` runs `state.sh persist`: the files in this run's covered batches are
+  appended to `audit-log.jsonl` (stamped with the catalog version + a run ordinal), and
+  per-file bug/fix/quarantine events are appended to `risk.jsonl`.
+
+A file re-enters the frontier when (a) it was never audited, (b) the anti-pattern catalog
+version was bumped since it was last audited, or (c) it was audited more than
+`context.recheck_audited_after_runs` runs ago. So the repo is **never permanently "done"**
+— old, unchanged code keeps getting fresh passes. If `.bugsweep/state/` is missing or
+unreadable, bugsweep degrades to treating the whole repo as the frontier; the cache can
+only ever *speed up* prioritization, never narrow or fail a run.

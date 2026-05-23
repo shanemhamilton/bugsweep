@@ -24,6 +24,12 @@
   "session": {
     "checkpoint_every_iterations": 3
   },
+  "context": {
+    "_comment": "Coverage-first cross-run scope. State lives in .bugsweep/state/ (gitignored). The hunt always spans the whole repo; these only reprioritize the queue.",
+    "decay_factor": 0.85,
+    "high_risk_top_n": 25,
+    "recheck_audited_after_runs": 5
+  },
   "commands": {
     "test": "",
     "build": "",

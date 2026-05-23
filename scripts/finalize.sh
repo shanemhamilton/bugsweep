@@ -20,6 +20,15 @@ if ! git diff --quiet --ignore-submodules HEAD 2>/dev/null || [ -n "$(git ls-fil
   git commit -m "fix(bugsweep): finalize uncommitted work" >/dev/null 2>&1 || true
 fi
 
+# Persist this run's audit coverage + risk into .bugsweep/state/ so the next run
+# resumes the whole-repo frontier instead of starting blind. Best-effort: a failure
+# here must never block finalize or strand the user off their branch.
+if bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" persist "$run_dir" >/dev/null 2>&1; then
+  log "Persisted audit coverage + risk to .bugsweep/state/ for future runs."
+else
+  log "WARNING: could not persist cross-run state (continuing; not fatal)."
+fi
+
 # Return the user to their original branch (the bugsweep branch is preserved).
 if [ "$(current_branch)" != "$BUGSWEEP_ORIG_BRANCH" ]; then
   git checkout "$BUGSWEEP_ORIG_BRANCH" >/dev/null 2>&1 \

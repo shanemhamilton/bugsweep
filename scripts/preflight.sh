@@ -103,9 +103,23 @@ EOF
 printf '{"event":"preflight","ts":"%s","branch":"%s","orig_branch":"%s","stash":"%s"}\n' \
   "$ts" "$branch" "$orig_branch" "$stash_ref" >> "${run_dir}/ledger.jsonl"
 
+# --- Prime coverage-first scope from prior runs (best-effort, never fatal) -----
+# Reads .bugsweep/state/ and writes ${run_dir}/prior-coverage.json so context-build
+# can put never-audited + stale + high-risk files on the critical-tier frontier.
+# A broken/empty cache degrades to whole-repo scope; it must never fail preflight.
+prior_summary=""
+prior_summary="$(bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" prime "$run_dir" 2>/dev/null \
+  | sed -n 's/^SUMMARY=//p' | head -1 || true)"
+if [ -n "$prior_summary" ]; then
+  log "Prior coverage: ${prior_summary}"
+  printf '{"event":"primed","summary":"%s"}\n' "$(printf '%s' "$prior_summary" | tr '"' "'")" \
+    >> "${run_dir}/ledger.jsonl"
+fi
+
 # --- Output for the SKILL to read ---------------------------------------------
 echo "RUN_DIR=${run_dir}"
 echo "BRANCH=${branch}"
 echo "ORIG_BRANCH=${orig_branch}"
 echo "STASH=${stash_ref}"
+[ -f "${run_dir}/prior-coverage.json" ] && echo "PRIOR_COVERAGE=${run_dir}/prior-coverage.json"
 echo "PREFLIGHT_OK"
