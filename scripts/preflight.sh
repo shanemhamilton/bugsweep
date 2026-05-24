@@ -116,10 +116,62 @@ if [ -n "$prior_summary" ]; then
     >> "${run_dir}/ledger.jsonl"
 fi
 
+# --- Replay variant queries (WU1): re-hunt confirmed-bug siblings repo-wide ----
+# Best-effort, never fatal. Writes variant-matches.jsonl into the run dir and a requeue
+# list of sibling files that context-build folds into the critical-tier frontier.
+: > "${run_dir}/variant-requeue.txt"
+if [ -f "${BUGSWEEP_SCRIPT_DIR}/variants.sh" ]; then
+  bash "${BUGSWEEP_SCRIPT_DIR}/variants.sh" replay "$run_dir" 2>/dev/null \
+    | sed -n 's/^REQUEUE=//p' > "${run_dir}/variant-requeue.txt" 2>/dev/null || true
+  vq="$(wc -l < "${run_dir}/variant-requeue.txt" 2>/dev/null | tr -d ' ' || echo 0)"
+  case "$vq" in ''|*[!0-9]*) vq=0 ;; esac
+  if [ "$vq" -gt 0 ]; then
+    log "Variant queries flagged ${vq} sibling file(s) to re-hunt."
+    printf '{"event":"variant_replay","requeued":%s}\n' "$vq" >> "${run_dir}/ledger.jsonl"
+  fi
+fi
+
+# --- Build/refresh the symbol index (WU0): stable IDs for the graph/justification ----
+# layers. Incremental (only changed files re-parsed). Best-effort, never fatal.
+if [ -f "${BUGSWEEP_SCRIPT_DIR}/symbols.sh" ]; then
+  bash "${BUGSWEEP_SCRIPT_DIR}/symbols.sh" build >/dev/null 2>&1 || log "symbols: index build skipped (non-fatal)."
+fi
+
+# --- Build the call/import graph + entry-point map (WU-G) ----------------------
+# Keyed to the WU0 symbol-ids; feeds WU3 reachability ranking and WU2 invalidation.
+# Built AFTER symbols.sh (callers join to WU0 ids). Best-effort: a failure leaves the
+# graph absent so WU3 falls back to sink+severity ordering — it never fails preflight.
+if [ -f "${BUGSWEEP_SCRIPT_DIR}/graph.sh" ]; then
+  bash "${BUGSWEEP_SCRIPT_DIR}/graph.sh" build >/dev/null 2>&1 || log "graph: build skipped (non-fatal)."
+fi
+
+# --- Sanitizer-aware reachability + exposure ranking (WU3) ---------------------
+# Classifies sinks, computes LIVE/MAYBE/COLD attacker-exposure over the WU-G graph, and
+# writes <RUN_DIR>/exposure.json — context-build's in-tier sort. Best-effort: a failure
+# leaves exposure absent/empty so context-build keeps its sink/risk ordering (sinks stay
+# unconditionally in scope); it never fails preflight.
+if [ -f "${BUGSWEEP_SCRIPT_DIR}/reachability.sh" ]; then
+  bash "${BUGSWEEP_SCRIPT_DIR}/reachability.sh" build >/dev/null 2>&1 || log "reachability: build skipped (non-fatal)."
+  bash "${BUGSWEEP_SCRIPT_DIR}/reachability.sh" rank "$run_dir" >/dev/null 2>&1 || log "reachability: rank skipped (non-fatal)."
+fi
+
+# --- Re-evaluate prior "safe" conclusions (WU2) --------------------------------
+# Runs AFTER reachability (it reads the WU3 path_hash). Re-opens any conclusion whose ground
+# moved (premise/sanitizer hash, sink reachable-path set, or catalog version) and folds a
+# `cleared` hint into exposure.json. Writes <RUN_DIR>/reopened-conclusions.txt — files that
+# must rejoin the frontier. Fail-closed (any missing input -> reopen); never fails preflight.
+if [ -f "${BUGSWEEP_SCRIPT_DIR}/conclusions.sh" ]; then
+  reopened_summary="$(bash "${BUGSWEEP_SCRIPT_DIR}/conclusions.sh" prime "$run_dir" 2>/dev/null \
+    | sed -n 's/^SUMMARY=//p' | head -1 || true)"
+  [ -n "$reopened_summary" ] && log "Conclusions: ${reopened_summary}"
+fi
+
 # --- Output for the SKILL to read ---------------------------------------------
 echo "RUN_DIR=${run_dir}"
 echo "BRANCH=${branch}"
 echo "ORIG_BRANCH=${orig_branch}"
 echo "STASH=${stash_ref}"
 [ -f "${run_dir}/prior-coverage.json" ] && echo "PRIOR_COVERAGE=${run_dir}/prior-coverage.json"
+[ -f "${run_dir}/exposure.json" ] && echo "EXPOSURE=${run_dir}/exposure.json"
+[ -s "${run_dir}/reopened-conclusions.txt" ] && echo "REOPENED_CONCLUSIONS=${run_dir}/reopened-conclusions.txt"
 echo "PREFLIGHT_OK"

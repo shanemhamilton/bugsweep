@@ -1,0 +1,11 @@
+{
+  "_comment": "Per-detector-class catalog versions. Bump a class when you add/strengthen detection for it: WU2 re-opens only the 'safe' conclusions that relied on THAT class, and the coverage layer (state.sh) re-audits broadly because the aggregate (sum of these) advances on any bump. Classes mirror the sink-class enum. The legacy single-integer VERSION file is the fallback when this map is unreadable.",
+  "sql": 1,
+  "exec": 1,
+  "deser": 1,
+  "crypto": 1,
+  "file_path": 1,
+  "outbound": 1,
+  "authz": 1,
+  "money": 1
+}

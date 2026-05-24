@@ -126,7 +126,10 @@ If it prints `STOP <reason>`, go to Step 5. Otherwise run one iteration:
 3. **REFEREE** — If `adversarial.referee_enabled`, dispatch a neutral arbiter following
    `prompts/referee.md` to resolve DISPUTED items and spot-check high-severity UPHELD ones
    by reading the code independently. Its CONFIRMED list is the only thing eligible to fix.
-   (This Hunter -> Skeptic -> Referee chain is the "adversarial checks".)
+   (This Hunter -> Skeptic -> Referee chain is the "adversarial checks".) For each confirmed
+   bug with a transferable shape, the referee also synthesizes a **variant query** via
+   `scripts/variants.sh add` so future runs hunt the whole repo for siblings (WU1); preflight
+   replays these and feeds matched files into the frontier.
 4. **FIX** (if `--fix`/`--approve`/`--autonomous`) — For each confirmed bug at/above the
    severity floor, follow `prompts/fix.md`: apply the minimal change, then
    `bash scripts/run_checks.sh verify "<RUN_DIR>"`. If OK / no new failures → commit

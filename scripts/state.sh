@@ -18,31 +18,16 @@
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-STATE_DIR="${REPO_ROOT}/.bugsweep/state"
+# State location + have_python + bugsweep_meta_runs come from common.sh.
+STATE_DIR="$BUGSWEEP_STATE_DIR"
 AUDIT_LOG="${STATE_DIR}/audit-log.jsonl"
 RISK_LOG="${STATE_DIR}/risk.jsonl"
 META="${STATE_DIR}/meta.json"
 
-catalog_version() {
-  local f="${BUGSWEEP_ROOT}/references/antipatterns/VERSION"
-  if [ -f "$f" ]; then tr -d '[:space:]' < "$f"; else printf '0'; fi
-}
-
-have_python() { command -v python3 >/dev/null 2>&1; }
-
-meta_runs() {  # echo the persisted run count (0 if none)
-  [ -f "$META" ] || { printf '0'; return 0; }
-  if have_python; then
-    python3 -c 'import json,sys
-try:
-    print(int(json.load(open(sys.argv[1])).get("runs",0)))
-except Exception:
-    print(0)' "$META" 2>/dev/null || printf '0'
-  else
-    grep -o '"runs"[[:space:]]*:[[:space:]]*[0-9]*' "$META" 2>/dev/null | grep -o '[0-9]*' | head -1 || printf '0'
-  fi
-}
+# Coverage uses the AGGREGATE catalog version (sum of per-class versions, from common.sh):
+# a file's audit goes stale when ANY detector class advances, so any catalog change re-audits
+# broadly. Falls back to the legacy single-integer VERSION when versions.json is unreadable.
+catalog_version() { catalog_aggregate_version; }
 
 # ---------------------------------------------------------------------------
 persist() {
@@ -58,7 +43,7 @@ persist() {
   cat_v="$(catalog_version)"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   run_id="${BUGSWEEP_TS:-$(date +%Y%m%d-%H%M%S)}"
-  ordinal=$(( $(meta_runs) + 1 ))
+  ordinal=$(( $(bugsweep_meta_runs) + 1 ))
 
   if have_python; then
     AUDIT_LOG="$AUDIT_LOG" RISK_LOG="$RISK_LOG" META="$META" \
@@ -274,7 +259,7 @@ PY
 
   # Degraded path: no python3 or no state yet. Emit an empty-history file so
   # context-build treats the WHOLE repo as the frontier (safe: never narrows).
-  local runs; runs="$(meta_runs)"
+  local runs; runs="$(bugsweep_meta_runs)"
   cat > "$out_path" <<EOF
 {"schema":1,"catalog_version":"${cat_v}","prior_runs":${runs},"files_audited_current_catalog":[],"files_audited_current_catalog_count":0,"files_audited_stale_catalog":[],"files_audited_stale_catalog_count":0,"high_risk_files":[],"degraded":true}
 EOF
