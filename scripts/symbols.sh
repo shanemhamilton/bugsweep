@@ -28,7 +28,8 @@ STATE_DIR="$BUGSWEEP_STATE_DIR"
 INDEX="${STATE_DIR}/symbol-index.jsonl"
 
 build() {
-  mkdir -p "$STATE_DIR" 2>/dev/null || { log "symbols: cannot create ${STATE_DIR}; skipping."; return 0; }
+  bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
+    || { log "symbols: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping."; return 0; }
 
   # Exclude globs come from config; pass as newline list to the extractor.
   local excludes; excludes="$(cfg_get '.exclude_globs' '')"

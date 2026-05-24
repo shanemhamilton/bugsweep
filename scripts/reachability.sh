@@ -53,7 +53,8 @@ SANITIZERS="${STATE_DIR}/sanitizers.jsonl"
 
 # ---------------------------------------------------------------------------
 build() {
-  mkdir -p "$STATE_DIR" 2>/dev/null || { log "reachability: cannot create ${STATE_DIR}; skipping."; return 0; }
+  bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
+    || { log "reachability: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping."; return 0; }
   local excludes; excludes="$(cfg_get '.exclude_globs' '')"
 
   if have_python; then
@@ -396,7 +397,8 @@ PY
 add_sanitizer() {
   local sid="${1:-}" classes="${2:-}"
   [ -n "$sid" ] && [ -n "$classes" ] || die "usage: reachability.sh add-sanitizer <symbol_id> <class[,class...]>"
-  mkdir -p "$STATE_DIR" 2>/dev/null || { log "reachability: cannot create ${STATE_DIR}; skipping add-sanitizer."; return 0; }
+  bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
+    || { log "reachability: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping add-sanitizer."; return 0; }
   have_python || { log "reachability: python3 required for add-sanitizer; skipped."; return 0; }
   SANITIZERS="$SANITIZERS" python3 - "$sid" "$classes" <<'PY' 2>/dev/null || { log "reachability: add-sanitizer failed (non-fatal)."; return 0; }
 import json, os, sys

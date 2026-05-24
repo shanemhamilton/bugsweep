@@ -104,11 +104,19 @@ bugsweep_grep_count() {
 assert_no_remote_op() { :; }
 
 # --- Cross-run state location + shared helpers --------------------------------
-# Used by state.sh / variants.sh / symbols.sh. Anchored to the repo root so paths
-# stay stable regardless of CWD or branch checkouts. (git missing -> pwd fallback;
-# require_git_repo enforces the real check later.)
-BUGSWEEP_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-BUGSWEEP_STATE_DIR="${BUGSWEEP_REPO_ROOT}/.bugsweep/state"
+# Used by state.sh / variants.sh / symbols.sh. Anchored to the audited repo's root
+# so cross-run state is ALWAYS project-scoped and stable across CWD/branch changes.
+# There is deliberately NO pwd fallback: outside a git repo the state dir is left
+# empty and every writer no-ops (see bugsweep_state_dir_ready). A pwd fallback would
+# write one project's state into whatever directory happened to be the CWD, so two
+# projects swept from a shared parent would collide on the same state files.
+BUGSWEEP_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+BUGSWEEP_STATE_DIR="${BUGSWEEP_REPO_ROOT:+${BUGSWEEP_REPO_ROOT}/.bugsweep/state}"
+
+# True only when a project-scoped state dir is known (i.e. a git repo root resolved).
+# Writers MUST gate on this before touching cross-run state, so a stray invocation
+# outside a repo can never create a shared state directory.
+bugsweep_state_dir_ready() { [ -n "${BUGSWEEP_STATE_DIR:-}" ]; }
 
 have_python() { command -v python3 >/dev/null 2>&1; }
 

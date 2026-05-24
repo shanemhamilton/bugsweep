@@ -63,7 +63,8 @@ GRAPH="${STATE_DIR}/graph.jsonl"
 ENTRIES="${STATE_DIR}/entry-points.jsonl"
 
 build() {
-  mkdir -p "$STATE_DIR" 2>/dev/null || { log "graph: cannot create ${STATE_DIR}; skipping."; return 0; }
+  bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
+    || { log "graph: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping."; return 0; }
 
   local excludes; excludes="$(cfg_get '.exclude_globs' '')"
 

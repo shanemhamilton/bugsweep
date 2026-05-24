@@ -37,7 +37,8 @@ persist() {
   # shellcheck disable=SC1090
   . "${run_dir}/state.env" 2>/dev/null || true
 
-  mkdir -p "$STATE_DIR" 2>/dev/null || { log "state: cannot create ${STATE_DIR}; skipping persist."; return 0; }
+  bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
+    || { log "state: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping persist."; return 0; }
 
   local cat_v ts run_id ordinal
   cat_v="$(catalog_version)"

@@ -61,7 +61,8 @@ add() {
     esac
   done
 
-  mkdir -p "$STATE_DIR" 2>/dev/null || { log "conclusions: cannot create ${STATE_DIR}; skipping add."; return 0; }
+  bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
+    || { log "conclusions: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping add."; return 0; }
   have_python || { log "conclusions: python3 required for add; skipped."; return 0; }
 
   LEDGER="$LEDGER" SYMS="$SYMS" REACH="$REACH" SANITIZERS="$SANITIZERS" \

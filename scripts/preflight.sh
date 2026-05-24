@@ -51,8 +51,10 @@ if [ "$is_protected" = "yes" ] && [ "$dirty" = "yes" ]; then
 fi
 
 # --- Run directory + ledger ---------------------------------------------------
+# Anchored to the repo root (not CWD) so the run dir is project-scoped and lands in
+# the same place no matter which subdirectory preflight is invoked from.
 ts="$(date +%Y%m%d-%H%M%S)"
-run_dir=".bugsweep/run-${ts}"
+run_dir="${BUGSWEEP_REPO_ROOT}/.bugsweep/run-${ts}"
 mkdir -p "$run_dir"
 
 # Keep the internal run directory out of git entirely (local exclude — does NOT

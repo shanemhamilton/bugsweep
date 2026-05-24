@@ -69,7 +69,8 @@ add() {
   local bytes; bytes="$(wc -c < "$rule_file" | tr -d ' ')"
   [ "$bytes" -le "$RULE_MAX_BYTES" ] || die "add: rule exceeds ${RULE_MAX_BYTES} bytes (got ${bytes})."
 
-  mkdir -p "$VARIANTS_DIR" 2>/dev/null || { log "variants: cannot create ${VARIANTS_DIR}; skipping add."; return 0; }
+  bugsweep_state_dir_ready && mkdir -p "$VARIANTS_DIR" 2>/dev/null \
+    || { log "variants: cannot use project-scoped state dir (${VARIANTS_DIR:-not in a git repo}); skipping add."; return 0; }
 
   local run; run="$(current_run)"
   local dest="${VARIANTS_DIR}/${bug_id}.yml"
