@@ -32,6 +32,85 @@ The dangerous, irreversible operations (branching, stashing your work, reverting
 done by short shell scripts in `scripts/` that you can read in a few minutes — not by the
 AI's judgment. That's what makes it trustworthy for long unattended runs.
 
+## How it works
+
+### Full run pipeline
+
+```mermaid
+flowchart TD
+    A(["/bugsweep invoked"]) --> B
+
+    subgraph scripts ["⚙️ Shell scripts — deterministic, auditable"]
+        B["preflight.sh\ncut bugsweep/&lt;timestamp&gt; branch\nstash uncommitted work\nwrite RUN_DIR + ledger"]
+        C["run_checks.sh baseline\nrecord test / build / lint state"]
+        L["run_checks.sh verify\ndiff against baseline"]
+        Q["guard.sh\ncheck iteration / time / fix caps"]
+        FIN["finalize.sh\nrestore original branch\npop stash\npersist audit coverage"]
+    end
+
+    subgraph ai ["🤖 AI phases — reasoning only, no git ops"]
+        D["context-build\nbuild whole-repo model\narchitecture · trust boundaries\nsensitive sinks · call chains"]
+        E["research\nprime with stack-specific\nanti-pattern catalogs"]
+        F["hunt\nbatch through files\nHunter generates candidates"]
+        G["challenge\nSkeptic tries to disprove\neach candidate"]
+        H["referee\nneutral final verdict"]
+        K["fix.md\nsurgical minimal patch\none commit per confirmed bug"]
+    end
+
+    B --> C --> D --> E --> F --> G --> H
+    H --> |detect-only| RPT["📄 write report\nno code changes"]
+    H --> |fix / approve / autonomous| K
+    K --> L
+    L --> |pass| N["commit fix\nappend to ledger"]
+    L --> |fail| O["auto-revert\nquarantine bug"]
+    N --> Q
+    O --> Q
+    RPT --> FIN
+    Q --> |CONTINUE| F
+    Q --> |STOP| FIN
+    FIN --> R(["User reviews\ngit diff main..bugsweep/&lt;timestamp&gt;"])
+```
+
+### Adversarial review — why bugsweep has a low false-positive rate
+
+Every candidate finding runs a three-role gauntlet before it can be fixed or reported. The model never evaluates its own findings.
+
+```mermaid
+flowchart LR
+    H["🔍 **Hunter**\n`hunt.md`\nfinds candidate bug\nwith supporting evidence"]
+    S["🛡️ **Skeptic**\n`challenge.md`\ntries to disprove:\nalternate explanations\ncode paths that prevent the bug\ntest coverage that catches it"]
+    R["⚖️ **Referee**\n`referee.md`\nneutral final verdict\nbased on both sides"]
+
+    H --> S --> R
+
+    R --> |"Confirmed\n(high confidence)"| FIX["Promoted to fix queue"]
+    R --> |"Dismissed or uncertain"| DISC["Dropped — not fixed\nnot reported"]
+```
+
+### Coverage-first state — how bugsweep finds bugs in old, unchanged code
+
+bugsweep is not a diff scanner. Every file in the repo is always in scope. Cross-run state lets it track which files have been reviewed at the current catalog version and prioritize the ones that haven't.
+
+```mermaid
+flowchart TD
+    subgraph state ["📁 .bugsweep/state/  (persists across runs)"]
+        AL["audit-log.jsonl\nper-file: last-audited run, catalog version"]
+        RJ["risk.jsonl\nrisk scores per file"]
+        MJ["meta.json\ncurrent catalog version"]
+    end
+
+    P["preflight.sh\n→ state.sh prime"] -->|reads state| PC["prior-coverage.json\nbatch priority plan"]
+
+    PC --> T1["**Tier 1 — Critical**\nnever-audited\nstale (catalog bumped)\ncontent-changed\nhigh-risk\nsink-bearing"]
+    PC --> T2["**Tier 2 — Re-confirm**\nrecently audited, fresh"]
+
+    T1 --> HUNT["hunt loop"]
+    T2 --> HUNT
+
+    HUNT --> FIN["finalize.sh\n→ state.sh persist\nupdate audit-log + risk"]
+    FIN -->|next run| P
+```
+
 ## Install
 
 **One command — works for Claude Code, Codex, or both:**
