@@ -1,10 +1,18 @@
-# bugsweep
+# bugsweep — AI bug hunting & auto-fix for your codebase
 
-A Claude Code skill that finds and fixes bugs in your codebase — safely enough to run
-unattended, even fully autonomously overnight. It hunts for real runtime bugs (security
-holes, logic errors, race conditions, bad error handling, data-integrity issues), and
-when you let it, fixes them on a throwaway branch with automatic revert if a fix breaks
-anything.
+[![Release](https://img.shields.io/github/v/release/shanemhamilton/bugsweep?sort=semver&label=release&color=2563eb)](https://github.com/shanemhamilton/bugsweep/releases)
+[![License: MIT](https://img.shields.io/github/license/shanemhamilton/bugsweep?color=2563eb)](LICENSE)
+[![Works with Claude Code](https://img.shields.io/badge/Claude%20Code-skill-d97757)](https://claude.ai/code)
+[![Works with Codex](https://img.shields.io/badge/Codex-skill-412991)](https://github.com/openai/codex)
+[![Dependencies: none](https://img.shields.io/badge/dependencies-none-2563eb)](#configure)
+
+> **An autonomous, adversarial AI code-review and bug-fixing skill for [Claude Code](https://claude.ai/code) and [Codex](https://github.com/openai/codex).** It finds real security vulnerabilities, logic errors, race conditions, and data-integrity bugs across your whole repository — then, when you let it, fixes them on a throwaway git branch you fully control. Safe enough to run unattended overnight.
+
+A Claude Code and Codex skill that finds and fixes bugs in your codebase — safely enough
+to run unattended, even fully autonomously overnight. It hunts for real runtime bugs
+(security holes, logic errors, race conditions, bad error handling, data-integrity
+issues), and when you let it, fixes them on a throwaway branch with automatic revert if a
+fix breaks anything.
 
 It does four things that make it effective on real, large codebases:
 - **Whole-repo context.** Before hunting, it builds a distilled model of your
@@ -135,6 +143,16 @@ curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/instal
 curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash -s -- --all
 ```
 
+**Pin to a specific release** (instead of tracking the latest `main`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash -s -- --version v0.1.0
+```
+
+Re-running the installer with `--version` checks out that release tag; re-running without
+it returns you to the latest `main`. See [releases](https://github.com/shanemhamilton/bugsweep/releases)
+and the [CHANGELOG](CHANGELOG.md).
+
 **Manual install (if you prefer to inspect first):**
 
 ```bash
@@ -180,6 +198,39 @@ exactly as you left them.
 Edit `config/bugsweep.config.json` to set limits (how long it runs, how many fixes),
 exclude folders, or specify your test/build commands if auto-detect misses them. See
 `references/tuning.md`.
+
+## FAQ
+
+**How is bugsweep different from Snyk, CodeQL, SonarQube, or Dependabot?**
+Those are mostly pattern/diff scanners and dependency auditors. bugsweep is an *agentic*
+reviewer: it builds a whole-repo architecture model and reasons about behavior, so it
+catches cross-file logic bugs (like a missing authorization check on one path into a
+database write) that pattern matchers miss. It complements those tools rather than
+replacing them — and it can fix what it finds, not just flag it.
+
+**What languages and frameworks does it support?**
+Any language Claude Code or Codex can read. It ships curated anti-pattern catalogs for
+common stacks (JavaScript/TypeScript, Python, Go, Rust, Swift/iOS, and more) and detects
+your stack automatically to prime the hunt.
+
+**Is it safe to run on a production codebase?**
+Yes — that's the design center. bugsweep never works on your branch, never pushes, never
+merges, and never deletes files. It cuts a throwaway `bugsweep/<timestamp>` branch, and
+the irreversible git operations are short shell scripts you can audit in minutes. The
+worst case for any run is a branch you delete.
+
+**Does bugsweep send my code anywhere?**
+No third-party services, no telemetry, and no network calls — unless you explicitly opt
+into bounded web research for version-specific advisories (off by default). Your code
+goes only to the AI tool you already use.
+
+**Can it run unattended or in CI?**
+Yes. `/bugsweep --autonomous` runs a find-and-fix loop until the codebase is clean or a
+configured limit (time, iterations, or fix count) is hit, re-running your tests after
+every fix. State persists to disk so long runs survive context resets.
+
+**Does it work with OpenAI Codex too, or just Claude Code?**
+Both. The installer sets up whichever you have (`--claude`, `--codex`, or `--all`).
 
 ## What's inside
 
