@@ -247,13 +247,21 @@ Both. The installer sets up whichever you have (`--claude`, `--codex`, or `--all
 ## What's inside
 
 - `SKILL.md` — the instructions Claude follows.
-- `scripts/`  — the deterministic safety + state layer: `preflight` (branch/stash setup),
-  `run_checks` (tests/build), `guard` (stop conditions), `session`  (continuity anchor),
+- `scripts/` — the deterministic safety + state layer: `preflight` (branch/stash setup),
+  `run_checks` (tests/build), `guard` (stop conditions), `session` (continuity anchor),
   `finalize` (safe return). Plus two *optional*, user-owned companions for scheduled runs
   (outside the trust contract): `bugsweep-prepare.sh` (if the tree is dirty, it defers to an
-  active session or commits genuinely idle work to close the tree — and `bugsweep-cleanup.sh` (the post-run merge gate).
-- `prompts/` — the phases: `context-build`, `research`, `hunt`, `challenge`, `referee`, `fix`.
-- `references/` — safety rationale, no-tests playbook, tuning, context/continuity, and `antipatterns/`.
-- `config/bugsweep.config.json` — your settings.
+  active session or commits genuinely idle work to close the tree — never parks, never
+  discards) and `bugsweep-cleanup.sh` (the post-run merge gate; the only script that merges
+  or deletes, and only when you choose to run it).
+- `prompts/` — the phases, kept separate so the AI never rubber-stamps its own findings:
+  `context-build` (whole-repo model), `research` (anti-pattern priming), `hunt` (local +
+  architectural lenses), `challenge` (Skeptic), `referee` (final arbiter), `fix`.
+- `references/` — safety rationale, the no-tests playbook, tuning notes, the
+  context/continuity model, and `antipatterns/` (the curated per-stack catalogs).
+- `config/bugsweep.config.json` — your settings (caps, excludes, commands, and the
+  adversarial / research / session toggles).
 
-No third-party dependencies, no network calls (unless you opt in), no telemetry.
+No third-party dependencies, no network calls (unless you opt into web research), no
+telemetry. Read `scripts/` and `references/safety-rationale.md` before trusting it — that's
+the whole point of owning it.

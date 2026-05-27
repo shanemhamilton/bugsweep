@@ -96,10 +96,10 @@ It commits existing changes; it does not write new code to "finish" the work, an
 discards anything. On a protected branch it refuses to auto-commit and errors (exit `1`) so
 you fix the misconfiguration — run the loop on a non-protected dev branch.
 
-| Variable                 | Default | Purpose                                                           |
-| ------------------------ | ------- | ---------------------------------------------------------------- |
-| `BUGSWEEP_DIRTY_POLICY`  | `auto`   | `auto` (defer-or-close) \| `commit` (always close) \| `stash` (legacy; can accumulate) \| `fail`. |
-| `BUFSWEEP_IDLE_SECONDS`  | `7200`  | Activity threshold. < this = ACTIVE/defer; ≥ this = STALE/close. (7200 = 2h.) |
+| Variable                 | Default | Purpose                                                        |
+| ------------------------ | ------- | -------------------------------------------------------------- |
+| `BUGSWEEP_DIRTY_POLICY`  | `auto`  | `auto` (defer-or-close) \| `commit` (always close) \| `stash` (legacy; can accumulate) \| `fail`. |
+| `BUGSWEEP_IDLE_SECONDS`  | `7200`  | Activity threshold. < this = ACTIVE/defer; ≥ this = STALE/close. (7200 = 2h.) |
 | `BUGSWEEP_AUTOCLOSE_MSG` | _(set)_ | Commit message prefix for closed stale work.                   |
 
 Activity is inferred from file modification times — a heuristic. A process that
@@ -110,11 +110,11 @@ git-ignored so they don't register as dirty. A crashed git process can leave a s
 ## Cleanup script settings
 
 | Variable                   | Default          | Purpose                                            |
-| --------------------------- | ---------------- | ---------------------------------------------------- |
-| `BUFSWEEP_TARGET`          | current branch   | Branch to merge verified fixes into.               |
+| -------------------------- | ---------------- | -------------------------------------------------- |
+| `BUGSWEEP_TARGET`          | current branch   | Branch to merge verified fixes into.               |
 | `BUGSWEEP_POLICY`          | `merge`          | `merge` \| `discard` (throw the run away) \| `keep` (leave for review). |
 | `BUGSWEEP_TEST_CMD`        | _(none)_         | Optional command re-run on the branch before merge; failure blocks the merge. |
-| `BUFSWEEP_RETENTION_DAYS`  | `7`              | Force-prune abandoned older sweep branches past this age. |
+| `BUGSWEEP_RETENTION_DAYS`  | `7`              | Force-prune abandoned older sweep branches past this age. |
 | `BUGSWEEP_ALLOW_PROTECTED` | `0`              | Set `1` to permit merging into a protected branch. |
 
 The script merges with `--no-ff` (preserving the one-commit-per-bug history), deletes the

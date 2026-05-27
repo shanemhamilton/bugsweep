@@ -35,15 +35,31 @@ unattended.
 
 ### Added
 
-- **Adversarial review pipeline.** Hunter → Skeptic → Referee gauntlet.
-- **Whole-repo context model.** Trust boundaries, sensitive sinks, call chains.
-- **Stack-aware research priming.** Per-stack anti-pattern catalogs.
-- **Coverage-first cross-run state.** Every file always in scope.
-- **Autonomous auto-fix with safety rails.** Throwaway branch, one commit per bug, auto-revert.
-- **Context continuity.** Progress persisted to disk.
-- **Deterministic safety layer.** Ireversible ops in auditable shell scripts.
-- **Universal installer.** Claude Code, Codex, or both.
+- **Adversarial review pipeline.** Every candidate finding runs a Hunter → Skeptic →
+  Referee gauntlet so the model never rubber-stamps its own findings, keeping the
+  false-positive rate low.
+- **Whole-repo context model.** Builds a distilled architecture model — trust
+  boundaries, sensitive sinks, and the call chains into them — to catch cross-file
+  and architectural bugs, not just local ones.
+- **Stack-aware research priming.** Detects languages and frameworks and primes the
+  hunt with curated, per-stack anti-pattern catalogs (with optional, off-by-default
+  web research for version-specific advisories).
+- **Coverage-first cross-run state.** Not a diff scanner — every file is always in
+  scope. Cross-run state in `.bugsweep/state/` tracks which files were audited at the
+  current catalog version and prioritizes the rest.
+- **Autonomous auto-fix with safety rails.** Fixes land on a throwaway
+  `bugsweep/<timestamp>` branch, one commit per bug, with tests re-run after each fix
+  and automatic revert on any regression. bugsweep never touches your branch, never
+  pushes, never merges, never deletes files.
+- **Context continuity.** All progress is persisted to disk so long unattended runs
+  survive working-memory resets without losing findings, fixes, or coverage.
+- **Deterministic safety layer.** The irreversible git operations (branch, stash,
+  revert) live in short, auditable shell scripts in `scripts/`, not in the AI's
+  judgment.
+- **Universal installer.** One command installs for Claude Code, Codex, or both, with
+  in-place updates.
+- **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
+  release instead of tracking `main`.
 
 [Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.1.0...HEAD
-
 [0.1.0]: https://github.com/shanemhamilton/bugsweep/releases/tag/v0.1.0
