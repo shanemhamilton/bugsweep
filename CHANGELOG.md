@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`scripts/bugsweep-prepare.sh` — activity-aware dirty-tree handling for unattended
+  loops.** Runs before the sweep. If the tree is dirty it judges whether the work is active
+  or stale: an in-progress git op or a recently-touched file makes it **defer** (exit 10,
+  run skipped) so another session can finish; work idle past a threshold (default 2h) is
+  **committed as-is to close the tree** so the sweep proceeds. Never parks, never
+  accumulates, never discards; refuses to auto-commit onto a protected branch. Configurable
+  via `BUGSWEEP_DIRTY_POLICY` / `BUGSWEEP_IDLE_SECONDS`.
+- **`scripts/bugsweep-cleanup.sh` — optional post-run merge gate.** Automates the human
+  merge gate for repeatable/scheduled runs: merges the verified fix branch into a branch you
+  choose (optional re-test first), deletes it, and prunes old abandoned `bugsweep/*`
+  branches so unattended runs don't leave a pile behind. Uses only plain git, runs after
+  `finalize.sh`, and stays outside the trust contract — the skill itself still never merges
+  or deletes. Refuses to act on a dirty tree or a protected branch unless explicitly forced.
+- **`references/autonomous-maintenance.md`** — a recipe for repeatable, unattended runs: the
+  copy-paste prompt with placeholders, cleanup settings, and headless scheduling notes
+  (including that slash skills aren't available in `claude -p` mode, so the task is
+  described instead).
 
 ## [0.1.0] - 2026-05-24
 

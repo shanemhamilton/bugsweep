@@ -193,6 +193,18 @@ Keep what you like (cherry-pick or merge), and delete the branch if you don't:
 `git branch -D bugsweep/<timestamp>`. Your original branch and uncommitted work are
 exactly as you left them.
 
+### Repeatable, unattended runs
+
+Running bugsweep on a schedule makes it dig deeper over time on its own — coverage-first
+cross-run state means each run prioritizes the files it hasn't audited yet. The only thing
+that accumulates is one `bugsweep/<timestamp>` branch per run, because bugsweep never merges
+or deletes (you're the merge gate). To keep scheduled runs ending clean, the optional
+companion script `scripts/bugsweep-cleanup.sh` automates that gate *after* finalize: it
+merges the verified fix branch into a branch you choose, deletes it, and prunes old
+abandoned sweep branches — using only plain git, outside the skill's trust contract. See
+[`references/autonomous-maintenance.md`](references/autonomous-maintenance.md) for the
+copy-paste prompt, settings, and scheduling notes.
+
 ## Configure
 
 Edit `config/bugsweep.config.json` to set limits (how long it runs, how many fixes),
@@ -237,7 +249,11 @@ Both. The installer sets up whichever you have (`--claude`, `--codex`, or `--all
 - `SKILL.md` — the instructions Claude follows.
 - `scripts/` — the deterministic safety + state layer: `preflight` (branch/stash setup),
   `run_checks` (tests/build), `guard` (stop conditions), `session` (continuity anchor),
-  `finalize` (safe return).
+  `finalize` (safe return). Plus two *optional*, user-owned companions for scheduled runs
+  (outside the trust contract): `bugsweep-prepare.sh` (if the tree is dirty, it defers to an
+  active session or commits genuinely idle work to close the tree — never parks, never
+  discards) and `bugsweep-cleanup.sh` (the post-run merge gate; the only script that merges
+  or deletes, and only when you choose to run it).
 - `prompts/` — the phases, kept separate so the AI never rubber-stamps its own findings:
   `context-build` (whole-repo model), `research` (anti-pattern priming), `hunt` (local +
   architectural lenses), `challenge` (Skeptic), `referee` (final arbiter), `fix`.
