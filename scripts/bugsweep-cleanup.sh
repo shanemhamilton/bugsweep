@@ -65,10 +65,11 @@ fi
 LATEST="${SWEEP_ARG:-${SWEEPS[0]}}"
 log "target branch : $TARGET_BRANCH"
 log "policy        : $POLICY"
-log "latest sweep   : $LATEST"
+log "latest sweep  : $LATEST"
 
 git checkout -q "$TARGET_BRANCH"
-merge_branch() {
+
+merge_branch() {
   local b="$1"
   local ahead
   ahead=$(git rev-list --count "$TARGET_BRANCH..$b" 2>/dev/null || echo 0)
@@ -84,7 +85,7 @@ git checkout -q "$TARGET_BRANCH"
     git checkout -q "$b"
     if ! bash -lc "$TEST_CMD"; then
       git checkout -q "$TARGET_BRANCH"
-      log "TESTS FALRED with $b â€” NOT merging; branch KEPT for manual review"
+      log "TESTS FAILED on $b â€” NOT merging; branch KEPT for manual review"
       return
     fi
     git checkout -q "$TARGET_BRANCH"
@@ -101,7 +102,7 @@ git checkout -q "$TARGET_BRANCH"
 
 prune_old() {
   local b="$1" ahead age_days
-  ahead=$(git rev-list --count "$TARGETBANCH..$b" 2>/dev/null || echo 0)
+  ahead=$(git rev-list --count "$TARGET_BRANCH..$b" 2>/dev/null || echo 0)
   if [ "$ahead" -eq 0 ]; then
     log "leftover $b is fully merged â€” deleting"
     git branch -d "$b" >/dev/null 2>&1 || git branch -D "$b" >/dev/null
@@ -131,4 +132,5 @@ for b in "${SWEEPS[@]}"; do
 done
 
 git checkout -q "$TARGET_BRANCH"
-	eÕe€x&VfW'&VB'Vw7vVW'&æ6†W3¢ ¦v—Bf÷"ÖV6‚×&VbÒÖf÷&ÖCÒrR‡&VfæÖS§6†÷'B’rw&Vg2ö†VG2ö'Vw7vVWò¢r#âöFWböçVÆÂÇÂG'VP
+log "done. remaining bugsweep branches:"
+git for-each-ref --format='  %(refname:short)' 'refs/heads/bugsweep/*' 2>/dev/null || true
