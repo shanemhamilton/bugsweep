@@ -1,27 +1,25 @@
 #!/usr/bin/env bash
-# bugsweep-cleanup.sh â€” OPTIONAL post-run merge gate (not part of the trust contract).
+# bugsweep-cleanup.sh - OPTIONAL post-run merge gate (not part of the trust contract).
 #
-# The bugsweep skill never merges and never deletes branches â€” by design, the human
-# is the only merge gate. This companion script lets you AUTOMATE that gate for
-# repeatable / scheduled runs, so you don't accumulate a pile of bugsweep/<timestamp>
-# branches. It runs AFTER finalize.sh has returned you to your original branch, uses
-# only plain git, and stays outside the skill's safety scripts on purpose.
+# The bugsweep skill never merges and never deletes branches by design. The human is
+# the merge gate. This companion script automates that gate for repeatable or
+# scheduled runs, so bugsweep/<timestamp> branches do not accumulate.
+#
+# It runs AFTER finalize.sh has returned you to your original branch, uses only
+# plain git, and stays outside the skill's safety scripts on purpose.
 #
 # It will:
 #   - merge the verified fix branch into a target branch (optional re-test first)
 #   - delete that branch once merged
-#   - prune OLD, abandoned bugsweep/* branches from previous runs
-#   - refuse to touch a dirty tree or a protected branch (unless forced)
-#
-# Copy it into your project (e.g. scripts/bugsweep-cleanup.sh) so the relative path
-# in your prompt resolves, or call it by absolute path. Read it before trusting it.
+#   - prune old, abandoned bugsweep/* branches from previous runs
+#   - refuse to touch a dirty tree or a protected branch unless forced
 #
 # Usage:
 #   bash bugsweep-cleanup.sh [specific-bugsweep-branch]
 #
 # Settings (override via environment variables):
 #   BUGSWEEP_TARGET           branch to merge fixes into (default: current branch)
-#   BUGSWEEP_POLICY           merge | discard | keep   (default: merge)
+#   BUGSWEEP_POLICY           merge | discard | keep (default: merge)
 #   BUGSWEEP_TEST_CMD         optional re-verify before merge, e.g. "npm test"
 #   BUGSWEEP_RETENTION_DAYS   force-prune abandoned branches older than N days (default: 7)
 #   BUGSWEEP_ALLOW_PROTECTED  set to 1 to allow merging into main/master/etc.
@@ -35,25 +33,28 @@ RETENTION_DAYS="${BUGSWEEP_RETENTION_DAYS:-7}"
 PROTECTED="main master develop production prod release"
 SWEEP_ARG="${1:-}"
 
-log(){ echo "cleanup: $*"; }
-die(){ echo "cleanup: ERROR: $*" >&2; exit 1; }
+log() { echo "cleanup: $*"; }
+die() { echo "cleanup: ERROR: $*" >&2; exit 1; }
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git repo"
 
-# Never operate on a dirty tree â€” don't risk entangling uncommitted work.
+# Never operate on a dirty tree because that risks entangling uncommitted work.
 if ! git diff --quiet || ! git diff --cached --quiet; then
   die "working tree is not clean; aborting so I don't touch uncommitted work"
 fi
 
 # Guard protected target branches unless explicitly allowed.
-for p in $PROTECTED; do
-  if [ "$TARGET_BRANCH" = "$p" ] && [ "${BUGSWEEP_ALLOW_PROTECTED:-0}" != "1" ]; then
+for protected_branch in $PROTECTED; do
+  if [ "$TARGET_BRANCH" = "$protected_branch" ] && [ "${BUGSWEEP_ALLOW_PROTECTED:-0}" != "1" ]; then
     die "refusing to auto-merge into protected branch '$TARGET_BRANCH' (set BUGSWEEP_ALLOW_PROTECTED=1 to override)"
   fi
 done
 
-# Collect bugsweep branches, newest commit first.
-mapfile -t SWEEPS < <(git for-each-ref --sort=-committerdate \
+# Collect bugsweep branches, newest commit first. Use a read loop for macOS Bash 3.2.
+SWEEPS=()
+while IFS= read -r sweep_branch; do
+  [ -n "$sweep_branch" ] && SWEEPS+=("$sweep_branch")
+done < <(git for-each-ref --sort=-committerdate \
   --format='%(refname:short)' 'refs/heads/bugsweep/*' 2>/dev/null || true)
 
 if [ "${#SWEEPS[@]}" -eq 0 ]; then
@@ -65,70 +66,85 @@ fi
 LATEST="${SWEEP_ARG:-${SWEEPS[0]}}"
 log "target branch : $TARGET_BRANCH"
 log "policy        : $POLICY"
-log "latest sweep   : $LATEST"
+log "latest sweep  : $LATEST"
 
 git checkout -q "$TARGET_BRANCH"
-merge_branch() {
-  local b="$1"
+
+merge_branch() {
+  local branch="$1"
   local ahead
-  ahead=$(git rev-list --count "$TARGET_BRANCH..$b" 2>/dev/null || echo 0)
+
+  ahead=$(git rev-list --count "$TARGET_BRANCH..$branch" 2>/dev/null || echo 0)
 
   if [ "$ahead" -eq 0 ]; then
-    log "$b has no new fixes vs $TARGET_BRANCH â€” deleting"
-    git branch -D "$b" >/dev/null
+    log "$branch has no new fixes vs $TARGET_BRANCH - deleting"
+    git branch -D "$branch" >/dev/null
     return
   fi
 
   if [ -n "$TEST_CMD" ]; then
-    log "re-verifying $b with: $TEST_CMD"
-    git checkout -q "$b"
+    log "re-verifying $branch with: $TEST_CMD"
+    git checkout -q "$branch"
     if ! bash -lc "$TEST_CMD"; then
       git checkout -q "$TARGET_BRANCH"
-      log "TESTS FALRED with $b â€” NOT merging; branch KEPT for manual review"
+      log "TESTS FAILED with $branch - NOT merging; branch KEPT for manual review"
       return
     fi
     git checkout -q "$TARGET_BRANCH"
   fi
 
-  log "merging $b ($ahead fix commit(s)) into $TARGET_BRANCH"
-  if git merge --no-ff -m "merge(bugsweep): $b" "$b"; then
-    git branch -d "$b" >/dev/null && log "merged and deleted $b"
+  log "merging $branch ($ahead fix commit(s)) into $TARGET_BRANCH"
+  if git merge --no-ff -m "merge(bugsweep): $branch" "$branch"; then
+    git branch -d "$branch" >/dev/null
+    log "merged and deleted $branch"
   else
     git merge --abort 2>/dev/null || true
-    log "MERGE CONFLICT on $b â€” left unmerged for manual review; not deleted"
+    log "MERGE CONFLICT on $branch - left unmerged for manual review; not deleted"
   fi
 }
 
 prune_old() {
-  local b="$1" ahead age_days
-  ahead=$(git rev-list --count "$TARGETBANCH..$b" 2>/dev/null || echo 0)
+  local branch="$1"
+  local ahead
+  local age_days
+
+  ahead=$(git rev-list --count "$TARGET_BRANCH..$branch" 2>/dev/null || echo 0)
   if [ "$ahead" -eq 0 ]; then
-    log "leftover $b is fully merged â€” deleting"
-    git branch -d "$b" >/dev/null 2>&1 || git branch -D "$b" >/dev/null
+    log "leftover $branch is fully merged - deleting"
+    git branch -d "$branch" >/dev/null 2>&1 || git branch -D "$branch" >/dev/null
     return
   fi
-  age_days=$(( ( $(date +%s) - $(git log -1 --format=%ct "$b") ) / 86400 ))
+
+  age_days=$(( ( $(date +%s) - $(git log -1 --format=%ct "$branch") ) / 86400 ))
   if [ "$age_days" -ge "$RETENTION_DAYS" ]; then
-    log "pruning abandoned $b (age ${age_days}d, ${ahead} unmerged commit(s))"
-    git branch -D "$b" >/dev/null
+    log "pruning abandoned $branch (age ${age_days}d, ${ahead} unmerged commit(s))"
+    git branch -D "$branch" >/dev/null
   else
-    log "keeping $b (age ${age_days}d < ${RETENTION_DAYS}d retention)"
+    log "keeping $branch (age ${age_days}d < ${RETENTION_DAYS}d retention)"
   fi
 }
 
 # Handle the current run's branch per policy.
 case "$POLICY" in
-  merge)   merge_branch "$LATEST" ;;
-  discard) log "policy=discard â€” deleting $LATEST"; git branch -D "$LATEST" >/dev/null ;;
-  keep)    log "policy=keep â€” leaving $LATEST for review" ;;
-  *)       die "unknown POLICY '$POLICY' (use merge|discard|keep)" ;;
+  merge)
+    merge_branch "$LATEST"
+    ;;
+  discard)
+    log "policy=discard - deleting $LATEST"
+    git branch -D "$LATEST" >/dev/null
+    ;;
+  keep)
+    log "policy=keep - leaving $LATEST for review"
+    ;;
+  *)
+    die "unknown POLICY '$POLICY' (use merge|discard|keep)"
+    ;;
 esac
 
 # Prune older leftover sweep branches from previous runs.
-for b in "${SWEEPS[@]}"; do
-  [ "$b" = "$LATEST" ] && continue
-  prune_old "$b"
+for branch in "${SWEEPS[@]}"; do
+  [ "$branch" = "$LATEST" ] && continue
+  prune_old "$branch"
 done
 
 git checkout -q "$TARGET_BRANCH"
-	eÕe€x&VfW'&VB'Vw7vVW'&æ6†W3¢ ¦v—Bf÷"ÖV6‚×&VbÒÖf÷&ÖCÒrR‡&VfæÖS§6†÷'B’rw&Vg2ö†VG2ö'Vw7vVWò¢r#âöFWböçVÆÂÇÂG'VP
