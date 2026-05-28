@@ -1,0 +1,25 @@
+{
+  "id": "ts-sec-samlify-46490",
+  "language": "typescript",
+  "category": "security",
+  "cwe": "CWE-91",
+  "source": {
+    "repo": "https://github.com/tngan/samlify.git",
+    "pre_fix_commit": "0235cab01f0a1602ffac89ce28f4e253aace2ff5",
+    "fix_commit": "b37a65ce9959c8f3d85a71d22d82eaaac0ef66cb",
+    "advisory_url": "https://github.com/tngan/samlify/security/advisories/GHSA-34r5-q4jw-r36m",
+    "disclosure_date": "2026-05-21"
+  },
+  "ground_truth": {
+    "hunks": [
+      { "file": "src/entity-idp.ts", "start": 105, "end": 118 },
+      { "file": "src/libsaml.ts", "start": 389, "end": 403 },
+      { "file": "src/libsaml.ts", "start": 414, "end": 421 }
+    ],
+    "files": ["src/entity-idp.ts", "src/libsaml.ts"],
+    "description": "The SAML login-response builder injects attribute values into the XML template without escaping element text. escapeTag() in libsaml.ts XML-escapes attribute values (quoted positions) but returns element-text replacements verbatim, and IdentityProvider.createLoginResponse() in entity-idp.ts builds the AttributeStatement through replaceTagsByValue() relying on that replacer. An attacker who controls an attribute value can inject XML elements into a signed SAML assertion (XML injection / privilege escalation via crafted AttributeValue).",
+    "fix_summary": "The fix makes escapeTag() always XML-escape the replacement text in both attribute and element-text contexts (returning xmlEscape(text) in the unquoted branch), and entity-idp.ts stops routing the attribute statement through replaceTagsByValue(), instead substituting the already-built attributeStatement via a single context.replace('{AttributeStatement}', attributeStatement). Test files test/attribute-injection.ts and test/units.ts were added/updated by the fix commit."
+  },
+  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "cross_file": true
+}

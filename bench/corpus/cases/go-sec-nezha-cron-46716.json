@@ -1,0 +1,34 @@
+{
+  "id": "go-sec-nezha-cron-46716",
+  "language": "go",
+  "category": "security",
+  "cwe": "CWE-862",
+  "source": {
+    "repo": "https://github.com/nezhahq/nezha.git",
+    "pre_fix_commit": "d06d539d34c143d842b91e2a64326e8c8f9bc405",
+    "fix_commit": "d7526351cf97869f00d9d3862147c0d42ef2e265",
+    "advisory_url": "https://github.com/nezhahq/nezha/security/advisories/GHSA-99gv-2m7h-3hh9",
+    "disclosure_date": "2026-05-23"
+  },
+  "ground_truth": {
+    "hunks": [
+      { "file": "service/singleton/crontask.go", "start": 110, "end": 120 },
+      { "file": "service/singleton/crontask.go", "start": 126, "end": 135 },
+      { "file": "service/singleton/crontask.go", "start": 145, "end": 153 },
+      { "file": "service/singleton/crontask.go", "start": 165, "end": 173 },
+      { "file": "service/singleton/crontask.go", "start": 189, "end": 207 },
+      { "file": "service/singleton/servicesentinel.go", "start": 744, "end": 753 },
+      { "file": "service/singleton/alertsentinel.go", "start": 167, "end": 173 },
+      { "file": "service/singleton/alertsentinel.go", "start": 177, "end": 183 }
+    ],
+    "files": [
+      "service/singleton/crontask.go",
+      "service/singleton/servicesentinel.go",
+      "service/singleton/alertsentinel.go"
+    ],
+    "description": "SendTriggerTasks() in crontask.go fans out cron task triggers to servers without checking that the task or target server belongs to the triggering user. The callers in servicesentinel.go (notifyCheck) and alertsentinel.go (checkStatus) invoke triggers driven by reporter/alert state, so a low-privilege user could cause cron tasks owned by other users to execute against servers they do not own (missing authorization).",
+    "fix_summary": "The fix adds an owner parameter to SendTriggerTasks and introduces cronCanBeTriggeredByOwner(), cronCanSendToServer(), and userIsAdmin() ownership/admin checks in crontask.go so a task only runs when the cron's UserID matches the trigger owner or target server owner (or the user is admin). servicesentinel.go and alertsentinel.go are updated to pass the originating UserID through. A new security_regression_test.go was added by the fix commit."
+  },
+  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "cross_file": true
+}

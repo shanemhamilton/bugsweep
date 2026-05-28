@@ -1,0 +1,34 @@
+{
+  "id": "py-sec-sqlfluff-46374",
+  "language": "python",
+  "category": "security",
+  "cwe": "CWE-400",
+  "source": {
+    "repo": "https://github.com/sqlfluff/sqlfluff.git",
+    "pre_fix_commit": "4649341a8d651ccc73b0d7e71e57e987d246f03c",
+    "fix_commit": "68321612f51ac62a6d04ab3e83d72d6f7cf29e36",
+    "advisory_url": "https://github.com/sqlfluff/sqlfluff/security/advisories/GHSA-73jc-5mrq-prw7",
+    "disclosure_date": "2026-05-19"
+  },
+  "ground_truth": {
+    "hunks": [
+      { "file": "src/sqlfluff/core/parser/context.py", "start": 56, "end": 71 },
+      { "file": "src/sqlfluff/core/parser/context.py", "start": 76, "end": 83 },
+      { "file": "src/sqlfluff/core/parser/context.py", "start": 134, "end": 167 },
+      { "file": "src/sqlfluff/core/parser/parser.py", "start": 44, "end": 50 },
+      { "file": "src/sqlfluff/core/config/validate.py", "start": 151, "end": 194 },
+      { "file": "src/sqlfluff/core/config/validate.py", "start": 210, "end": 214 },
+      { "file": "src/sqlfluff/core/default_config.cfg", "start": 3, "end": 10 }
+    ],
+    "files": [
+      "src/sqlfluff/core/parser/context.py",
+      "src/sqlfluff/core/parser/parser.py",
+      "src/sqlfluff/core/config/validate.py",
+      "src/sqlfluff/core/default_config.cfg"
+    ],
+    "description": "The SQLFluff parser has no bound on the number of parse nodes it will produce, so a maliciously crafted query can drive the parser into uncontrolled resource consumption (CPU/memory exhaustion). ParseContext (context.py) tracked no node count, parse() (parser.py) imposed no limit, and there was no max_parse_nodes configuration or validation.",
+    "fix_summary": "The fix introduces a max_parse_nodes parser limit: ParseContext gains node counting/limit tracking in context.py, parse() in parser.py enforces it, default_config.cfg ships a default limit, and validate.py adds _validate_max_parse_depth/nodes config validation. The change is mirrored in the Rust parser (sqlfluffrs/*.rs / .pyi / rust_parser.py) and accompanied by tests (max_parse_nodes_test.py, validate_test.py, rust_parser_test.py, dialects_test.py), which the fix commit also touched."
+  },
+  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "cross_file": true
+}

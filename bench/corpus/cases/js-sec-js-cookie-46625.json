@@ -1,0 +1,21 @@
+{
+  "id": "js-sec-js-cookie-46625",
+  "language": "javascript",
+  "category": "security",
+  "cwe": "CWE-1321",
+  "source": {
+    "repo": "https://github.com/js-cookie/js-cookie.git",
+    "pre_fix_commit": "f6f157f430d707d2ffd0c9c9138227a6cea564e5",
+    "fix_commit": "eb3c40e89731e99b8970faaf35ddad249c6c0020",
+    "advisory_url": "https://github.com/js-cookie/js-cookie/security/advisories/GHSA-qjx8-664m-686j",
+    "disclosure_date": "2026-05-21"
+  },
+  "ground_truth": {
+    "hunks": [{ "file": "src/assign.mjs", "start": 2, "end": 8 }],
+    "files": ["src/assign.mjs"],
+    "description": "The assign() helper in src/assign.mjs copies every enumerable key from source objects onto the target with a `for (var key in source)` loop that does not exclude `__proto__`. Because cookie attributes are assembled through this helper, an attacker who controls attribute input can set `__proto__`, polluting the target object's prototype and injecting/overwriting cookie attributes (prototype pollution leading to cookie-attribute injection).",
+    "fix_summary": "The fix adds an explicit `if (key === '__proto__') continue` guard inside the copy loop in src/assign.mjs so the dangerous `__proto__` key is skipped during attribute assembly. test/tests.js was updated by the fix commit."
+  },
+  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "cross_file": false
+}

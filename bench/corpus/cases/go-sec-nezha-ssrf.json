@@ -1,0 +1,26 @@
+{
+  "id": "go-sec-nezha-ssrf",
+  "language": "go",
+  "category": "security",
+  "cwe": "CWE-918",
+  "source": {
+    "repo": "https://github.com/nezhahq/nezha.git",
+    "pre_fix_commit": "85b0dd2992733037b019442caffc6c049ba937dd",
+    "fix_commit": "d06d539d34c143d842b91e2a64326e8c8f9bc405",
+    "advisory_url": "https://github.com/nezhahq/nezha/security/advisories/GHSA-w4g9-mxgg-j532",
+    "disclosure_date": "2026-05-23"
+  },
+  "ground_truth": {
+    "hunks": [
+      { "file": "model/notification.go", "start": 29, "end": 63 },
+      { "file": "model/notification.go", "start": 144, "end": 151 },
+      { "file": "model/notification.go", "start": 157, "end": 169 },
+      { "file": "model/notification.go", "start": 183, "end": 297 }
+    ],
+    "files": ["model/notification.go"],
+    "description": "NotificationServerBundle.Send() in model/notification.go issues an outbound HTTP request to an attacker-controlled notification URL with no validation of the resolved target address. A RoleMember can configure a notification via POST /api/v1/notification pointing at internal/loopback/link-local addresses, and the response body is reflected back, yielding server-side request forgery (SSRF) against the dashboard host's internal network.",
+    "fix_summary": "The fix adds a blocked-CIDR allow-list (private, loopback, link-local, and reserved ranges for IPv4 and IPv6) and builds the HTTP client with newNotificationHTTPClient(), which validates that the request URL's resolved IP is not in a blocked range before dialing (rejecting with errNotificationURLNotAllowed). A new model/notification_test.go was added by the fix commit."
+  },
+  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "cross_file": false
+}

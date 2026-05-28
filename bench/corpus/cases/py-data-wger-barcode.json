@@ -1,0 +1,20 @@
+{
+  "id": "py-data-wger-barcode",
+  "language": "python",
+  "category": "data-integrity",
+  "source": {
+    "repo": "https://github.com/wger-project/wger.git",
+    "pre_fix_commit": "a6cddb94d494405fbfc4da158b6ae710cd83e207",
+    "fix_commit": "8483c7c566cc952f1494af603d44e0438fff3e85",
+    "advisory_url": "https://github.com/wger-project/wger/pull/2355",
+    "disclosure_date": "2026-05-25"
+  },
+  "ground_truth": {
+    "hunks": [{ "file": "wger/nutrition/api/filtersets.py", "start": 61, "end": 74 }],
+    "files": ["wger/nutrition/api/filtersets.py"],
+    "description": "search_barcode() in filtersets.py filters the queryset by barcode and, when no local match exists, calls Ingredient.fetch_ingredient_from_off() to pull the ingredient from OpenFoodFacts. The newly fetched ingredient is discarded: the function returns the original (still-empty) queryset rather than a queryset containing the just-fetched row, so a successful remote fetch yields an empty barcode-search result.",
+    "fix_summary": "The fix captures the fetched ingredient (`ingredient = Ingredient.fetch_ingredient_from_off(value)`) and, when non-None, rebuilds the result queryset filtered to that ingredient's pk, returning `result` instead of the stale queryset. It also switches the existence check from `.count() == 0` to `.exists()`. Test file wger/nutrition/tests/test_search_api.py was updated by the fix commit (PR #2355)."
+  },
+  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "cross_file": false
+}

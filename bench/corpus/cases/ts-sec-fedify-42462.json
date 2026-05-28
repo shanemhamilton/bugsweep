@@ -1,0 +1,38 @@
+{
+  "id": "ts-sec-fedify-42462",
+  "language": "typescript",
+  "category": "security",
+  "cwe": "CWE-347",
+  "source": {
+    "repo": "https://github.com/fedify-dev/fedify.git",
+    "pre_fix_commit": "aab002d2fe091e6c38eb4f319e9a766392c40a21",
+    "fix_commit": "f6c1e55cecc1bfaf8d069080008694dfcec75540",
+    "advisory_url": "https://github.com/fedify-dev/fedify/security/advisories/GHSA-9rfg-v8g9-9367",
+    "disclosure_date": "2026-05-26"
+  },
+  "ground_truth": {
+    "hunks": [
+      { "file": "packages/fedify/src/sig/ld.ts", "start": 8, "end": 622 },
+      { "file": "packages/fedify/src/sig/ld.ts", "start": 975, "end": 1015 },
+      { "file": "packages/fedify/src/sig/ld.ts", "start": 1050, "end": 1056 },
+      { "file": "packages/fedify/src/federation/inbox.ts", "start": 85, "end": 118 },
+      { "file": "packages/fedify/src/federation/inbox.ts", "start": 122, "end": 138 },
+      { "file": "packages/fedify/src/federation/inbox.ts", "start": 158, "end": 171 },
+      { "file": "packages/fedify/src/federation/inbox.ts", "start": 265, "end": 276 },
+      { "file": "packages/fedify/src/federation/inbox.ts", "start": 317, "end": 330 }
+    ],
+    "files": [
+      "packages/fedify/src/sig/ld.ts",
+      "packages/fedify/src/federation/inbox.ts",
+      "packages/fedify/src/federation/context.ts",
+      "packages/fedify/src/federation/handler.ts",
+      "packages/fedify/src/federation/middleware.ts",
+      "packages/fedify/src/federation/queue.ts",
+      "packages/fedify/src/federation/temporal.ts"
+    ],
+    "description": "Fedify's Linked Data Signature verification (verifyJsonLd in sig/ld.ts) does not normalize a signed JSON-LD payload against a trusted local context before interpreting it, and inbox routing (inbox.ts) acts on the raw received representation. A crafted payload using JSON-LD named-graph restructuring keywords (@graph, @included, @reverse) can present one document to the signature check and a different interpreted graph to the application, bypassing the Linked Data Signature (improper verification of cryptographic signature).",
+    "fix_summary": "The fix normalizes signed JSON-LD payloads against a fixed localContext before interpretation and rejects unsupported JSON-LD keywords (@graph, @included, @reverse) via UnsafeJsonLdError in sig/ld.ts; inbox.ts is updated to route on the normalized/verified activity while preserving the original body for forwarding. context.ts, handler.ts, middleware.ts, queue.ts, and temporal.ts were updated to thread the normalized representation. Test files (handler.test.ts, middleware.test.ts, temporal.test.ts, ld.test.ts) and CHANGES.md were also touched by the fix commit."
+  },
+  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "cross_file": true
+}
