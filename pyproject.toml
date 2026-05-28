@@ -1,0 +1,20 @@
+[project]
+name = "bugsweep-bench"
+version = "0.0.1"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["bench/tests/unit"]
+
+[tool.coverage.run]
+source = ["bench/scorer"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+strict = true
