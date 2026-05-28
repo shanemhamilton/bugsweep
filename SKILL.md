@@ -228,7 +228,7 @@ Write `<RUN_DIR>/report.md` and present a condensed version. ALWAYS use this tem
 <one line per item: BUG-ID · severity · file:line · why it wasn't auto-fixed>
 
 ## Confirmed but not fixed (detect-only or below severity floor)
-<one line per item>
+- <BUG-ID> · <severity> · <category> · <file>:<line> · <one-line cause>
 
 ## How to review
 git diff <original-branch>..bugsweep/<timestamp>

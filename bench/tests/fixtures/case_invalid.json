@@ -1,0 +1,25 @@
+{
+  "id": "py-flask-sqli-002-missing-cross_file",
+  "language": "python",
+  "category": "sql-injection",
+  "cwe": "CWE-89",
+  "source": {
+    "repo": "https://github.com/example/vuln-flask-app",
+    "pre_fix_commit": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+    "fix_commit": "f0e1d2c3b4a596877665544332211009f8e7d6c5",
+    "advisory_url": "https://github.com/example/vuln-flask-app/security/advisories/GHSA-xxxx-yyyy-zzzz",
+    "disclosure_date": "2025-11-14"
+  },
+  "ground_truth": {
+    "hunks": [
+      { "file": "app/db/users.py", "start": 84, "end": 92 }
+    ],
+    "files": ["app/db/users.py"],
+    "description": "Same case as the valid fixture but with the required top-level `cross_file` field removed; the schema MUST reject it.",
+    "fix_summary": "Replace string interpolation with a parameterized query."
+  },
+  "size_ceiling": {
+    "max_files": 400,
+    "max_loc": 60000
+  }
+}
