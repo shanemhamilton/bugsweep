@@ -65,7 +65,7 @@ readonly RUNNER_BASELINE="claude_p_baseline"
 readonly RUNNER_EXIT_SKIP=10
 
 # Provenance defaults (overridable via env; real values supplied for a live run).
-readonly DEFAULT_RUNNER_MODEL_ID="claude-opus-4-7"
+readonly DEFAULT_RUNNER_MODEL_ID="claude-opus-4-8"
 readonly DEFAULT_RUNNER_CUTOFF="2026-01-31"
 readonly DEFAULT_JUDGE_MODEL_ID="gpt-4o-judge"
 # Judge backend + its codex-specific default model (used when backend=codex and
@@ -383,6 +383,10 @@ main() {
 
   # Provenance / scoring config (env-overridable).
   RUNNER_MODEL_ID="${BENCH_RUNNER_MODEL_ID:-${DEFAULT_RUNNER_MODEL_ID}}"
+  # Pin the model claude actually runs to the SAME id recorded in provenance, so
+  # the leaderboard's runner_model_id is the model that ran, not a guess. Both
+  # arms inherit this via isolate.sh's --env (and runner.sh on the test path).
+  export BENCH_RUNNER_MODEL="${RUNNER_MODEL_ID}"
   RUNNER_CUTOFF="${BENCH_RUNNER_CUTOFF:-${DEFAULT_RUNNER_CUTOFF}}"
   JUDGE_BACKEND="${BENCH_JUDGE_BACKEND:-${DEFAULT_JUDGE_BACKEND}}"
   case "${JUDGE_BACKEND}" in

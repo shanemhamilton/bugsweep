@@ -289,6 +289,9 @@ _count_result_lines() {
   [ "$status" -eq 0 ]
   assert_contains "$output" "claude -p"
   assert_contains "$output" "<BUG-ID>"
+  # The parser anchors on this section header; the baseline prompt MUST request
+  # it or the arm parses to zero findings and can never score a detection.
+  assert_contains "$output" "## Confirmed but not fixed"
   refute_contains "$output" "bugsweep"
 }
 
@@ -296,6 +299,32 @@ _count_result_lines() {
   run "$RUNNER_SH" --print-cmd --runner claude_p --case "$CASE_JSON" --workdir "$WORKDIR" --out "$OUT"
   [ "$status" -eq 0 ]
   [ ! -f "${OUT}/report.md" ]
+}
+
+# ---------------------------------------------------------------------------
+# Runner-model pinning — BENCH_RUNNER_MODEL adds `--model <id>` to both arms so
+# a Sonnet-vs-Opus comparison varies only the runner. Unset = the CLI default.
+# ---------------------------------------------------------------------------
+
+@test "bugsweep arm --print-cmd pins the runner model when BENCH_RUNNER_MODEL is set" {
+  BENCH_RUNNER_MODEL="claude-opus-4-8" \
+    run "$RUNNER_SH" --print-cmd --runner claude_p --case "$CASE_JSON" --workdir "$WORKDIR" --out "$OUT"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "--model claude-opus-4-8"
+}
+
+@test "baseline arm --print-cmd pins the runner model when BENCH_RUNNER_MODEL is set" {
+  BENCH_RUNNER_MODEL="claude-sonnet-4-6" \
+    run "$RUNNER_SH" --print-cmd --runner claude_p_baseline --case "$CASE_JSON" --workdir "$WORKDIR" --out "$OUT"
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "--model claude-sonnet-4-6"
+}
+
+@test "arm --print-cmd omits --model when BENCH_RUNNER_MODEL is unset" {
+  BENCH_RUNNER_MODEL="" \
+    run "$RUNNER_SH" --print-cmd --runner claude_p --case "$CASE_JSON" --workdir "$WORKDIR" --out "$OUT"
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "--model"
 }
 
 # ---------------------------------------------------------------------------

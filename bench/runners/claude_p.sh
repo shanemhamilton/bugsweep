@@ -32,11 +32,16 @@ readonly CLAUDE_P_ALLOWED_TOOLS='Bash,Read'
 
 # Print the invocation WITHOUT running it. runner.sh prepends the
 # allow_web_research=false override note so --print-cmd shows the full intent.
+# Optional runner-model flag. BENCH_RUNNER_MODEL pins the model claude runs
+# (e.g. claude-opus-4-8); unset falls back to the CLI default. run.sh sets it
+# from BENCH_RUNNER_MODEL_ID so the pinned model and the recorded provenance
+# model_id are the SAME value.
 arm_print_cmd() {
   local workdir="$1" out="$2"
+  local model_note="${BENCH_RUNNER_MODEL:+--model ${BENCH_RUNNER_MODEL} }"
   cat <<EOF
 cd ${workdir}
-claude -p "${CLAUDE_P_PROMPT}" --allowedTools "${CLAUDE_P_ALLOWED_TOOLS}" --permission-mode default
+claude -p "${CLAUDE_P_PROMPT}" ${model_note}--allowedTools "${CLAUDE_P_ALLOWED_TOOLS}" --permission-mode default
 # detect-only: no fix flag, no autonomous flag; config override forces research.allow_web_research=false
 # capture: newest <workdir>/.bugsweep/runs/*/report.md -> ${out}/report.md
 EOF
@@ -47,6 +52,8 @@ EOF
 #   1  ran but no report.md could be located (treated as infra ERROR by runner)
 arm_run() {
   local workdir="$1" out="$2"
+  local -a model_flag=()
+  [[ -n "${BENCH_RUNNER_MODEL:-}" ]] && model_flag=(--model "${BENCH_RUNNER_MODEL}")
 
   # Run the skill from inside the sandbox so preflight.sh writes its RUN_DIR
   # (<workdir>/.bugsweep/run-<ts>/, per scripts/preflight.sh) and its report.md
@@ -56,6 +63,7 @@ arm_run() {
   (
     cd "${workdir}" || exit 1
     claude -p "${CLAUDE_P_PROMPT}" \
+      ${model_flag[@]+"${model_flag[@]}"} \
       --allowedTools "${CLAUDE_P_ALLOWED_TOOLS}" \
       --permission-mode default
   ) >/dev/null 2>&1 || true

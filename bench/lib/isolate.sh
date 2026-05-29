@@ -43,6 +43,10 @@ readonly BENCH_WORKDIR="/work"
 readonly BENCH_OUTDIR="/out"     # writable mount: captured report lands here
 readonly BENCH_MOUNTDIR="/bench" # the harness scripts, mounted read-only
 readonly BENCH_WALLCLOCK_SECS="${BENCH_WALLCLOCK_SECS:-1800}"
+# Runner model pinned for both arms (e.g. claude-opus-4-8). Empty = the CLI
+# default. run.sh sets this from BENCH_RUNNER_MODEL_ID so the pinned model and
+# the recorded provenance model_id stay identical.
+readonly BENCH_RUNNER_MODEL="${BENCH_RUNNER_MODEL:-}"
 
 # Egress: the container reaches the model API ONLY through the reverse proxy on
 # the --internal bench-proxynet. claude (Bun-based) ignores HTTP(S)_PROXY env,
@@ -120,6 +124,8 @@ build_argv() {
     # degrade (design doc line 99).
     --env "BUGSWEEP_ALLOW_WEB_RESEARCH=false"
     --env "BENCH_WALLCLOCK_SECS=${BENCH_WALLCLOCK_SECS}"
+    # Pin the runner model inside the container (empty = CLI default).
+    --env "BENCH_RUNNER_MODEL=${BENCH_RUNNER_MODEL}"
     # The dedicated key, by NAME only (value read by docker from the host env).
     --env "ANTHROPIC_API_KEY"
     # Point claude at the reverse proxy (it treats this as the API endpoint).
