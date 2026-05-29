@@ -1,29 +1,23 @@
-# bugsweep-bench egress proxy image — a CONNECT-only allow-list forward proxy.
+# bugsweep-bench egress proxy image — an nginx REVERSE proxy to the model API.
 #
 # This is the load-bearing egress control for the key-in-container isolation
 # model. The analysis container attaches to an --internal docker network (no
-# internet) and routes HTTPS through this proxy, which CONNECT-tunnels ONLY to
-# the allow-listed hosts (default api.anthropic.com:443) and 403s everything
-# else. TLS is end-to-end: the proxy never terminates it, so the in-container
-# API key stays inside the encrypted stream and is never visible here.
+# internet) and is pointed at this proxy via ANTHROPIC_BASE_URL; nginx forwards
+# ONLY to https://api.anthropic.com (a hardcoded upstream) and nowhere else.
 #
-# We build our own tinyproxy image (rather than trusting a third-party tag) so
-# the egress control is fully under our control and pinned by local image id in
-# the run provenance. proxy.sh generates and mounts the per-run config.
+# Why a reverse proxy (not a CONNECT forward proxy): the `claude` CLI runs on
+# Bun and does NOT honor HTTP(S)_PROXY env vars, so a forward proxy is never
+# used. ANTHROPIC_BASE_URL is the SDK-level lever the CLI does honor — claude
+# treats this proxy as the API endpoint. Live-validated: claude -p reaches
+# Anthropic through it and gets a 200.
+#
+# Trade-off vs the forward-proxy design: the claude->proxy leg is plaintext on
+# the private --internal network, so the proxy sees the (dedicated, revocable)
+# key. That is no new exposure — the key already lives in the container — and
+# egress stays hard-restricted to api.anthropic.com.
+#
+# proxy.sh generates and mounts the per-run nginx config at runtime.
 
-FROM debian:bookworm-slim
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Exact apt point-versions churn on base refreshes; the proxy image is pinned by
-# image id at use time, so we do not pin apt versions.
-# hadolint ignore=DL3008
-RUN apt-get update \
- && apt-get install -y --no-install-recommends tinyproxy \
- && rm -rf /var/lib/apt/lists/*
+FROM nginx:alpine
 
 EXPOSE 8888
-
-# Foreground (-d): do not daemonize, so the container stays up. proxy.sh mounts
-# the generated config at the default path /etc/tinyproxy/tinyproxy.conf.
-ENTRYPOINT ["tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"]

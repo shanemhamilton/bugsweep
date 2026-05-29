@@ -11,8 +11,9 @@
 #   - the host clone mounted READ-ONLY at /work (entrypoint copies it to a
 #     writable /scratch/repo); the captured report on a writable /out mount
 #   - on the --internal bench-proxynet network only — its sole egress is the
-#     CONNECT allow-list proxy (proxy.sh), reachable as bench-proxy:8888
-#   - with quantified cpu/memory/pids limits
+#     reverse proxy (proxy.sh), which claude reaches via ANTHROPIC_BASE_URL and
+#     which forwards only to api.anthropic.com
+#   - with quantified cpu/memory/pids limits AND a hard wall-clock timeout
 #   - with the dedicated ANTHROPIC_API_KEY injected BY NAME (key-in-container
 #     model — see proxy.sh); NO other host env (no OpenAI judge key, no other
 #     *_API_KEY / *_TOKEN / *_KEY) is forwarded.
@@ -43,9 +44,11 @@ readonly BENCH_OUTDIR="/out"     # writable mount: captured report lands here
 readonly BENCH_MOUNTDIR="/bench" # the harness scripts, mounted read-only
 readonly BENCH_WALLCLOCK_SECS="${BENCH_WALLCLOCK_SECS:-1800}"
 
-# Egress: the container reaches the model API ONLY through the proxy on the
-# --internal bench-proxynet (proxy.sh launches it as `bench-proxy:8888`).
-readonly BENCH_PROXY_URL="http://${BENCH_PROXY_HOST:-bench-proxy}:${BENCH_PROXY_PORT:-8888}"
+# Egress: the container reaches the model API ONLY through the reverse proxy on
+# the --internal bench-proxynet. claude (Bun-based) ignores HTTP(S)_PROXY env,
+# so we point it at the proxy via ANTHROPIC_BASE_URL — claude treats the proxy
+# as the API endpoint, and the proxy forwards only to api.anthropic.com.
+readonly BENCH_CONTAINER_BASE_URL="http://${BENCH_PROXY_HOST:-bench-proxy}:${BENCH_PROXY_PORT:-8888}"
 
 # The bench harness dir (parent of lib/), mounted read-only at /bench so the
 # runner scripts are available in the container without baking them into the
@@ -95,6 +98,10 @@ build_argv() {
     --network="${BENCH_NETWORK}"
     --read-only
     --tmpfs "${BENCH_SCRATCH}:rw,mode=1777"
+    # claude/Bun (and most tools) write incidental temp files to /tmp; under a
+    # read-only root that fails silently. A wiped-on-exit tmpfs keeps the
+    # hardening (no persistent writable surface) while giving them scratch.
+    --tmpfs "/tmp:rw,mode=1777"
     --cpus="${BENCH_CPUS}"
     --memory="${BENCH_MEMORY}"
     --pids-limit="${BENCH_PIDS_LIMIT}"
@@ -115,13 +122,14 @@ build_argv() {
     --env "BENCH_WALLCLOCK_SECS=${BENCH_WALLCLOCK_SECS}"
     # The dedicated key, by NAME only (value read by docker from the host env).
     --env "ANTHROPIC_API_KEY"
-    # Egress only via the proxy; everything else is unroutable on bench-proxynet.
-    --env "HTTPS_PROXY=${BENCH_PROXY_URL}"
-    --env "HTTP_PROXY=${BENCH_PROXY_URL}"
-    --env "https_proxy=${BENCH_PROXY_URL}"
-    --env "http_proxy=${BENCH_PROXY_URL}"
-    --env "NO_PROXY=localhost,127.0.0.1"
-    --env "no_proxy=localhost,127.0.0.1"
+    # Point claude at the reverse proxy (it treats this as the API endpoint).
+    # The proxy forwards only to api.anthropic.com; everything else is
+    # unroutable on the --internal bench-proxynet.
+    --env "ANTHROPIC_BASE_URL=${BENCH_CONTAINER_BASE_URL}"
+    # Suppress claude's non-essential traffic (telemetry/auto-update/etc.) so it
+    # contacts ONLY the API endpoint — any other host would hang on the
+    # internal network.
+    --env "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
     "${image}"
   )
 }
@@ -149,6 +157,23 @@ run_container() {
   [[ "${1:-}" == "--" ]] || usage
   shift
   build_argv "${image}" "${clone_dir}"
+
+  # Hard wall-clock cap: BENCH_WALLCLOCK_SECS is also passed INTO the container
+  # as env, but env alone does not stop a hung process — a foreground `docker
+  # run` with no timeout is exactly what let a stuck run hang. Wrap it in
+  # `timeout` so a stuck container is SIGTERM'd (then SIGKILL'd after a grace
+  # period) and surfaces as a non-zero exit, which run.sh maps to ERROR. Falls
+  # back to no wrapper if neither timeout nor gtimeout is available.
+  local timeout_bin=""
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_bin="timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin="gtimeout"
+  fi
+  if [[ -n "${timeout_bin}" ]]; then
+    exec "${timeout_bin}" -k 30 "${BENCH_WALLCLOCK_SECS}" "${DOCKER_ARGV[@]}" "$@"
+  fi
+  echo "isolate.sh: warning: no timeout binary on PATH; running WITHOUT a hard wall-clock cap" >&2
   exec "${DOCKER_ARGV[@]}" "$@"
 }
 

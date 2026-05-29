@@ -130,20 +130,37 @@ workdir_head() {
 # config/ just to drop the override), so we accept either the collapsed-dir form
 # or the exact override path; the same applies to the .bugsweep/ scratch tree.
 assert_clean_tree() {
-  local workdir="$1" head_before="$2"
-  local dirty head_after
+  local workdir="$1" head_before="$2" out="$3"
+  local dirty head_after violation=""
 
   dirty="$(git -C "${workdir}" status --porcelain 2>/dev/null \
     | grep -v -E '(^|[? ])config/(bugsweep\.config\.json)?$' \
     | grep -v -E '(^|[? ])\.bugsweep/?' || true)"
   if [[ -n "${dirty}" ]]; then
-    emit_error "workdir tree is dirty after detect-only run:"$'\n'"${dirty}"
+    violation="workdir tree is dirty after detect-only run:"$'\n'"${dirty}"
   fi
 
   head_after="$(workdir_head "${workdir}")"
   if [[ "${head_after}" != "${head_before}" ]]; then
-    emit_error "workdir HEAD moved (${head_before} -> ${head_after}); detect-only must not commit"
+    violation="${violation:+${violation}$'\n'}workdir HEAD moved (${head_before} -> ${head_after}); detect-only must not commit"
   fi
+
+  [[ -z "${violation}" ]] && return 0
+
+  # Persist the violation to the writable out dir so a failure is observable
+  # post-run (the container is --rm and /scratch/repo is tmpfs).
+  printf '%s\n' "${violation}" >"${out}/clean-tree-violation.txt" 2>/dev/null || true
+
+  if [[ "${BENCH_CLEANTREE_SOFT:-0}" == "1" ]]; then
+    # TEST-ONLY diagnostic bypass: log + persist, do NOT fail. MUST NOT be set
+    # for a real run — converts a safety-check failure into a soft warning so a
+    # single smoke can yield both the verdict and the violation cause.
+    echo "runner.sh: clean-tree violation (BENCH_CLEANTREE_SOFT=1, continuing):" >&2
+    echo "${violation}" >&2
+    return 0
+  fi
+
+  emit_error "${violation}"
 }
 
 # --- main ---------------------------------------------------------------------
@@ -208,7 +225,7 @@ main() {
   [[ -f "${out}/report.md" ]] || emit_error "no report.md captured to ${out}"
 
   # Detect-only must not mutate source or move the branch HEAD.
-  assert_clean_tree "${workdir}" "${head_before}"
+  assert_clean_tree "${workdir}" "${head_before}" "${out}"
 
   emit_ran
 }

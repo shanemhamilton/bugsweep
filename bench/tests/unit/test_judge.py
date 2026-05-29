@@ -15,7 +15,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from bench.scorer.judge import Judgement, OpenAIClient, judge_match  # noqa: E402
+from bench.scorer.judge import (  # noqa: E402
+    CODEX_DEFAULT_MODEL,
+    CodexClient,
+    Judgement,
+    OpenAIClient,
+    build_codex_argv,
+    judge_match,
+)
 
 MODEL = "gpt-x"
 
@@ -219,3 +226,37 @@ def test_json_embedded_in_prose_is_extracted() -> None:
     )
     assert judgement.match is True
     assert judgement.confidence == 70
+
+
+def test_codex_default_model_is_pinned() -> None:
+    # The judge's Codex backend pins gpt-5.3-codex (recorded in provenance).
+    assert CODEX_DEFAULT_MODEL == "gpt-5.3-codex"
+
+
+def test_build_codex_argv_is_ephemeral_readonly_and_pins_model() -> None:
+    # The argv carries every safety/reproducibility flag the live judge needs.
+    argv = build_codex_argv(
+        model="gpt-5.3-codex", prompt="judge this", out_file="/tmp/last.txt"
+    )
+    assert argv[0:2] == ["codex", "exec"]
+    for flag in ("--skip-git-repo-check", "--ephemeral", "--ignore-user-config"):
+        assert flag in argv
+    assert argv[argv.index("-s") + 1] == "read-only"
+    assert argv[argv.index("-m") + 1] == "gpt-5.3-codex"
+    assert argv[argv.index("--output-last-message") + 1] == "/tmp/last.txt"
+
+
+def test_build_codex_argv_prompt_is_a_single_trailing_positional() -> None:
+    # A prompt that looks like flags/shell must stay ONE positional arg (argv,
+    # not a shell string) so it cannot inject codex flags or shell metachars.
+    nasty = "--ephemeral -s danger-full-access; rm -rf /"
+    argv = build_codex_argv(model="m", prompt=nasty, out_file="/tmp/o")
+    assert argv[-1] == nasty
+    assert argv.count(nasty) == 1
+
+
+def test_codex_client_constructs_without_subprocess() -> None:
+    # Mirrors the OpenAIClient construction test: no codex process is spawned at
+    # construction; the subprocess call is exercised only in a live run.
+    client = CodexClient()
+    assert isinstance(client, CodexClient)

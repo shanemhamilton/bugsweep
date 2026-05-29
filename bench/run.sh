@@ -32,6 +32,11 @@
 #   BENCH_NO_JUDGE=1      TEST-ONLY. Treat every gate-passing finding as a judge
 #                         match (no model API call). The real path leaves this
 #                         unset and calls the cross-model judge.
+#
+# Judge backend (real path): BENCH_JUDGE_BACKEND selects the cross-model judge
+# adapter — "openai" (default; needs OPENAI_API_KEY) or "codex" (host-side Codex
+# OAuth via `codex exec`, no key). With "codex", the judge model defaults to
+# gpt-5.3-codex unless BENCH_JUDGE_MODEL_ID overrides it.
 # =============================================================================
 #
 # usage:
@@ -63,6 +68,10 @@ readonly RUNNER_EXIT_SKIP=10
 readonly DEFAULT_RUNNER_MODEL_ID="claude-opus-4-7"
 readonly DEFAULT_RUNNER_CUTOFF="2026-01-31"
 readonly DEFAULT_JUDGE_MODEL_ID="gpt-4o-judge"
+# Judge backend + its codex-specific default model (used when backend=codex and
+# the user does not override BENCH_JUDGE_MODEL_ID).
+readonly DEFAULT_JUDGE_BACKEND="openai"
+readonly DEFAULT_CODEX_JUDGE_MODEL_ID="gpt-5.3-codex"
 readonly DEFAULT_LINE_WINDOW=10
 readonly DEFAULT_CONTAINER_IMAGE_DIGEST="(unknown)"
 readonly DEFAULT_EGRESS_PROXY_IMAGE="(unknown)"
@@ -218,6 +227,7 @@ score_report() {
     cd "${REPO_ROOT}" &&
       BENCH_NO_JUDGE="${BENCH_NO_JUDGE:-0}" \
       BENCH_JUDGE_MODEL="${JUDGE_MODEL_ID}" \
+      BENCH_JUDGE_BACKEND="${JUDGE_BACKEND}" \
       BENCH_LINE_WINDOW="${LINE_WINDOW}" \
       python3 -c '
 import os
@@ -227,7 +237,7 @@ import json
 from bench.scorer.parse_report import parse_report
 from bench.scorer.localize import gate
 from bench.scorer.score import score_case_run, DETECTED, NOT_DETECTED
-from bench.scorer.judge import judge_match, Judgement, OpenAIClient
+from bench.scorer.judge import judge_match, Judgement, OpenAIClient, CodexClient
 
 report_path, case_path = sys.argv[1], sys.argv[2]
 with open(case_path, encoding="utf-8") as fh:
@@ -256,7 +266,11 @@ for finding in findings:
             reason="judge-bypass", model="(none)", prompt_hash="(none)",
         )
     else:
-        client = OpenAIClient(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        backend = os.environ.get("BENCH_JUDGE_BACKEND", "openai")
+        if backend == "codex":
+            client = CodexClient()
+        else:
+            client = OpenAIClient(api_key=os.environ.get("OPENAI_API_KEY", ""))
         judgement = judge_match(finding_map, ground_truth, client, judge_model)
     pairs.append((gate_result, judgement))
 
@@ -370,7 +384,17 @@ main() {
   # Provenance / scoring config (env-overridable).
   RUNNER_MODEL_ID="${BENCH_RUNNER_MODEL_ID:-${DEFAULT_RUNNER_MODEL_ID}}"
   RUNNER_CUTOFF="${BENCH_RUNNER_CUTOFF:-${DEFAULT_RUNNER_CUTOFF}}"
-  JUDGE_MODEL_ID="${BENCH_JUDGE_MODEL_ID:-${DEFAULT_JUDGE_MODEL_ID}}"
+  JUDGE_BACKEND="${BENCH_JUDGE_BACKEND:-${DEFAULT_JUDGE_BACKEND}}"
+  case "${JUDGE_BACKEND}" in
+    openai | codex) ;;
+    *) die "BENCH_JUDGE_BACKEND must be 'openai' or 'codex' (got '${JUDGE_BACKEND}')" ;;
+  esac
+  # codex backend pins gpt-5.3-codex by default; an explicit override still wins.
+  if [[ "${JUDGE_BACKEND}" == "codex" && -z "${BENCH_JUDGE_MODEL_ID:-}" ]]; then
+    JUDGE_MODEL_ID="${DEFAULT_CODEX_JUDGE_MODEL_ID}"
+  else
+    JUDGE_MODEL_ID="${BENCH_JUDGE_MODEL_ID:-${DEFAULT_JUDGE_MODEL_ID}}"
+  fi
   LINE_WINDOW="${BENCH_LINE_WINDOW:-${DEFAULT_LINE_WINDOW}}"
   CONTAINER_IMAGE_DIGEST="${BENCH_CONTAINER_IMAGE_DIGEST:-${DEFAULT_CONTAINER_IMAGE_DIGEST}}"
   EGRESS_PROXY_IMAGE="${BENCH_EGRESS_PROXY_IMAGE:-${DEFAULT_EGRESS_PROXY_IMAGE}}"

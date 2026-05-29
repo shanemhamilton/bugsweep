@@ -61,6 +61,13 @@ teardown() {
   assert_contains "$output" "--tmpfs /scratch"
 }
 
+@test "isolate --print-cmd mounts a writable /tmp tmpfs (read-only-root scratch)" {
+  # claude/Bun write temp files to /tmp; under --read-only that needs a tmpfs.
+  run "$ISOLATE_SH" --print-cmd bench/img:latest
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "--tmpfs /tmp"
+}
+
 @test "isolate --print-cmd mounts the clone read-only at /work" {
   run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
@@ -80,10 +87,21 @@ teardown() {
   assert_contains "$output" ":/bench:ro"
 }
 
-@test "isolate --print-cmd routes egress through the proxy" {
+@test "isolate --print-cmd points claude at the reverse proxy via ANTHROPIC_BASE_URL" {
+  # claude (Bun-based) ignores HTTP(S)_PROXY env; the egress lever is
+  # ANTHROPIC_BASE_URL, pointing it at the in-network reverse proxy.
   run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
-  assert_contains "$output" "HTTPS_PROXY=http://bench-proxy:8888"
+  assert_contains "$output" "ANTHROPIC_BASE_URL=http://bench-proxy:8888"
+  refute_contains "$output" "HTTPS_PROXY"
+}
+
+@test "isolate --print-cmd disables claude non-essential traffic" {
+  # So claude contacts ONLY the API endpoint; any other host hangs on the
+  # --internal network.
+  run "$ISOLATE_SH" --print-cmd bench/img:latest
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
 }
 
 # ---------------------------------------------------------------------------
@@ -142,18 +160,20 @@ teardown() {
   assert_contains "$output" "network=bench-proxynet"
 }
 
-@test "proxy --print-cmd shows the exact-host CONNECT allow-list" {
+@test "proxy --print-cmd declares reverse-proxy mode to the single API upstream" {
+  # claude (Bun) ignores HTTP(S)_PROXY, so the egress control is a REVERSE proxy
+  # with one hardcoded upstream — not a CONNECT allow-list.
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
-  assert_contains "$output" "allow_hosts=api.anthropic.com"
-  assert_contains "$output" "connect_allow=api.anthropic.com:443"
-  assert_contains "$output" "match_mode=exact_host"
+  assert_contains "$output" "mode=reverse_proxy"
+  assert_contains "$output" "upstream=api.anthropic.com"
+  refute_contains "$output" "refuse_connect"
 }
 
-@test "proxy --print-cmd honors BENCH_PROXY_ALLOW extension" {
-  BENCH_PROXY_ALLOW="api.openai.com" run "$PROXY_SH" --print-cmd
+@test "proxy --print-cmd publishes the container's ANTHROPIC_BASE_URL" {
+  run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
-  assert_contains "$output" "api.openai.com:443"
+  assert_contains "$output" "container_base_url=http://bench-proxy:8888"
 }
 
 @test "proxy --print-cmd marks the analysis network internal (no internet)" {
@@ -162,30 +182,19 @@ teardown() {
   assert_contains "$output" "network_internal=true"
 }
 
-@test "proxy --print-cmd ALLOWS CONNECT (it is the tunnel mechanism now)" {
-  # The chosen model is a CONNECT-only allow-list (end-to-end TLS), NOT the old
-  # MITM key-injecting proxy. CONNECT must be permitted (to allowed hosts).
-  run "$PROXY_SH" --print-cmd
-  [ "$status" -eq 0 ]
-  assert_contains "$output" "refuse_connect=false"
-}
-
 @test "proxy --print-cmd marks the key as living in the container" {
-  # End-to-end TLS: the key rides inside the encrypted CONNECT stream; the proxy
-  # neither sees nor injects it. So NO inject_key_from / strip_client_auth.
+  # The key rides in the container and is sent to the reverse proxy; the proxy
+  # forwards (does not inject) it. No MITM key-injection wiring.
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
   assert_contains "$output" "key_in_container=true"
   refute_contains "$output" "inject_key_from"
-  refute_contains "$output" "strip_client_auth"
 }
 
 @test "proxy --print-cmd does not leak any key-shaped env value" {
-  ANTHROPIC_API_KEY="sk-dedicated-secret" \
-  BENCH_PROXY_KEY="sk-legacy-secret" run "$PROXY_SH" --print-cmd
+  ANTHROPIC_API_KEY="sk-dedicated-secret" run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
   refute_contains "$output" "sk-dedicated-secret"
-  refute_contains "$output" "sk-legacy-secret"
 }
 
 # ---------------------------------------------------------------------------
@@ -200,9 +209,10 @@ teardown() {
   [ "$status" -eq 0 ]
   [ -f "$BATS_TMP/results/run-test-123/proxy-usage.json" ]
   run cat "$BATS_TMP/results/run-test-123/proxy-usage.json"
-  # End-to-end TLS = the proxy is blind to tokens; it records CONNECT counts.
-  assert_contains "$output" "\"connect_requests\""
-  assert_contains "$output" "\"denied_connects\""
+  # Reverse proxy forwards opaque HTTPS bodies → it records forwarded-request
+  # counts, not tokens.
+  assert_contains "$output" "\"api_requests\""
+  assert_contains "$output" "\"upstream_errors\""
 }
 
 @test "proxy stop succeeds for a started run" {

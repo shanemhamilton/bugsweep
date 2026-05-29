@@ -137,3 +137,69 @@ class OpenAIClient:
         return (
             response.choices[0].message.content or ""
         )  # pragma: no cover - network result
+
+
+CODEX_DEFAULT_MODEL = "gpt-5.3-codex"
+
+
+def build_codex_argv(*, model: str, prompt: str, out_file: str) -> list[str]:
+    """Build the ``codex exec`` argv for one ephemeral, read-only judge call.
+
+    Pure and process-free so it is unit-testable; :meth:`CodexClient.complete`
+    runs it. The prompt is the single trailing positional (never interpolated
+    into a shell string), so a prompt that looks like flags or shell metachars
+    cannot inject codex options or commands. ``temperature`` is intentionally
+    absent: the validated ``codex exec`` invocation exposes no temperature knob,
+    so the judge's ``temperature=0`` is a no-op for this backend.
+    """
+    return [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "-s",
+        "read-only",
+        "--ignore-user-config",
+        "--output-last-message",
+        out_file,
+        "-m",
+        model,
+        prompt,
+    ]
+
+
+class CodexClient:
+    """Real adapter over the Codex CLI (``codex exec``), NOT exercised in tests.
+
+    Mirrors :class:`OpenAIClient`: one ``complete`` call per judge decision.
+    Uses host-side Codex OAuth (no API key); each call is ephemeral, read-only,
+    and ignores user config so it is reproducible and side-effect-free. The
+    subprocess body is excluded from coverage; :func:`build_codex_argv` carries
+    the tested logic.
+    """
+
+    def __init__(self, model: str = CODEX_DEFAULT_MODEL) -> None:
+        self._model = model
+
+    def complete(  # pragma: no cover - subprocess + filesystem
+        self, *, model: str, temperature: float, prompt: str
+    ) -> str:
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        chosen = model or self._model
+        with tempfile.TemporaryDirectory() as tmp:
+            out_file = str(Path(tmp) / "last-message.txt")
+            argv = build_codex_argv(model=chosen, prompt=prompt, out_file=out_file)
+            subprocess.run(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            try:
+                return Path(out_file).read_text(encoding="utf-8")
+            except OSError:
+                return ""

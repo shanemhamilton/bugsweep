@@ -3,8 +3,8 @@
 A reproducible pilot harness that measures whether bugsweep detects real,
 post-training-cutoff bugs and beats a no-skill `claude -p` baseline, with a
 defensible scoring pipeline. It drives bugsweep headless inside a hardened
-container whose only network path is a CONNECT-allow-list egress proxy (the
-container may reach the model API and nothing else), over throwaway clones of
+container whose only network path is an egress reverse proxy (the container may
+reach the model API and nothing else), over throwaway clones of
 dated known-bug repos, parses the report, and scores findings via a file-overlap
 gate, a cross-model LLM judge, and human calibration.
 
@@ -84,19 +84,25 @@ leaves both unset and routes through the container and the cross-model judge.
 | Env | Effect | Real path |
 | --- | --- | --- |
 | `BENCH_NO_CONTAINER=1` | Run the arm directly against the host clone instead of inside the `isolate.sh` container. | Unset — the arm runs inside the hardened container. |
-| `BENCH_NO_JUDGE=1` | Treat every gate-passing finding as a judge match (no model API call). | Unset — `run.sh` calls the cross-model judge (`bench.scorer.judge.OpenAIClient`). |
+| `BENCH_NO_JUDGE=1` | Treat every gate-passing finding as a judge match (no model API call). | Unset — `run.sh` calls the cross-model judge. |
+| `BENCH_CLEANTREE_SOFT=1` | Convert the runner's "detect-only must not mutate the tree" safety check into a soft warning (persists the violation to `<out>/clean-tree-violation.txt` and continues instead of erroring). Diagnostic-only. | Unset — clean-tree violations fail the run closed as `ERROR`. |
 
 ---
 
 ## Dedicated-key + egress-proxy setup
 
-> **Isolation model (deliberate, post-Design-Review-Gate decision).** The
+> **Isolation model (deliberate, post-Design-Review-Gate decisions).** The
 > approved design isolated the key in a host-side MITM proxy (a key-free
-> container). This build uses the engineering-equivalent **key-in-container +
-> CONNECT egress allow-list** model instead: it leaves the **same accepted
-> budget-abuse residual** (bounded by the budget cap + revocability below) while
-> removing the unverified "does the `claude` CLI work through a TLS-terminating
-> MITM proxy" risk and roughly half the build.
+> container). This build uses the **key-in-container + egress reverse proxy**
+> model instead, with the **same accepted budget-abuse residual** (bounded by
+> the budget cap + revocability below).
+>
+> A first attempt used a **CONNECT forward proxy** + `HTTPS_PROXY`. Live testing
+> showed the `claude` CLI runs on **Bun** (UA `Bun/1.3.14`) and does **not**
+> honor `HTTP(S)_PROXY` env vars, so it never used the proxy and hung. The
+> working lever is `ANTHROPIC_BASE_URL`: point claude at an **nginx reverse
+> proxy** that forwards only to `https://api.anthropic.com`. Live-validated under
+> full hardening: `claude -p` reaches Anthropic through it (200).
 
 The model-API key used by the runner arm is a **harness-dedicated, revocable**
 key. It is exported as `ANTHROPIC_API_KEY` and passed **into the container by
@@ -106,11 +112,18 @@ withholding the key but by the network:
 
 - The analysis container sits on `bench-proxynet`, an **`--internal`** Docker
   network with **no route to the internet**.
-- Its only neighbour is `lib/proxy.sh`'s forwarder, which **CONNECT-tunnels only
-  to an exact-host allow-list** (default `api.anthropic.com:443`) and 403s every
-  other host and any non-443 CONNECT.
-- TLS is **end-to-end** (the proxy does not terminate it), so the key rides
-  inside the encrypted stream and the proxy never sees it.
+- Its only neighbour is `lib/proxy.sh`'s **nginx reverse proxy**, pointed at via
+  `ANTHROPIC_BASE_URL=http://bench-proxy:8888`. nginx forwards **every** request
+  to a single hardcoded upstream, `https://api.anthropic.com`, and nowhere else
+  — so the container can reach the model API and nothing else.
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is set so claude contacts only the
+  API endpoint (telemetry/auto-update hosts would otherwise hang on the internal
+  network).
+- **Plaintext leg / proxy sees the key (deliberate trade-off):** the
+  claude→proxy hop is plain HTTP on the private `--internal` network, so the
+  proxy sees the dedicated key. That is **no new exposure** — the key already
+  lives in the container — and the proxy never logs it (the nginx access-log
+  format omits the `Authorization` header).
 
 So untrusted code in the container can *spend* the key against the model API
 (bounded by the budget cap), but cannot exfiltrate it to any other host.
@@ -121,18 +134,14 @@ So untrusted code in the container can *spend* the key against the model API
    ```bash
    export ANTHROPIC_API_KEY="<dedicated-revocable-runner-key>"
    ```
-3. **(Optional) Extend the CONNECT allow-list** beyond the default
-   `api.anthropic.com` (exact hostnames only; no substring/suffix matching):
-   ```bash
-   export BENCH_PROXY_ALLOW="api.anthropic.com,extra.host.example"
-   ```
 
 `run.sh` starts and stops the proxy itself for each run. It writes a per-run
-usage log to `results/<run-id>/proxy-usage.json` recording **CONNECT counts**
-(`connect_requests`, `denied_connects`) so anomalous egress is observable — note
-the proxy is **blind to token volume** by design (end-to-end TLS); token/$ data
-comes from the runner's captured usage via `lib/cost.sh`. The analysis-image and
-proxy-image ids are pinned in the leaderboard provenance block.
+usage log to `results/<run-id>/proxy-usage.json` recording the **forwarded
+request count** (`api_requests`, `upstream_errors`) so anomalous egress is
+observable — the reverse proxy forwards opaque HTTPS bodies, so token/$ data
+comes from the runner's captured usage via `lib/cost.sh`, not the proxy. The
+analysis-image and proxy-image ids are pinned in the leaderboard provenance
+block.
 
 `lib/scrub.sh` still redacts any `*_API_KEY` / `*_TOKEN` / `*_KEY` env value (and
 generic key-shaped strings) from every report before it is persisted, and an
@@ -166,9 +175,9 @@ budget cap. The judge key is deliberately **not** passed into the container.
 - **Revocation procedure:** `<FILL_BEFORE_LIVE_RUN: provider console path / API call to revoke the dedicated key>`
   Document the exact steps (console path or API call) to revoke the dedicated
   key instantly. The key rides in the container, but the container can only
-  reach the allow-listed model API (no other egress), so the worst case is
-  spend up to the cap — revoking the key immediately severs all model access for
-  in-flight and future runs.
+  reach the single hardcoded model-API upstream (no other egress), so the worst
+  case is spend up to the cap — revoking the key immediately severs all model
+  access for in-flight and future runs.
 
 If a run shows anomalous `proxy-usage.json` volume, revoke the key first, then
 investigate.
@@ -180,9 +189,10 @@ investigate.
 | Concern | Mitigation |
 | --- | --- |
 | Arbitrary code execution from analyzed repos | A short-lived, non-root, read-only-root container (`lib/isolate.sh`): `--user 65534:65534`, `--read-only` + tmpfs scratch, host clone mounted **read-only** (a writable copy lives on tmpfs), `--cap-drop=ALL`, `--security-opt=no-new-privileges`, quantified cpu/memory/pids limits. |
-| Network egress / data exfiltration | Container is on the **`--internal`** `bench-proxynet` (no internet). Its only path out is `lib/proxy.sh`, a forwarder that **CONNECT-tunnels only to an exact-host allow-list** (default `api.anthropic.com:443`) and 403s everything else and any non-443 CONNECT. Verified live: allowed host tunnels through, denied host is refused. |
-| Key theft by untrusted code | The dedicated runner key **is in the container** (key-in-container model) but can only reach the allow-listed model API — it cannot be exfiltrated elsewhere. TLS is end-to-end, so the proxy never sees the key. The **judge** key (`OPENAI_API_KEY`) is **host-only** and never enters the container. |
-| Budget abuse via the model API (accepted residual) | Bounded by the **budget cap** + **instant revocation** above; CONNECT volume observable via `results/<run-id>/proxy-usage.json`. |
+| Network egress / data exfiltration | Container is on the **`--internal`** `bench-proxynet` (no internet). Its only path out is `lib/proxy.sh`, an **nginx reverse proxy** (claude reaches it via `ANTHROPIC_BASE_URL`) that forwards **every** request to a single hardcoded upstream, `https://api.anthropic.com`, and nowhere else. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` keeps claude off other hosts. Verified live under full hardening: `claude -p` reaches Anthropic (200); no other host is routable. |
+| Key theft by untrusted code | The dedicated runner key **is in the container** (key-in-container model) but can only reach the model API (single hardcoded upstream) — it cannot be exfiltrated elsewhere. The claude→proxy leg is plaintext on the private network so the proxy sees the key (no new exposure — key already in the container; nginx omits the `Authorization` header from its log). The **judge** key (`OPENAI_API_KEY` / codex OAuth) is **host-only** and never enters the container. |
+| Budget abuse via the model API (accepted residual) | Bounded by the **budget cap** + **instant revocation** above; forwarded-request volume observable via `results/<run-id>/proxy-usage.json`. |
+| Stuck / hung run | `lib/isolate.sh` wraps the container in a hard `timeout` (`BENCH_WALLCLOCK_SECS`); a stuck run is killed and surfaces as an `ERROR` verdict instead of hanging. |
 | Supply-chain SHA swap | `lib/sandbox.sh` clones from a **local hash-keyed mirror**, checks out the pinned pre-fix SHA, and **fails closed** if `HEAD != <sha>`. Clone hardening disables hooks (`core.hooksPath=/dev/null`), submodules (`--no-recurse-submodules`), LFS smudge (`GIT_LFS_SKIP_SMUDGE=1`), and the `file` protocol on the destination repo. |
 | Secret leakage into persisted reports | `lib/scrub.sh` redacts denylisted env values + key-shaped strings, then runs an **enforced** secret-scan that fails the run closed if any secret survives. |
 | Silent capability degradation | The bugsweep arm forces `research.allow_web_research=false` via a per-run config override and **asserts** it, so a no-network container cannot silently downgrade. |
