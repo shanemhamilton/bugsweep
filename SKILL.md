@@ -76,6 +76,19 @@ work, creates and checks out `bugsweep/<timestamp>`, and prints a `RUN_DIR` (und
 `.bugsweep/`) plus the branch name. If it exits non-zero, STOP and show the user the error
 verbatim. Capture `RUN_DIR`; all artifacts live there.
 
+**Stale-branch check (do this right after preflight succeeds).** Unlanded fix branches
+from prior runs are the #1 failure mode: because each run forks from current main, any fix
+the human never landed gets **rediscovered and re-fixed every run**, spawning duplicate
+branches and wasted iterations. Before hunting, list prior branches and surface them:
+```bash
+git branch --list 'bugsweep/*' | grep -v "$(git rev-parse --abbrev-ref HEAD)"
+```
+If any exist besides the one just created, PAUSE and tell the user: "N prior bugsweep
+branches exist and were never landed or discarded — I'll re-find the same bugs unless they
+are dealt with. Land or discard them first (see Step 5 handoff), or tell me to proceed
+anyway." Do NOT delete anything yourself — the human owns the merge gate. This is read-only
+detection; never touch remotes.
+
 ### Step 1 — Baseline checks
 ```bash
 bash scripts/run_checks.sh baseline "<RUN_DIR>"
@@ -162,6 +175,27 @@ Restores the user's stashed work onto their original branch, preserves all fix c
 coverage + risk into `.bugsweep/state/` so the next run resumes the whole-repo frontier
 instead of starting blind. Present the summary and tell the user to review with
 `git diff <original-branch>..bugsweep/<timestamp>`.
+
+**Land-or-discard handoff (REQUIRED — the run is not "done" until the human chooses).** A
+fix branch left unlanded will be rediscovered next run, so finalize MUST end by presenting
+the human merge gate. The skill never lands or deletes branches itself; give the user the
+exact commands and let them choose:
+
+- **Land** (the fixes are good, merge them yourself — the only path that stops recurrence):
+  ```bash
+  git checkout <original-branch>
+  git merge --no-ff bugsweep/<timestamp>     # or: git cherry-pick <sha>...  for a subset
+  # then push per your normal flow — bugsweep never pushes
+  ```
+- **Discard** (not worth keeping):
+  ```bash
+  git branch -D bugsweep/<timestamp>
+  ```
+- **Defer** (decide later): leave it, but know the next run's stale-branch check will flag it.
+
+State plainly which branch holds the fixes and that **nothing reaches `main` until they
+land it** — bugsweep stops at the gate by design. Do not soften this into "the fixes are
+ready"; they are stranded on a throwaway branch until the human acts.
 
 ## What counts as a bug (and what to ignore)
 FIND: security (injection, auth/authz bypass, SSRF, traversal, hardcoded secrets, unsafe
