@@ -108,54 +108,47 @@ def _iter_findings(lines: Sequence[str]) -> Iterator[Finding]:
         line = raw.strip()
         if FIELD_SEPARATOR not in line:
             continue
-        finding: Finding | None = None
         if line.startswith(BULLET_PREFIX):
-            finding = _parse_bullet(line)
+            yield from _parse_bullet(line)
         elif line.startswith(H3_PREFIX):
             cause = _next_cause_line(lines, i + 1)
-            finding = _parse_h3(line, cause)
-        if finding is not None:
-            yield finding
+            yield from _parse_h3(line, cause)
 
 
-def _parse_bullet(line: str) -> Finding | None:
+def _parse_bullet(line: str) -> list[Finding]:
     body = line[len(BULLET_PREFIX) :].strip()
     parts = [p.strip() for p in body.split(FIELD_SEPARATOR)]
     if len(parts) != BULLET_FIELD_COUNT:
-        return None
+        return []
     bug_id, severity, category, file_line, rationale = parts
-    file_and_line = _split_file_line(_first_location(file_line))
-    if file_and_line is None:
-        return None
-    file, line_no = file_and_line
-    return Finding(
-        bug_id=bug_id,
-        severity=severity,
-        category=_clean_category(category),
-        file=file,
-        line=line_no,
-        rationale=rationale,
-    )
+    return _findings_for_locations(bug_id, severity, category, file_line, rationale)
 
 
-def _parse_h3(line: str, cause: str) -> Finding | None:
+def _parse_h3(line: str, cause: str) -> list[Finding]:
     body = line[len(H3_PREFIX) :].strip()
     parts = [p.strip() for p in body.split(FIELD_SEPARATOR)]
     if len(parts) != H3_FIELD_COUNT:
-        return None
+        return []
     bug_id, severity, category, file_line = parts
-    file_and_line = _split_file_line(_first_location(file_line))
-    if file_and_line is None:
-        return None
-    file, line_no = file_and_line
-    return Finding(
-        bug_id=bug_id,
-        severity=severity,
-        category=_clean_category(category),
-        file=file,
-        line=line_no,
-        rationale=cause,
-    )
+    return _findings_for_locations(bug_id, severity, category, file_line, cause)
+
+
+def _findings_for_locations(
+    bug_id: str, severity: str, category: str, file_line: str, rationale: str
+) -> list[Finding]:
+    """One Finding per cited location (same bug_id, severity, category, cause)."""
+    clean_category = _clean_category(category)
+    return [
+        Finding(
+            bug_id=bug_id,
+            severity=severity,
+            category=clean_category,
+            file=file,
+            line=line_no,
+            rationale=rationale,
+        )
+        for file, line_no in _locations(file_line)
+    ]
 
 
 def _next_cause_line(lines: Sequence[str], start: int) -> str:
@@ -180,22 +173,57 @@ def _clean_category(category: str) -> str:
     return category[:idx] if idx >= 0 else category
 
 
-def _first_location(field: str) -> str:
-    """Return the first backtick-quoted location from a file-line field.
+def _backtick_tokens(field: str) -> list[str]:
+    """Return the contents of every backtick-quoted span in ``field``.
 
-    The released skill lists several locations for one bug, e.g.
-    ``\`a.mjs:4\` + \`b.mjs:24\`` (and a same-file shorthand ``\`a.mjs:24\` +
-    \`:29\``). The file-overlap gate keys on a single file, so the first quoted
-    location is canonical. Bullet-form fields are unquoted and pass through
-    (stripped) unchanged.
+    An unterminated final backtick yields the remainder after it. A field with
+    no backticks yields ``[]`` (the bullet form is unquoted — see ``_locations``).
     """
-    open_idx = field.find(BACKTICK)
-    if open_idx == -1:
-        return field.strip()
-    close_idx = field.find(BACKTICK, open_idx + 1)
-    if close_idx == -1:
-        return field[open_idx + 1 :].strip()
-    return field[open_idx + 1 : close_idx].strip()
+    tokens: list[str] = []
+    i = 0
+    while True:
+        open_idx = field.find(BACKTICK, i)
+        if open_idx == -1:
+            break
+        close_idx = field.find(BACKTICK, open_idx + 1)
+        if close_idx == -1:
+            tokens.append(field[open_idx + 1 :].strip())
+            break
+        tokens.append(field[open_idx + 1 : close_idx].strip())
+        i = close_idx + 1
+    return tokens
+
+
+def _locations(field: str) -> list[tuple[str, int]]:
+    """Parse every ``file:line`` location from a (possibly multi-location) field.
+
+    The released skill cites several locations for one bug, e.g.
+    "`a.mjs:4` + `b.mjs:24`", and a same-file shorthand "`a.mjs:24` + `:29`"
+    where the bare ":line" inherits the previous location's file. Each
+    location becomes its own :class:`Finding` (same ``bug_id``); the file-overlap
+    gate then localizes the bug if ANY cited file matches ground truth,
+    independent of the order the skill lists them.
+
+    NOTE: because one multi-location bug yields several same-``bug_id`` findings,
+    a future precision track MUST group findings by ``bug_id`` so the bug counts
+    once. The detection track is unaffected (it asks only whether SOME finding
+    passes the gate). Malformed or fileless-and-unanchored tokens are skipped.
+    """
+    tokens = _backtick_tokens(field) or [field.strip()]
+    out: list[tuple[str, int]] = []
+    prev_file = ""
+    for token in tokens:
+        split = _split_file_line(token)
+        if split is None:
+            continue
+        file, line_no = split
+        if not file:
+            if not prev_file:
+                continue  # a `:line` shorthand with nothing to inherit.
+            file = prev_file
+        prev_file = file
+        out.append((file, line_no))
+    return out
 
 
 def _split_file_line(token: str) -> tuple[str, int] | None:

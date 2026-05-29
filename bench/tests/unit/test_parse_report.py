@@ -310,27 +310,68 @@ def test_bullet_with_backticked_file_line_still_parses() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_h3_multi_file_header_takes_first_location() -> None:
+def test_h3_multi_location_emits_one_finding_per_location() -> None:
+    """Each cited location becomes its own Finding (same bug_id), so the
+    file-overlap gate localizes the bug regardless of which file is listed first."""
     text = (
         f"{SECTION}\n"
         "### BUG-4 · medium · architectural · `src/assign.mjs:4` + `src/api.mjs:24`\n"
         "**`for…in` without `hasOwnProperty` propagates prototype pollution.**\n"
     )
     findings = parse_report(text)
-    assert findings[0].file == "src/assign.mjs"
-    assert findings[0].line == 4
+    assert [(f.bug_id, f.file, f.line) for f in findings] == [
+        ("BUG-4", "src/assign.mjs", 4),
+        ("BUG-4", "src/api.mjs", 24),
+    ]
 
 
-def test_h3_multi_location_same_file_shorthand_takes_first() -> None:
-    """`src/api.mjs:24` + `:29` must resolve to the first explicit location."""
+def test_h3_ground_truth_file_listed_second_still_localizes() -> None:
+    """Regression for the order-dependence bug: the released skill does not
+    guarantee the ground-truth file is listed first in a multi-location header."""
+    text = (
+        f"{SECTION}\n"
+        "### BUG-Z · medium · architectural · `src/api.mjs:24` + `src/assign.mjs:4`\n"
+        "**Prototype pollution via the assign helper.**\n"
+    )
+    findings = parse_report(text)
+    files = {f.file for f in findings}
+    assert "src/assign.mjs" in files
+
+
+def test_h3_same_file_line_shorthand_inherits_previous_file() -> None:
+    """`src/api.mjs:24` + `:29`: the bare `:29` inherits the previous file."""
     text = (
         f"{SECTION}\n"
         "### BUG-8 · low · architectural · `src/api.mjs:24` + `:29`\n"
         "**Two related call sites in one file.**\n"
     )
     findings = parse_report(text)
-    assert findings[0].file == "src/api.mjs"
-    assert findings[0].line == 24
+    assert [(f.file, f.line) for f in findings] == [
+        ("src/api.mjs", 24),
+        ("src/api.mjs", 29),
+    ]
+
+
+def test_h3_bare_line_shorthand_without_prior_file_is_skipped() -> None:
+    """A `:line` shorthand with no preceding file has nothing to inherit and is
+    dropped rather than producing a finding with an empty file path."""
+    text = (
+        f"{SECTION}\n"
+        "### BUG-X · medium · arch · `:5`\n"
+        "**Cause.**\n"
+    )
+    assert parse_report(text) == []
+
+
+def test_h3_malformed_location_in_multi_is_skipped_others_kept() -> None:
+    """A non-`file:line` token among several is skipped; valid ones still emit."""
+    text = (
+        f"{SECTION}\n"
+        "### BUG-X · medium · arch · `notafile` + `src/x.mjs:1`\n"
+        "**Cause.**\n"
+    )
+    findings = parse_report(text)
+    assert [(f.file, f.line) for f in findings] == [("src/x.mjs", 1)]
 
 
 def test_h3_unterminated_backtick_location_still_parses() -> None:

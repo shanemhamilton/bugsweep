@@ -140,6 +140,11 @@ class OpenAIClient:
 
 
 CODEX_DEFAULT_MODEL = "gpt-5.3-codex"
+#: Per-call wall-clock cap for the Codex CLI judge. Host-side scoring is NOT
+#: wrapped by the run's container timeout, so without this a single hung
+#: ``codex exec`` would stall an unattended k=3 run. A timeout is treated as an
+#: empty (→ non-match) response, never a raised exception.
+CODEX_TIMEOUT_SECONDS = 180
 
 
 def build_codex_argv(*, model: str, prompt: str, out_file: str) -> list[str]:
@@ -192,13 +197,17 @@ class CodexClient:
         with tempfile.TemporaryDirectory() as tmp:
             out_file = str(Path(tmp) / "last-message.txt")
             argv = build_codex_argv(model=chosen, prompt=prompt, out_file=out_file)
-            subprocess.run(
-                argv,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            try:
+                subprocess.run(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=CODEX_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                return ""  # a hung judge call → non-match, never a stalled run.
             try:
                 return Path(out_file).read_text(encoding="utf-8")
             except OSError:
