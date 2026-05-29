@@ -16,6 +16,11 @@ ISOLATE_SH="${BENCH_LIB_DIR}/isolate.sh"
 PROXY_SH="${BENCH_LIB_DIR}/proxy.sh"
 export ISOLATE_SH PROXY_SH
 
+# Analysis-image build glue lives under bench/docker/.
+BENCH_DOCKER_DIR="${_BENCH_DIR}/docker"
+ENTRYPOINT_SH="${BENCH_DOCKER_DIR}/docker-entrypoint.sh"
+export BENCH_DOCKER_DIR ENTRYPOINT_SH
+
 # assert_contains <haystack> <needle> — fail with context if needle absent.
 assert_contains() {
   local haystack="$1" needle="$2"

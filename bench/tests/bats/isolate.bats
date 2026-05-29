@@ -67,33 +67,58 @@ teardown() {
   assert_contains "$output" ":/work:ro"
 }
 
-# ---------------------------------------------------------------------------
-# isolate.sh --print-cmd : key-free container (negative tests)
-# ---------------------------------------------------------------------------
-
-@test "isolate --print-cmd passes NO *_API_KEY env into the container" {
-  # Seed key-shaped env vars; the printed argv must not leak any of them.
-  ANTHROPIC_API_KEY="sk-should-not-appear" \
-  OPENAI_API_KEY="sk-also-not" \
-    run "$ISOLATE_SH" --print-cmd bench/img:latest
+@test "isolate --print-cmd mounts a WRITABLE /out for the captured report" {
+  BENCH_OUT="$BATS_TMP/out" run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
-  refute_contains "$output" "_API_KEY="
-  refute_contains "$output" "sk-should-not-appear"
+  assert_contains "$output" ":/out"
+  refute_contains "$output" ":/out:ro"
 }
 
-@test "isolate --print-cmd passes NO *_TOKEN env into the container" {
+@test "isolate --print-cmd mounts the bench harness read-only at /bench" {
+  run "$ISOLATE_SH" --print-cmd bench/img:latest
+  [ "$status" -eq 0 ]
+  assert_contains "$output" ":/bench:ro"
+}
+
+@test "isolate --print-cmd routes egress through the proxy" {
+  run "$ISOLATE_SH" --print-cmd bench/img:latest
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "HTTPS_PROXY=http://bench-proxy:8888"
+}
+
+# ---------------------------------------------------------------------------
+# isolate.sh --print-cmd : key handling (key-in-container model)
+# ---------------------------------------------------------------------------
+# The dedicated, revocable ANTHROPIC_API_KEY is the ONE permitted passthrough,
+# injected BY NAME (docker reads the value from the host env; the value never
+# appears in the argv). Every other key-shaped env stays out — most importantly
+# the OpenAI judge key, which is host-only.
+
+@test "isolate --print-cmd passes ANTHROPIC_API_KEY by name, never its value" {
+  ANTHROPIC_API_KEY="sk-dedicated-should-not-appear" \
+    run "$ISOLATE_SH" --print-cmd bench/img:latest
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "--env ANTHROPIC_API_KEY"
+  refute_contains "$output" "sk-dedicated-should-not-appear"
+  refute_contains "$output" "ANTHROPIC_API_KEY="
+}
+
+@test "isolate --print-cmd refuses the OpenAI judge key (host-only)" {
+  OPENAI_API_KEY="sk-judge-host-only" \
+    run "$ISOLATE_SH" --print-cmd bench/img:latest
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "OPENAI_API_KEY"
+  refute_contains "$output" "sk-judge-host-only"
+}
+
+@test "isolate --print-cmd refuses other key/token-shaped env" {
   GITHUB_TOKEN="ghp_should_not_appear" \
-    run "$ISOLATE_SH" --print-cmd bench/img:latest
-  [ "$status" -eq 0 ]
-  refute_contains "$output" "_TOKEN="
-  refute_contains "$output" "ghp_should_not_appear"
-}
-
-@test "isolate --print-cmd passes NO *_KEY env into the container" {
   SOME_SECRET_KEY="topsecret-not-here" \
     run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
-  refute_contains "$output" "_KEY="
+  refute_contains "$output" "GITHUB_TOKEN"
+  refute_contains "$output" "ghp_should_not_appear"
+  refute_contains "$output" "SOME_SECRET_KEY"
   refute_contains "$output" "topsecret-not-here"
 }
 
@@ -117,60 +142,73 @@ teardown() {
   assert_contains "$output" "network=bench-proxynet"
 }
 
-@test "proxy --print-cmd shows the exact-host upstream allow-list" {
+@test "proxy --print-cmd shows the exact-host CONNECT allow-list" {
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
   assert_contains "$output" "allow_hosts=api.anthropic.com"
+  assert_contains "$output" "connect_allow=api.anthropic.com:443"
+  assert_contains "$output" "match_mode=exact_host"
 }
 
 @test "proxy --print-cmd honors BENCH_PROXY_ALLOW extension" {
   BENCH_PROXY_ALLOW="api.openai.com" run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
-  assert_contains "$output" "api.openai.com"
+  assert_contains "$output" "api.openai.com:443"
 }
 
-@test "proxy --print-cmd refuses CONNECT tunneling" {
+@test "proxy --print-cmd marks the analysis network internal (no internet)" {
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
-  assert_contains "$output" "refuse_connect=true"
+  assert_contains "$output" "network_internal=true"
 }
 
-@test "proxy --print-cmd strips inbound client auth headers" {
+@test "proxy --print-cmd ALLOWS CONNECT (it is the tunnel mechanism now)" {
+  # The chosen model is a CONNECT-only allow-list (end-to-end TLS), NOT the old
+  # MITM key-injecting proxy. CONNECT must be permitted (to allowed hosts).
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
-  assert_contains "$output" "strip_client_auth=true"
+  assert_contains "$output" "refuse_connect=false"
 }
 
-@test "proxy --print-cmd injects the dedicated key from BENCH_PROXY_KEY" {
+@test "proxy --print-cmd marks the key as living in the container" {
+  # End-to-end TLS: the key rides inside the encrypted CONNECT stream; the proxy
+  # neither sees nor injects it. So NO inject_key_from / strip_client_auth.
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
-  assert_contains "$output" "inject_key_from=BENCH_PROXY_KEY"
+  assert_contains "$output" "key_in_container=true"
+  refute_contains "$output" "inject_key_from"
+  refute_contains "$output" "strip_client_auth"
 }
 
-@test "proxy --print-cmd does not leak the BENCH_PROXY_KEY value" {
-  BENCH_PROXY_KEY="sk-dedicated-secret" run "$PROXY_SH" --print-cmd
+@test "proxy --print-cmd does not leak any key-shaped env value" {
+  ANTHROPIC_API_KEY="sk-dedicated-secret" \
+  BENCH_PROXY_KEY="sk-legacy-secret" run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
   refute_contains "$output" "sk-dedicated-secret"
+  refute_contains "$output" "sk-legacy-secret"
 }
 
 # ---------------------------------------------------------------------------
-# proxy.sh start : per-run usage log
+# proxy.sh start : per-run usage log (wiring-only via BENCH_PROXY_NO_LAUNCH)
 # ---------------------------------------------------------------------------
 
-@test "proxy start writes an initialized proxy-usage.json under results/<run-id>" {
+@test "proxy start (no-launch) writes an initialized proxy-usage.json" {
   cd "$BATS_TMP"
-  run "$PROXY_SH" start run-test-123
+  # BENCH_PROXY_NO_LAUNCH keeps Tier-A container-free: init the log + wiring,
+  # do not launch the forwarder (mirrors run.sh's BENCH_NO_CONTAINER bypass).
+  BENCH_PROXY_NO_LAUNCH=1 run "$PROXY_SH" start run-test-123
   [ "$status" -eq 0 ]
   [ -f "$BATS_TMP/results/run-test-123/proxy-usage.json" ]
   run cat "$BATS_TMP/results/run-test-123/proxy-usage.json"
-  assert_contains "$output" "\"requests\""
-  assert_contains "$output" "\"tokens\""
+  # End-to-end TLS = the proxy is blind to tokens; it records CONNECT counts.
+  assert_contains "$output" "\"connect_requests\""
+  assert_contains "$output" "\"denied_connects\""
 }
 
 @test "proxy stop succeeds for a started run" {
   cd "$BATS_TMP"
-  "$PROXY_SH" start run-stop-456 >/dev/null
-  run "$PROXY_SH" stop run-stop-456
+  BENCH_PROXY_NO_LAUNCH=1 "$PROXY_SH" start run-stop-456 >/dev/null
+  BENCH_PROXY_NO_LAUNCH=1 run "$PROXY_SH" stop run-stop-456
   [ "$status" -eq 0 ]
 }
 

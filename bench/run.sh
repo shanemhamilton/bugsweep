@@ -66,6 +66,10 @@ readonly DEFAULT_JUDGE_MODEL_ID="gpt-4o-judge"
 readonly DEFAULT_LINE_WINDOW=10
 readonly DEFAULT_CONTAINER_IMAGE_DIGEST="(unknown)"
 readonly DEFAULT_EGRESS_PROXY_IMAGE="(unknown)"
+# Image tags built by bench/docker/build.sh. Their local image ids are resolved
+# into provenance on a real (non-BENCH_NO_CONTAINER) run.
+readonly DEFAULT_CONTAINER_IMAGE="bugsweep-bench:latest"
+readonly DEFAULT_PROXY_IMAGE="bugsweep-bench-proxy:latest"
 
 die() {
   echo "run.sh: $*" >&2
@@ -110,10 +114,41 @@ prepare_clone() {
   echo "${dest}"
 }
 
+# True on the real path; false under the TEST-ONLY BENCH_NO_CONTAINER bypass.
+real_path() { [[ "${BENCH_NO_CONTAINER:-0}" != "1" ]]; }
+
+# Map a host case-JSON path to its in-container path under the read-only /bench
+# mount (isolate.sh mounts BENCH_DIR -> /bench). The case must live under bench/.
+case_container_path() {
+  local case_file="$1" abs
+  abs="$(cd "$(dirname "${case_file}")" && pwd)/$(basename "${case_file}")"
+  case "${abs}" in
+    "${BENCH_DIR}/"*) echo "/bench/${abs#"${BENCH_DIR}"/}" ;;
+    *) die "case file must live under ${BENCH_DIR} for a container run: ${case_file}" ;;
+  esac
+}
+
+# Egress-proxy teardown (set up as an EXIT trap once the proxy is started, so it
+# is torn down even if the run aborts mid-loop).
+_PROXY_RUN_ID=""
+_PROXY_RESULTS_DIR=""
+stop_proxy() {
+  [[ -n "${_PROXY_RUN_ID}" ]] || return 0
+  BENCH_RESULTS_DIR="${_PROXY_RESULTS_DIR}" \
+    "${LIB_DIR}/proxy.sh" stop "${_PROXY_RUN_ID}" >/dev/null 2>&1 || true
+  _PROXY_RUN_ID=""
+}
+
 # Run one arm over a prepared clone, capturing + scrubbing its report into
-# <run_out>/report.md. Echoes the runner RESULT token (RAN|SKIP|ERROR). Honors
-# the TEST-ONLY BENCH_NO_CONTAINER bypass (the real path would wrap the runner
-# invocation in lib/isolate.sh; that wrapping is Tier-B and not exercised here).
+# <run_out>/report.md. Echoes the runner RESULT token (RAN|SKIP|ERROR).
+#
+# Real path: execute the runner INSIDE the hardened container (lib/isolate.sh).
+# The host clone is mounted read-only at /work; the entrypoint copies it to a
+# writable /scratch/repo so detect-only bugsweep can write .bugsweep/ + cut its
+# throwaway branch. The captured report lands on the writable /out mount (the
+# host <run_out>/raw dir, passed via BENCH_OUT). The container reaches the model
+# API only through the egress proxy. The TEST-ONLY BENCH_NO_CONTAINER bypass
+# runs the runner directly against the host clone (Tier-A; no container/proxy).
 run_arm() {
   local runner="$1" case_file="$2" clone="$3" run_out="$4"
   mkdir -p "${run_out}"
@@ -122,22 +157,25 @@ run_arm() {
   mkdir -p "${raw_out}"
 
   local result status=0
-  if [[ "${BENCH_NO_CONTAINER:-0}" == "1" ]]; then
+  if ! real_path; then
     result="$(
       "${RUNNERS_DIR}/runner.sh" \
         --runner "${runner}" --case "${case_file}" \
         --workdir "${clone}" --out "${raw_out}"
     )" || status=$?
   else
-    # Real path: execute the runner INSIDE the hardened container. The container
-    # mounts the clone read-only and reaches the model API only via the egress
-    # proxy. (Tier-B / live; not driven by the Tier-A bats suite.)
+    local case_in_container
+    case_in_container="$(case_container_path "${case_file}")"
+    # The report is written by the container's uid 65534; make the host out dir
+    # writable by it (on native Linux a host-uid-owned dir would otherwise be
+    # unwritable — see bench/README.md cleanup caveat).
+    chmod 0777 "${raw_out}"
     result="$(
-      "${LIB_DIR}/isolate.sh" "${BENCH_CONTAINER_IMAGE:-bugsweep-bench:latest}" \
-        "${clone}" -- \
-        "${RUNNERS_DIR}/runner.sh" \
-        --runner "${runner}" --case "${case_file}" \
-        --workdir "${clone}" --out "${raw_out}"
+      BENCH_OUT="${raw_out}" \
+        "${LIB_DIR}/isolate.sh" "${CONTAINER_IMAGE}" "${clone}" -- \
+        "/bench/runners/runner.sh" \
+        --runner "${runner}" --case "${case_in_container}" \
+        --workdir "/scratch/repo" --out "/out"
     )" || status=$?
   fi
 
@@ -336,7 +374,25 @@ main() {
   LINE_WINDOW="${BENCH_LINE_WINDOW:-${DEFAULT_LINE_WINDOW}}"
   CONTAINER_IMAGE_DIGEST="${BENCH_CONTAINER_IMAGE_DIGEST:-${DEFAULT_CONTAINER_IMAGE_DIGEST}}"
   EGRESS_PROXY_IMAGE="${BENCH_EGRESS_PROXY_IMAGE:-${DEFAULT_EGRESS_PROXY_IMAGE}}"
+  CONTAINER_IMAGE="${BENCH_CONTAINER_IMAGE:-${DEFAULT_CONTAINER_IMAGE}}"
   BUGSWEEP_COMMIT="$(resolve_bugsweep_commit)"
+
+  # Real-run preconditions + provenance image-id resolution. On the TEST-ONLY
+  # BENCH_NO_CONTAINER path none of this applies (no container, no proxy, no key).
+  if real_path; then
+    command -v docker >/dev/null 2>&1 || die "docker not found on PATH; required for a live run (or set BENCH_NO_CONTAINER=1 for the test bypass)"
+    [[ -n "${ANTHROPIC_API_KEY:-}" ]] || die "ANTHROPIC_API_KEY is not set; a live run needs the dedicated, revocable key exported (see bench/README.md). Refusing to run."
+    # A locally-built image has no registry digest; record its image id. Env
+    # overrides win; otherwise resolve from the built image (best-effort).
+    if [[ "${CONTAINER_IMAGE_DIGEST}" == "${DEFAULT_CONTAINER_IMAGE_DIGEST}" ]]; then
+      CONTAINER_IMAGE_DIGEST="$(docker image inspect --format '{{.Id}}' "${CONTAINER_IMAGE}" 2>/dev/null || echo "${DEFAULT_CONTAINER_IMAGE_DIGEST}")"
+    fi
+    if [[ "${EGRESS_PROXY_IMAGE}" == "${DEFAULT_EGRESS_PROXY_IMAGE}" ]]; then
+      local _proxy_img="${BENCH_PROXY_IMAGE:-${DEFAULT_PROXY_IMAGE}}"
+      local _proxy_id; _proxy_id="$(docker image inspect --format '{{.Id}}' "${_proxy_img}" 2>/dev/null || echo unknown)"
+      EGRESS_PROXY_IMAGE="${_proxy_img}@${_proxy_id}"
+    fi
+  fi
   # The judge prompt hash is per-finding at score time; the provenance records
   # the judge prompt TEMPLATE hash (the committed judge instructions) so the
   # leaderboard always carries the field, run from REPO_ROOT for the import.
@@ -369,6 +425,17 @@ print(hashlib.sha256(_INSTRUCTIONS.encode("utf-8")).hexdigest())
   mkdir -p "${run_dir}"
   local verdicts="${run_dir}/verdicts.jsonl"
   : >"${verdicts}"
+
+  # Start the egress proxy for the whole run (real path only) and arrange for it
+  # to be torn down on any exit. proxy.sh writes proxy-usage.json into the same
+  # run dir (BENCH_RESULTS_DIR=results_root, run-id=ts).
+  if real_path; then
+    _PROXY_RESULTS_DIR="${results_root}"
+    BENCH_RESULTS_DIR="${results_root}" "${LIB_DIR}/proxy.sh" start "${ts}" \
+      || die "could not start egress proxy"
+    _PROXY_RUN_ID="${ts}"
+    trap stop_proxy EXIT
+  fi
 
   local case_file case_id disclosure post_cutoff arm runner run n
   for case_file in "${cases[@]}"; do
@@ -406,6 +473,10 @@ print(hashlib.sha256(_INSTRUCTIONS.encode("utf-8")).hexdigest())
       done
     done
   done
+
+  # Tear down the egress proxy now: scoring's cross-model judge runs HOST-side
+  # and needs no container egress. (The EXIT trap remains as a safety net.)
+  stop_proxy
 
   write_ground_truths "${run_dir}/ground_truths.json" "${cases[@]}"
   write_provenance "${run_dir}/provenance.json" "${cases[@]}"
