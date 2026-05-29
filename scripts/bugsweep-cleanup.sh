@@ -53,7 +53,11 @@ for p in $PROTECTED; do
 done
 
 # Collect bugsweep branches, newest commit first.
-mapfile -t SWEEPS < <(git for-each-ref --sort=-committerdate \
+# Use a read loop instead of mapfile so macOS Bash 3.2 can run this script.
+SWEEPS=()
+while IFS= read -r sweep_branch; do
+  [ -n "$sweep_branch" ] && SWEEPS+=("$sweep_branch")
+done < <(git for-each-ref --sort=-committerdate \
   --format='%(refname:short)' 'refs/heads/bugsweep/*' 2>/dev/null || true)
 
 if [ "${#SWEEPS[@]}" -eq 0 ]; then
