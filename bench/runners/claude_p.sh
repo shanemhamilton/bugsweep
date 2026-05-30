@@ -26,9 +26,14 @@ set -euo pipefail
 # must forbid any code change so the captured report reflects detection only.
 readonly CLAUDE_P_PROMPT='Run bugsweep in detect-only mode over this whole repository: find runtime bugs across all files, write the bugsweep report to its RUN_DIR/report.md using the standard report template, and make NO code changes and NO git commits. Detect only: do not enter any fix or autonomous mode.'
 
-# Tool grants per references/autonomous-maintenance.md, minus Edit/Write so the
-# detect-only arm cannot mutate source even if the model tries.
-readonly CLAUDE_P_ALLOWED_TOOLS='Bash,Read'
+# Tool grants. Write/Edit ARE included: the skill writes its report.md (under
+# .bugsweep/) and some models (e.g. opus-4-8) use the Write tool to do so — with
+# only Bash,Read a headless `-p` run blocks on an unanswerable permission prompt
+# and never produces a report (ERROR). Excluding Write was never a real safety
+# boundary anyway (Bash can mutate files too); the detect-only guarantee is
+# enforced by the clean-tree assertion (no tracked-source change, HEAD unmoved)
+# plus the NL prompt's explicit "make NO code changes".
+readonly CLAUDE_P_ALLOWED_TOOLS='Bash,Read,Write,Edit'
 
 # Print the invocation WITHOUT running it. runner.sh prepends the
 # allow_web_research=false override note so --print-cmd shows the full intent.
