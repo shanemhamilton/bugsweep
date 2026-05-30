@@ -66,6 +66,19 @@ def parse_report(text_or_path: str | Path) -> list[Finding]:
     return list(_iter_findings(section))
 
 
+def confirmed_section(text_or_path: str | Path) -> str:
+    """Return the raw text of the "Confirmed but not fixed" section, or ``""``.
+
+    Section-boundary detection is the only parsing the regex layer does on the
+    real scoring path; the per-finding extraction moved to the LLM
+    (:func:`bench.scorer.extract.extract_findings`) because report formats vary
+    too much for a deterministic parser. The boundary itself (the stable section
+    header up to the next H2) regexes reliably.
+    """
+    text = _read_text(text_or_path)
+    return "\n".join(_section_lines(text))
+
+
 def _read_text(text_or_path: str | Path) -> str:
     if isinstance(text_or_path, Path):
         return text_or_path.read_text(encoding="utf-8")

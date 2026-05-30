@@ -234,10 +234,11 @@ import os
 import sys
 import json
 
-from bench.scorer.parse_report import parse_report
+from bench.scorer.parse_report import parse_report, confirmed_section
 from bench.scorer.localize import gate
 from bench.scorer.score import score_case_run, DETECTED, NOT_DETECTED
 from bench.scorer.judge import judge_match, Judgement, OpenAIClient, CodexClient
+from bench.scorer.extract import extract_findings
 
 report_path, case_path = sys.argv[1], sys.argv[2]
 with open(case_path, encoding="utf-8") as fh:
@@ -249,7 +250,21 @@ window = int(os.environ.get("BENCH_LINE_WINDOW", "10"))
 no_judge = os.environ.get("BENCH_NO_JUDGE", "0") == "1"
 judge_model = os.environ.get("BENCH_JUDGE_MODEL", "")
 
-findings = parse_report(report_path)
+if no_judge:
+    # TEST-ONLY: regex parse + gate-as-match; no model calls.
+    client = None
+    findings = parse_report(report_path)
+else:
+    backend = os.environ.get("BENCH_JUDGE_BACKEND", "openai")
+    if backend == "codex":
+        client = CodexClient()
+    else:
+        client = OpenAIClient(api_key=os.environ.get("OPENAI_API_KEY", ""))
+    # Format-robust path: the LLM extracts findings from the raw section, then
+    # each goes through the validated location-aware judge. The regex parser is
+    # too brittle for the skill report-format variance (bold/em-dash/batch/etc.).
+    findings = extract_findings(confirmed_section(report_path), client, judge_model)
+
 pairs = []
 for finding in findings:
     finding_map = {
@@ -266,11 +281,6 @@ for finding in findings:
             reason="judge-bypass", model="(none)", prompt_hash="(none)",
         )
     else:
-        backend = os.environ.get("BENCH_JUDGE_BACKEND", "openai")
-        if backend == "codex":
-            client = CodexClient()
-        else:
-            client = OpenAIClient(api_key=os.environ.get("OPENAI_API_KEY", ""))
         judgement = judge_match(finding_map, ground_truth, client, judge_model)
     pairs.append((gate_result, judgement))
 

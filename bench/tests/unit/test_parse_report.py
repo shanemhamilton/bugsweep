@@ -19,7 +19,11 @@ from pathlib import Path
 # WU0 cleanup: add ``pythonpath = ["."]`` to ``[tool.pytest.ini_options]``.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from bench.scorer.parse_report import Finding, parse_report  # noqa: E402
+from bench.scorer.parse_report import (  # noqa: E402
+    Finding,
+    confirmed_section,
+    parse_report,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = REPO_ROOT / "bench" / "tests" / "fixtures" / "report_detect_only.md"
@@ -299,6 +303,30 @@ def test_bullet_with_backticked_file_line_still_parses() -> None:
     )
     findings = parse_report(text)
     assert findings[0].file == "src/x.py" and findings[0].line == 1
+
+
+# ---------------------------------------------------------------------------
+# confirmed_section — the raw section text the LLM extractor consumes. The
+# regex layer's only remaining job on the real path is finding this boundary.
+# ---------------------------------------------------------------------------
+
+
+def test_confirmed_section_returns_raw_section_text_verbatim() -> None:
+    text = (
+        "# bugsweep report\n"
+        f"{SECTION}\n"
+        "- **B5-1 · medium · model/notification.go:113** — SSRF (any format).\n"
+        "## How to review\n"
+        "git diff ...\n"
+    )
+    section = confirmed_section(text)
+    assert "B5-1" in section and "model/notification.go" in section
+    # boundary respected: the next H2 and beyond are excluded
+    assert "How to review" not in section and "git diff" not in section
+
+
+def test_confirmed_section_absent_header_returns_empty() -> None:
+    assert confirmed_section("# wger\n## Self-hosting\nrun docker\n") == ""
 
 
 # ---------------------------------------------------------------------------
