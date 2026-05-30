@@ -224,6 +224,14 @@ main() {
   arm_run "${workdir}" "${out}" || emit_error "arm '${runner}' produced no report artifact"
   [[ -f "${out}/report.md" ]] || emit_error "no report.md captured to ${out}"
 
+  # Capture-validity guard. A valid detect-only report (both arms) carries the
+  # parser's anchor section. A capture lacking it — a stray README, or a report
+  # the model truncated/garbled on a huge repo — is a MALFORMED artifact, not a
+  # "0 bugs found" result; fail it as ERROR so it is excluded from the rate
+  # rather than silently scored NOT_DETECTED.
+  grep -q '## Confirmed but not fixed' "${out}/report.md" \
+    || emit_error "captured report.md lacks the '## Confirmed but not fixed' section (malformed capture)"
+
   # Detect-only must not mutate source or move the branch HEAD.
   assert_clean_tree "${workdir}" "${head_before}" "${out}"
 

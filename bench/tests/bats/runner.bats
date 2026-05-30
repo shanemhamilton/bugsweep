@@ -173,6 +173,18 @@ _count_result_lines() {
   [ "$(_count_result_lines "$output")" -eq 1 ]
 }
 
+@test "capture guard: a report.md lacking the section header is ERROR, not RAN" {
+  # Simulate a malformed/wrong capture (e.g. the skill confused on a huge repo,
+  # or a stray README grabbed instead of the report): no parser anchor section.
+  local bad="${BATS_TMP}/malformed-report.md"
+  printf '# someproject\n## Self-hosting\nrun docker compose up\n' > "$bad"
+  local bindir; bindir="$(_install_fake_claude_baseline)"
+  FAKE_CLAUDE_REPORT_FIXTURE="$bad" PATH="${bindir}:$PATH" \
+    run "$RUNNER_SH" --runner claude_p_baseline --case "$CASE_JSON" --workdir "$WORKDIR" --out "$OUT"
+  assert_contains "$output" "RESULT=ERROR"
+  refute_contains "$output" "RESULT=RAN"
+}
+
 # ---------------------------------------------------------------------------
 # baseline arm (claude_p_baseline) — RAN path
 # ---------------------------------------------------------------------------
