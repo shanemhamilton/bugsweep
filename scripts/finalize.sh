@@ -29,6 +29,58 @@ else
   log "WARNING: could not persist cross-run state (continuing; not fatal)."
 fi
 
+# Emit a stub report when report.md was never written (silent-failure backstop).
+# A large-repo run may stall during context-build or the architectural hunt before
+# the model ever reaches the report template. This backstop ensures the user always
+# gets a coverage summary from on-disk state, regardless of where execution stopped.
+_emit_stub_report() {
+  local report="${run_dir}/report.md"
+  [ -f "$report" ] && return 0          # real report exists — do not overwrite
+
+  local covered=0 total=0
+  if [ -f "${run_dir}/recon.json" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      covered="$(jq -r '.covered | length'         "${run_dir}/recon.json" 2>/dev/null || printf '0')"
+      total="$(  jq -r '.batch_count // (.batches | length)' "${run_dir}/recon.json" 2>/dev/null || printf '0')"
+    elif command -v python3 >/dev/null 2>&1; then
+      covered="$(python3 -c \
+        'import json,sys; d=json.load(open(sys.argv[1])); print(len(d.get("covered",[])))' \
+        "${run_dir}/recon.json" 2>/dev/null || printf '0')"
+      total="$(python3 -c \
+        'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("batch_count",len(d.get("batches",[]))))' \
+        "${run_dir}/recon.json" 2>/dev/null || printf '0')"
+    fi
+  fi
+  # Sanitise: accept only digits so arithmetic below never sees garbage.
+  case "$covered" in ''|*[!0-9]*) covered=0 ;; esac
+  case "$total"   in ''|*[!0-9]*) total=0   ;; esac
+
+  local fixes
+  fixes="$(count_event "${run_dir}/ledger.jsonl" "fix_committed")"
+
+  local ts
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')"
+
+  cat > "$report" <<STUB
+# bugsweep report — ${ts}
+**Branch:** ${BUGSWEEP_BRANCH}   **Mode:** detect-only (partial)
+**WARNING: INCOMPLETE RUN** — the model did not produce a full report. The run likely
+stalled during context-build or the architectural hunt before reaching the report step.
+
+## Summary
+- Coverage: ${covered}/${total} batches — PARTIAL RUN (stalled before report)
+- Fixes committed: ${fixes}
+- See ledger.jsonl for the full event log
+
+## How to review
+git diff ${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}
+git -C . log --oneline ${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}
+STUB
+
+  log "WARNING: report.md was missing — emitted a stub from on-disk state. Check ledger.jsonl."
+}
+_emit_stub_report
+
 # Return the user to their original branch (the bugsweep branch is preserved).
 if [ "$(current_branch)" != "$BUGSWEEP_ORIG_BRANCH" ]; then
   git checkout "$BUGSWEEP_ORIG_BRANCH" >/dev/null 2>&1 \
