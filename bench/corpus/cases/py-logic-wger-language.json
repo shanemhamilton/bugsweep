@@ -18,6 +18,6 @@
     "description": "search_languagecode() in filtersets.py maps each comma-separated language code through load_language(). load_language() defaults unknown codes to English, so an unrecognized language code silently resolves to English rather than being ignored as the docstring promises ('Unknown codes are ignored'). The filter then matches English ingredients for a bogus code instead of returning no language constraint.",
     "fix_summary": "The fix calls load_language(code, default_to_english=False) inside a try/except that swallows Language.DoesNotExist, so unknown codes are dropped instead of defaulting to English; only resolvable languages are appended to the filter list. It adds the `from wger.core.models import Language` import needed for the exception. Test file wger/nutrition/tests/test_search_api.py was updated by the fix commit (PR #2356)."
   },
-  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "size_ceiling": { "max_files": 800, "max_loc": 200000 },
   "cross_file": false
 }

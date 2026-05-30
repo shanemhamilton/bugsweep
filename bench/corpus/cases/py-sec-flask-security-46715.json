@@ -19,6 +19,6 @@
     "description": "The OAuth account-verification flow in oauth_glue.py trusts the identity attribute returned by the OAuth provider without confirming it belongs to the currently logged-in user. oauth_verify_response() set the freshness/verification timestamp for any user resolved from the OAuth response, so an attacker who can complete an OAuth flow with a different provider account could 'verify' the victim's session. The identity field was also not constrained to configured IDENTITY_ATTRIBUTES nor passed through the attribute mapper.",
     "fix_summary": "The fix gates the verification branch on `user and user.email == current_user.email` so the OAuth identity must match the logged-in user, and validates the returned field against get_identity_attribute() (raising OAuthError for unknown attributes) before running it through the attribute mapper. Test file tests/test_oauthglue.py and CHANGES.rst were also updated by the fix commit."
   },
-  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "size_ceiling": { "max_files": 800, "max_loc": 200000 },
   "cross_file": false
 }

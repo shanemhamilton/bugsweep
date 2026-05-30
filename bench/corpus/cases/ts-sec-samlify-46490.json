@@ -20,6 +20,6 @@
     "description": "The SAML login-response builder injects attribute values into the XML template without escaping element text. escapeTag() in libsaml.ts XML-escapes attribute values (quoted positions) but returns element-text replacements verbatim, and IdentityProvider.createLoginResponse() in entity-idp.ts builds the AttributeStatement through replaceTagsByValue() relying on that replacer. An attacker who controls an attribute value can inject XML elements into a signed SAML assertion (XML injection / privilege escalation via crafted AttributeValue).",
     "fix_summary": "The fix makes escapeTag() always XML-escape the replacement text in both attribute and element-text contexts (returning xmlEscape(text) in the unquoted branch), and entity-idp.ts stops routing the attribute statement through replaceTagsByValue(), instead substituting the already-built attributeStatement via a single context.replace('{AttributeStatement}', attributeStatement). Test files test/attribute-injection.ts and test/units.ts were added/updated by the fix commit."
   },
-  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "size_ceiling": { "max_files": 800, "max_loc": 200000 },
   "cross_file": true
 }

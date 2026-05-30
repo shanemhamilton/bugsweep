@@ -29,6 +29,6 @@
     "description": "SendTriggerTasks() in crontask.go fans out cron task triggers to servers without checking that the task or target server belongs to the triggering user. The callers in servicesentinel.go (notifyCheck) and alertsentinel.go (checkStatus) invoke triggers driven by reporter/alert state, so a low-privilege user could cause cron tasks owned by other users to execute against servers they do not own (missing authorization).",
     "fix_summary": "The fix adds an owner parameter to SendTriggerTasks and introduces cronCanBeTriggeredByOwner(), cronCanSendToServer(), and userIsAdmin() ownership/admin checks in crontask.go so a task only runs when the cron's UserID matches the trigger owner or target server owner (or the user is admin). servicesentinel.go and alertsentinel.go are updated to pass the originating UserID through. A new security_regression_test.go was added by the fix commit."
   },
-  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "size_ceiling": { "max_files": 800, "max_loc": 200000 },
   "cross_file": true
 }

@@ -21,6 +21,6 @@
     "description": "NotificationServerBundle.Send() in model/notification.go issues an outbound HTTP request to an attacker-controlled notification URL with no validation of the resolved target address. A RoleMember can configure a notification via POST /api/v1/notification pointing at internal/loopback/link-local addresses, and the response body is reflected back, yielding server-side request forgery (SSRF) against the dashboard host's internal network.",
     "fix_summary": "The fix adds a blocked-CIDR allow-list (private, loopback, link-local, and reserved ranges for IPv4 and IPv6) and builds the HTTP client with newNotificationHTTPClient(), which validates that the request URL's resolved IP is not in a blocked range before dialing (rejecting with errNotificationURLNotAllowed). A new model/notification_test.go was added by the fix commit."
   },
-  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "size_ceiling": { "max_files": 800, "max_loc": 200000 },
   "cross_file": false
 }

@@ -34,13 +34,13 @@ teardown() {
 @test "isolate --print-cmd emits the cpu limit value" {
   run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
-  assert_contains "$output" "--cpus=2"
+  assert_contains "$output" "--cpus=4"
 }
 
 @test "isolate --print-cmd emits the memory limit value" {
   run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
-  assert_contains "$output" "--memory=4g"
+  assert_contains "$output" "--memory=8g"
 }
 
 @test "isolate --print-cmd emits the pids limit value" {

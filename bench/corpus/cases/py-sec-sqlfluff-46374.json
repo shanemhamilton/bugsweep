@@ -29,6 +29,6 @@
     "description": "The SQLFluff parser has no bound on the number of parse nodes it will produce, so a maliciously crafted query can drive the parser into uncontrolled resource consumption (CPU/memory exhaustion). ParseContext (context.py) tracked no node count, parse() (parser.py) imposed no limit, and there was no max_parse_nodes configuration or validation.",
     "fix_summary": "The fix introduces a max_parse_nodes parser limit: ParseContext gains node counting/limit tracking in context.py, parse() in parser.py enforces it, default_config.cfg ships a default limit, and validate.py adds _validate_max_parse_depth/nodes config validation. The change is mirrored in the Rust parser (sqlfluffrs/*.rs / .pyi / rust_parser.py) and accompanied by tests (max_parse_nodes_test.py, validate_test.py, rust_parser_test.py, dialects_test.py), which the fix commit also touched."
   },
-  "size_ceiling": { "max_files": 200000, "max_loc": 20000000 },
+  "size_ceiling": { "max_files": 800, "max_loc": 200000 },
   "cross_file": true
 }

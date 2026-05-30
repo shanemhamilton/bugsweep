@@ -34,15 +34,18 @@ set -euo pipefail
 
 # --- tunables (quantified limits asserted by the bats suite) ----------------
 readonly BENCH_NETWORK="bench-proxynet"
-readonly BENCH_CPUS="2"
-readonly BENCH_MEMORY="4g"
+# CPU/memory raised (was 2/4g): a host diagnosis showed go-nezha completes the
+# detect-only pipeline in ~21 min uncapped, but the 2-CPU/4g container is slow
+# enough that it overran the old 1800s cap. Env-overridable for tuning.
+readonly BENCH_CPUS="${BENCH_CPUS:-4}"
+readonly BENCH_MEMORY="${BENCH_MEMORY:-8g}"
 readonly BENCH_PIDS_LIMIT="512"
 readonly BENCH_USER="65534:65534" # nobody:nogroup — non-root
 readonly BENCH_SCRATCH="/scratch"
 readonly BENCH_WORKDIR="/work"
 readonly BENCH_OUTDIR="/out"     # writable mount: captured report lands here
 readonly BENCH_MOUNTDIR="/bench" # the harness scripts, mounted read-only
-readonly BENCH_WALLCLOCK_SECS="${BENCH_WALLCLOCK_SECS:-1800}"
+readonly BENCH_WALLCLOCK_SECS="${BENCH_WALLCLOCK_SECS:-3600}"
 # Runner model pinned for both arms (e.g. claude-opus-4-8). Empty = the CLI
 # default. run.sh sets this from BENCH_RUNNER_MODEL_ID so the pinned model and
 # the recorded provenance model_id stay identical.
