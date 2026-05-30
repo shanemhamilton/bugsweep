@@ -16,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from bench.scorer.leaderboard import (  # noqa: E402
     PROVENANCE_FIELDS,
     render_leaderboard,
+    render_precision_section,
 )
+from bench.scorer.precision import PrecisionCaseResult  # noqa: E402
 from bench.scorer.score import (  # noqa: E402
     DETECTED,
     ERROR,
@@ -260,9 +262,6 @@ def test_empty_verdicts_render_without_crash() -> None:
 
 
 # ── Precision track section ───────────────────────────────────────────────────
-
-from bench.scorer.leaderboard import render_precision_section  # noqa: E402
-from bench.scorer.precision import PrecisionCaseResult  # noqa: E402
 
 
 def _precision_result(

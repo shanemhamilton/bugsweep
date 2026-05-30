@@ -232,21 +232,20 @@ def render_precision_section(
         "| arm | case-runs | total confirmed | sampled | real | precision |\n"
         "| --- | --- | --- | --- | --- | --- |"
     )
-    rows = [
-        "| {arm} | {runs} | {total} | {sampled} | {real} | {prec} |".format(
-            arm=arm_name,
-            runs=len(arm_rs),
-            total=sum(r.total_confirmed for r in arm_rs),
-            sampled=sum(r.sampled for r in arm_rs),
-            real=sum(r.real for r in arm_rs),
-            prec=_pct(
-                sum(r.real for r in arm_rs) / sum(r.sampled for r in arm_rs)
-                if sum(r.sampled for r in arm_rs) > 0
-                else 0.0
-            ),
+    rows = []
+    for arm_name, arm_rs in sorted(by_arm.items()):
+        total_sampled = sum(r.sampled for r in arm_rs)
+        total_real = sum(r.real for r in arm_rs)
+        rows.append(
+            "| {arm} | {runs} | {total} | {sampled} | {real} | {prec} |".format(
+                arm=arm_name,
+                runs=len(arm_rs),
+                total=sum(r.total_confirmed for r in arm_rs),
+                sampled=total_sampled,
+                real=total_real,
+                prec=_pct(total_real / total_sampled if total_sampled > 0 else 0.0),
+            )
         )
-        for arm_name, arm_rs in sorted(by_arm.items())
-    ]
     return "\n".join([header, *rows])
 
 
