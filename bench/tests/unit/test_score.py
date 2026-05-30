@@ -33,7 +33,10 @@ from bench.scorer.score import (  # noqa: E402
     write_calibration,
 )
 
-# --- score_case_run: DETECTED iff some finding gate-passes AND judge matches ---
+# --- score_case_run: DETECTED iff some finding's JUDGE matches. Localization is
+# folded into the judge (same bug AND same file); the file-overlap gate is logged
+# evidence, never a filter, so it must NOT gate the verdict. An exact-path gate
+# has a model-dependent false-negative rate that would bias a cross-model run. ---
 
 
 def _gate(passed: bool) -> GateResult:
@@ -46,33 +49,33 @@ def _judge(match: bool, confidence: int = 80) -> Judgement:
     )
 
 
-def test_detected_when_one_finding_passes_gate_and_judge_matches() -> None:
-    pairs = [(_gate(True), _judge(True))]
-    assert score_case_run(pairs) == DETECTED
+def test_detected_when_a_finding_judge_matches() -> None:
+    assert score_case_run([(_gate(True), _judge(True))]) == DETECTED
 
 
 def test_not_detected_when_no_findings() -> None:
     assert score_case_run([]) == NOT_DETECTED
 
 
-def test_not_detected_when_gate_passes_but_judge_rejects() -> None:
+def test_not_detected_when_judge_rejects_despite_gate_pass() -> None:
+    # the judge governs; a gate-pass with a judge rejection is NOT a detection.
     assert score_case_run([(_gate(True), _judge(False))]) == NOT_DETECTED
 
 
-def test_not_detected_when_judge_matches_but_gate_fails() -> None:
-    assert score_case_run([(_gate(False), _judge(True))]) == NOT_DETECTED
+def test_detected_when_judge_matches_even_if_gate_fails() -> None:
+    # the file-overlap gate is demoted to evidence: a judge match on a finding the
+    # path-gate would have dropped (model wrote the path differently) still counts.
+    # This is the cross-model validity fix.
+    assert score_case_run([(_gate(False), _judge(True))]) == DETECTED
 
 
-def test_detected_requires_same_finding_to_pass_both() -> None:
-    # finding A passes gate but judge says no; finding B fails gate but judge
-    # says yes. No SINGLE finding satisfies both → NOT_DETECTED (not a
-    # cross-product of "some gate" AND "some judge").
-    pairs = [(_gate(True), _judge(False)), (_gate(False), _judge(True))]
+def test_not_detected_when_all_judges_reject() -> None:
+    pairs = [(_gate(True), _judge(False)), (_gate(False), _judge(False))]
     assert score_case_run(pairs) == NOT_DETECTED
 
 
-def test_detected_when_at_least_one_of_many_satisfies_both() -> None:
-    pairs = [(_gate(False), _judge(True)), (_gate(True), _judge(True))]
+def test_detected_when_at_least_one_judge_matches() -> None:
+    pairs = [(_gate(False), _judge(False)), (_gate(True), _judge(True))]
     assert score_case_run(pairs) == DETECTED
 
 

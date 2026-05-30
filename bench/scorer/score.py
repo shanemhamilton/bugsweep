@@ -1,8 +1,10 @@
 """Combine the gate and judge into per-case verdicts and per-arm aggregates.
 
-A case-run is DETECTED iff at least one finding both passes the file-overlap
-gate AND is confirmed by the judge (the SAME finding must satisfy both).
-ERROR/SKIPPED runs are reported separately and excluded from the rate
+A case-run is DETECTED iff at least one finding is confirmed by the
+location-aware judge (same bug AND same file). The file-overlap gate is carried
+as logged evidence only — it does NOT gate the verdict, because an exact-path
+gate has a model-dependent false-negative rate that would bias a cross-model
+comparison. ERROR/SKIPPED runs are reported separately and excluded from the rate
 denominator. Per arm we report hit-rate, detected@≥1, detected@majority
 (k=3 → ≥2/3), and a Wilson score interval; the bugsweep−baseline delta is
 paired over cases both arms COMPLETED, with each arm's ERROR/SKIPPED counts
@@ -117,9 +119,16 @@ class ResolvedVerdict:
 
 
 def score_case_run(pairs: Sequence[GateJudgePair]) -> str:
-    """Return DETECTED iff some single finding passes the gate AND the judge matches."""
-    for gate_result, judgement in pairs:
-        if gate_result.passed and judgement.match:
+    """Return DETECTED iff some finding's JUDGE matches the ground-truth bug.
+
+    Localization is folded into the judge (same bug AND same file); the
+    file-overlap ``gate_result`` is carried only as logged evidence and does NOT
+    gate the verdict. An exact-path gate has a model-dependent false-negative
+    rate (models write paths inconsistently), which would bias a cross-model
+    comparison — so the judge, not the path string, decides.
+    """
+    for _gate_result, judgement in pairs:
+        if judgement.match:
             return DETECTED
     return NOT_DETECTED
 
