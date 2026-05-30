@@ -33,6 +33,14 @@ Cases are split by `disclosure_date` vs the runner model cutoff.
 - bugsweep: detected@majority 0, hit-rate 0.0% (completed 0)
 - baseline: detected@majority 0, hit-rate 0.0% (completed 0)
 
+## Precision track
+
+Sample: up to 5 non-GT confirmed findings per case-run.
+
+| arm | case-runs | total confirmed | sampled | real | precision |
+| --- | --- | --- | --- | --- | --- |
+| bugsweep | 1 | 6 | 5 | 5 | 100.0% |
+
 ## Provenance
 
 | field | value |
