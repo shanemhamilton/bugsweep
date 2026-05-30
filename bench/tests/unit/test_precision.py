@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from bench.scorer.parse_report import Finding
 from bench.scorer.precision import (
     DEFAULT_PRECISION_SAMPLE,
-    PrecisionCaseResult,
+    PrecisionCaseResult,  # noqa: F401  # exported public surface (downstream I/O task)
     PrecisionJudgement,
     SampledFinding,
     deduplicate_by_bug_id,
@@ -39,11 +39,13 @@ class FakeClient:
 
 
 def _finding(bug_id: str, file: str = "a.py", rationale: str = "r") -> Finding:
-    return Finding(bug_id=bug_id, severity="high", category="sec",
-                   file=file, line=1, rationale=rationale)
+    return Finding(
+        bug_id=bug_id, severity="high", category="sec", file=file, line=1, rationale=rationale
+    )
 
 
 # ── judge_finding_real ──────────────────────────────────────────────────────────
+
 
 def test_judge_real_parses_true() -> None:
     client = FakeClient(['{"is_real": true, "confidence": 85, "reason": "real sqli"}'])
@@ -83,7 +85,8 @@ def test_judge_real_all_fields_inside_data_region() -> None:
     client = FakeClient(['{"is_real": false, "confidence": 0, "reason": "n/a"}'])
     judge_finding_real(
         {"bug_id": "BUG_MARK", "file": "FILE_MARK", "rationale": "RATIONALE_MARK"},
-        client, MODEL,
+        client,
+        MODEL,
     )
     prompt = client.calls[0]
     open_idx = prompt.index("<UNTRUSTED_DATA>")
@@ -121,6 +124,7 @@ def test_judge_real_missing_fields_default_gracefully() -> None:
 
 # ── deduplicate_by_bug_id ───────────────────────────────────────────────────────
 
+
 def test_deduplicate_first_occurrence_wins() -> None:
     findings = [
         _finding("B1", file="a.py"),
@@ -149,6 +153,7 @@ def test_deduplicate_all_unique() -> None:
 
 
 # ── sample_non_gt_findings ──────────────────────────────────────────────────────
+
 
 def test_sample_excludes_gt_matched() -> None:
     findings = [_finding("GT"), _finding("B1"), _finding("B2")]
@@ -189,13 +194,16 @@ def test_sample_fewer_than_max_returns_all() -> None:
 
 # ── score_precision ─────────────────────────────────────────────────────────────
 
+
 def test_score_precision_returns_total_and_judged() -> None:
     findings = [_finding("B1"), _finding("B2"), _finding("B3")]
-    client = FakeClient([
-        '{"is_real": true, "confidence": 80, "reason": "real"}',
-        '{"is_real": false, "confidence": 20, "reason": "vague"}',
-        '{"is_real": true, "confidence": 90, "reason": "real"}',
-    ])
+    client = FakeClient(
+        [
+            '{"is_real": true, "confidence": 80, "reason": "real"}',
+            '{"is_real": false, "confidence": 20, "reason": "vague"}',
+            '{"is_real": true, "confidence": 90, "reason": "real"}',
+        ]
+    )
     total, judged = score_precision(findings, gt_matched_bug_ids=set(), client=client, model=MODEL)
     assert total == 3
     assert len(judged) == 3
@@ -205,10 +213,12 @@ def test_score_precision_returns_total_and_judged() -> None:
 
 def test_score_precision_total_includes_gt_matched() -> None:
     findings = [_finding("GT"), _finding("B1"), _finding("B2")]
-    client = FakeClient([
-        '{"is_real": true, "confidence": 80, "reason": "r"}',
-        '{"is_real": true, "confidence": 80, "reason": "r"}',
-    ])
+    client = FakeClient(
+        [
+            '{"is_real": true, "confidence": 80, "reason": "r"}',
+            '{"is_real": true, "confidence": 80, "reason": "r"}',
+        ]
+    )
     total, judged = score_precision(findings, gt_matched_bug_ids={"GT"}, client=client, model=MODEL)
     assert total == 3  # GT counts in total
     assert len(judged) == 2  # GT excluded from sample

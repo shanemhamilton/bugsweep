@@ -73,9 +73,9 @@ class PrecisionCaseResult:
     run: int
     arm: str
     total_confirmed: int  # unique bug_ids in the confirmed section (before GT exclusion)
-    sampled: int          # findings judged by the precision judge
-    real: int             # judged as real
-    precision: float      # real / sampled; 0.0 when sampled == 0
+    sampled: int  # findings judged by the precision judge
+    real: int  # judged as real
+    precision: float  # real / sampled; 0.0 when sampled == 0
     findings: tuple[SampledFinding, ...]
 
 
@@ -87,9 +87,7 @@ def judge_finding_real(
     """Ask client whether finding is a real, reproducible bug."""
     prompt = _build_precision_prompt(finding)
     prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    response = client.complete(
-        model=model, temperature=PRECISION_JUDGE_TEMPERATURE, prompt=prompt
-    )
+    response = client.complete(model=model, temperature=PRECISION_JUDGE_TEMPERATURE, prompt=prompt)
     return _parse_precision_response(response, model=model, prompt_hash=prompt_hash)
 
 
@@ -153,18 +151,12 @@ def _build_precision_prompt(finding: Mapping[str, Any]) -> str:
     file = str(finding.get("file", ""))
     rationale = str(finding.get("rationale", ""))
     data_block = (
-        f"{DATA_OPEN}\n"
-        f"BUG_ID: {bug_id}\n"
-        f"FILE: {file}\n"
-        f"RATIONALE: {rationale}\n"
-        f"{DATA_CLOSE}"
+        f"{DATA_OPEN}\nBUG_ID: {bug_id}\nFILE: {file}\nRATIONALE: {rationale}\n{DATA_CLOSE}"
     )
     return f"{_INSTRUCTIONS}\n\n{data_block}"
 
 
-def _parse_precision_response(
-    response: str, *, model: str, prompt_hash: str
-) -> PrecisionJudgement:
+def _parse_precision_response(response: str, *, model: str, prompt_hash: str) -> PrecisionJudgement:
     payload = _extract_json_object(response)
     if payload is None or "is_real" not in payload or "reason" not in payload:
         return PrecisionJudgement(
