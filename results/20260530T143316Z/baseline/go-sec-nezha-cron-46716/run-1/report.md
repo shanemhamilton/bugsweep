@@ -1,0 +1,19 @@
+## Confirmed but not fixed
+- BUG-01 · high · concurrency/nil-deref · service/rpc/nezha.go:48 · RequestTask ignores ok from ServerShared.Get then writes server.TaskStream, nil-panics if the server was deleted
+- BUG-02 · medium · logic/validation · service/rpc/nezha.go:220 · IOStream magic-number check uses && across != terms with an inverted last comparison, so invalid stream IDs pass
+- BUG-03 · high · logic · model/rule.go:82 · net_all_speed computes NetOutSpeed+NetOutSpeed, double-counting egress and dropping NetInSpeed
+- BUG-04 · high · error-handling · model/rule.go:70 · gpu_max calls slices.Max on the agent-supplied GPU slice with no empty check, panicking when empty
+- BUG-05 · high · error-handling · model/rule.go:136 · temperature_max calls slices.Max(temp) where temp is nil when all reported temperatures are 0, causing a panic
+- BUG-06 · high · nil-deref/DoS · service/singleton/server.go:67 · ServerClass.Delete dereferences c.list[id].UUID without an existence check, panicking on an unknown server id
+- BUG-07 · high · nil-deref/DoS · service/singleton/servicesentinel.go:379 · Delete dereferences ss.services[id].CronJobID without an existence check, panicking on an unknown service id
+- BUG-08 · high · concurrency · service/singleton/servicesentinel.go:649 · tlsCertCache is read/written after serviceResponseDataStoreLock is released (line 625) while Delete mutates it under a different lock, a map data race
+- BUG-09 · medium · nil-deref · service/singleton/servicesentinel.go:610 · cs from ss.Get ignores ok and cs.Notify/cs.NotificationGroupID are dereferenced after unlock, panicking if the service was deleted
+- BUG-10 · medium · divide-by-zero · model/alertrule.go:125 · a regular rule with Duration==0 reaches fail*100/total with total==0, an integer divide-by-zero panic
+- BUG-11 · low · security · model/notification.go:148 · verifyTLS defaults false when VerifyTLS is nil, so InsecureSkipVerify=true silently disables cert validation for webhook notifications
+- BUG-12 · low · logic · service/rpc/nezha.go:279 · log.Printf arguments swapped, passing err to %d and the id to %v
+- BUG-13 · low · logic · service/singleton/server.go:56 · log.Printf arguments swapped, passing err to %d and s.ID to %v
+- BUG-14 · low · concurrency · service/singleton/alertsentinel.go:155 · checkStatus writes alertsStore/alertsPrevState while holding only AlertsLock.RLock()
+- BUG-15 · low · authz/info-leak · cmd/dashboard/controller/notification_group.go:23 · listNotificationGroup returns every user's notification groups with no per-user filter
+- BUG-16 · low · authz/info-leak · cmd/dashboard/controller/server_group.go:23 · listServerGroup returns every user's server groups with no per-user filter
+- BUG-17 · low · concurrency · cmd/dashboard/controller/server.go:365 · batchMoveServer mutates shared *model.Server.UserID while iterating under only listMu.RLock()
+- BUG-18 · low · authz · cmd/dashboard/controller/nat.go:56 · createNAT skips the server-ownership check when ServerID is absent from ServerShared

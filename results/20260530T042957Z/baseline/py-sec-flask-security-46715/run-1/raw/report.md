@@ -1,0 +1,10 @@
+Confirmed: `wan_signin_response` has no `is_active` gate between `validate_on_submit()` and `login_user` (line 748) — the only check is the broken one at webauthn.py:332. So the missing `return False` is an exploitable inactive-user auth bypass.
+
+I have 5 execution-confirmed/concrete findings and dropped the `is_locked` complex (no shipped-code misbehavior — contract bug only).
+
+## Confirmed but not fixed
+- BUG-001 · high · security · flask_security/webauthn.py:332 · inactive-account check appends DISABLED_ACCOUNT error but omits `return False`, so a deactivated user passes WebAuthn `validate()` (is_locked default True) and reaches `login_user` with no downstream is_active gate
+- BUG-002 · high · security · flask_security/recovery_codes.py:105 · single-use delete index is computed on the decrypted/filtered code list but `mf_delete_recovery_code` pops that index from the raw stored list, so when any stored code fails to decrypt (TTL/key rotation) the wrong code is removed and the used recovery code survives (replay)
+- BUG-003 · medium · data-integrity · flask_security/mail_util.py:140 · `normalize()` mutates the live `SECURITY_EMAIL_VALIDATOR_ARGS` dict in place (`config_value` returns no copy), permanently forcing `check_deliverability=False` so later `validate()` calls silently skip DNS deliverability checks
+- BUG-004 · low · data-integrity · flask_security/utils.py:781 · redirect userinfo rebuilt as `f"{u.username}:{u.password}@"` injects the literal string "None" as the password when a subdomain-redirect URL has a username but no password
+- BUG-005 · low · logic · flask_security/username_util.py:95 · `validate()` compares `bleach.clean(username.strip())` against the un-stripped raw username, so a username with leading/trailing whitespace is rejected as USERNAME_ILLEGAL_CHARACTERS even though `normalize()` would trim it

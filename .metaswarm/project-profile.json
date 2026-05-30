@@ -1,0 +1,33 @@
+{
+  "metaswarm_version": "0.11.0",
+  "distribution": "plugin",
+  "installed_at": "2026-05-28T02:18:35Z",
+  "updated_at": "2026-05-28T02:18:35Z",
+  "detection": {
+    "language": "Python",
+    "secondary_languages": ["Shell"],
+    "framework": null,
+    "test_runner": "pytest",
+    "linter": null,
+    "formatter": null,
+    "package_manager": null,
+    "type_checker": null,
+    "ci": null,
+    "git_hooks": null
+  },
+  "choices": {
+    "coverage_threshold": 80,
+    "external_tools": true,
+    "visual_review": false,
+    "ci_pipeline": false,
+    "git_hooks": true
+  },
+  "commands": {
+    "test": "pytest",
+    "coverage": "pytest --cov --cov-fail-under=80",
+    "lint": null,
+    "typecheck": null,
+    "format_check": null
+  },
+  "notes": "Repo is a Claude Code/Codex skill (Bash + Markdown) today; the bench/ effectiveness-benchmark harness adds the Python surface. Python tooling (ruff/black/mypy) to be introduced with the harness. External tools: codex enabled, gemini disabled per user."
+}

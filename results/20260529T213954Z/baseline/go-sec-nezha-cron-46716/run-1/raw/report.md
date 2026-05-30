@@ -1,0 +1,9 @@
+## Confirmed but not fixed
+- BUG-001 · high · logic · model/rule.go:82 · `net_all_speed` computes `NetOutSpeed + NetOutSpeed`, double-counting outbound and ignoring `NetInSpeed`, so combined-speed alert rules evaluate the wrong value
+- BUG-002 · high · concurrency · service/singleton/server.go:67 · `ServerClass.Delete` dereferences `c.list[id].UUID` with no existence check and uses a non-deferred `listMu.Lock`; an unknown/duplicate ID (CheckPermission ignores unknown IDs) panics and leaves the mutex permanently locked, deadlocking all server ops
+- BUG-003 · medium · validation · service/rpc/nezha.go:220 · IOStream magic-number guard chains `!=` checks with `&&` (and uses `==` on the last byte), so the condition is essentially never true and invalid stream IDs bypass validation
+- BUG-004 · medium · authorization · cmd/dashboard/controller/service.go:80 · `getServiceHistory` omits the `HideForGuest` gate enforced by sibling handlers (`listServerServices`, `getServerMetrics`), leaking hidden servers' monitoring history to guests
+- BUG-005 · medium · logic · service/rpc/io_stream.go:121 · `select` uses `time.After(timeout)` recreated every 500ms loop iteration while the pre-created `timeoutTimer` is never read, so the connection-establishment timeout never fires under repeated partial events (and leaks timers)
+- BUG-006 · low · race · service/rpc/io_stream.go:145 · both `io.CopyBuffer` goroutines write the shared `err` variable without synchronization while `StartStream` reads it at line 164, a data race
+- BUG-007 · low · logging · service/singleton/server.go:56 · `log.Printf` argument order swapped (`%d` receives `err`, `%v` receives `s.ID`), producing garbled DDNS error logs
+- BUG-008 · low · logging · service/rpc/nezha.go:279 · `log.Printf` argument order swapped (`%d` receives `err`, `%v` receives `server.ID`)

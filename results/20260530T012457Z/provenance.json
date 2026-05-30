@@ -1,0 +1,14 @@
+{
+  "runner_model_id": "claude-opus-4-8",
+  "runner_cutoff_date": "2026-01-31",
+  "judge_model_id": "gpt-4o-judge",
+  "judge_prompt_hash": "4b2d88c37101b6c53fb14dec3ef7d7e2d2f496e661a73c8c1584c628de4f9ed0",
+  "bugsweep_commit": "a997a43",
+  "case_verified_shas": {
+    "go-sec-nezha-cron-46716": "d06d539d34c143d842b91e2a64326e8c8f9bc405"
+  },
+  "container_image_digest": "(unknown)",
+  "egress_proxy_image": "(unknown)",
+  "line_window": 10,
+  "k": 1
+}

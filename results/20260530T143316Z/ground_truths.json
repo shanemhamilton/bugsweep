@@ -1,0 +1,275 @@
+{
+  "go-sec-nezha-cron-46716": {
+    "hunks": [
+      {
+        "file": "service/singleton/crontask.go",
+        "start": 110,
+        "end": 120
+      },
+      {
+        "file": "service/singleton/crontask.go",
+        "start": 126,
+        "end": 135
+      },
+      {
+        "file": "service/singleton/crontask.go",
+        "start": 145,
+        "end": 153
+      },
+      {
+        "file": "service/singleton/crontask.go",
+        "start": 165,
+        "end": 173
+      },
+      {
+        "file": "service/singleton/crontask.go",
+        "start": 189,
+        "end": 207
+      },
+      {
+        "file": "service/singleton/servicesentinel.go",
+        "start": 744,
+        "end": 753
+      },
+      {
+        "file": "service/singleton/alertsentinel.go",
+        "start": 167,
+        "end": 173
+      },
+      {
+        "file": "service/singleton/alertsentinel.go",
+        "start": 177,
+        "end": 183
+      }
+    ],
+    "files": [
+      "service/singleton/crontask.go",
+      "service/singleton/servicesentinel.go",
+      "service/singleton/alertsentinel.go"
+    ],
+    "description": "SendTriggerTasks() in crontask.go fans out cron task triggers to servers without checking that the task or target server belongs to the triggering user. The callers in servicesentinel.go (notifyCheck) and alertsentinel.go (checkStatus) invoke triggers driven by reporter/alert state, so a low-privilege user could cause cron tasks owned by other users to execute against servers they do not own (missing authorization).",
+    "fix_summary": "The fix adds an owner parameter to SendTriggerTasks and introduces cronCanBeTriggeredByOwner(), cronCanSendToServer(), and userIsAdmin() ownership/admin checks in crontask.go so a task only runs when the cron's UserID matches the trigger owner or target server owner (or the user is admin). servicesentinel.go and alertsentinel.go are updated to pass the originating UserID through. A new security_regression_test.go was added by the fix commit."
+  },
+  "go-sec-nezha-ssrf": {
+    "hunks": [
+      {
+        "file": "model/notification.go",
+        "start": 29,
+        "end": 63
+      },
+      {
+        "file": "model/notification.go",
+        "start": 144,
+        "end": 151
+      },
+      {
+        "file": "model/notification.go",
+        "start": 157,
+        "end": 169
+      },
+      {
+        "file": "model/notification.go",
+        "start": 183,
+        "end": 297
+      }
+    ],
+    "files": [
+      "model/notification.go"
+    ],
+    "description": "NotificationServerBundle.Send() in model/notification.go issues an outbound HTTP request to an attacker-controlled notification URL with no validation of the resolved target address. A RoleMember can configure a notification via POST /api/v1/notification pointing at internal/loopback/link-local addresses, and the response body is reflected back, yielding server-side request forgery (SSRF) against the dashboard host's internal network.",
+    "fix_summary": "The fix adds a blocked-CIDR allow-list (private, loopback, link-local, and reserved ranges for IPv4 and IPv6) and builds the HTTP client with newNotificationHTTPClient(), which validates that the request URL's resolved IP is not in a blocked range before dialing (rejecting with errNotificationURLNotAllowed). A new model/notification_test.go was added by the fix commit."
+  },
+  "js-sec-js-cookie-46625": {
+    "hunks": [
+      {
+        "file": "src/assign.mjs",
+        "start": 2,
+        "end": 8
+      }
+    ],
+    "files": [
+      "src/assign.mjs"
+    ],
+    "description": "The assign() helper in src/assign.mjs copies every enumerable key from source objects onto the target with a `for (var key in source)` loop that does not exclude `__proto__`. Because cookie attributes are assembled through this helper, an attacker who controls attribute input can set `__proto__`, polluting the target object's prototype and injecting/overwriting cookie attributes (prototype pollution leading to cookie-attribute injection).",
+    "fix_summary": "The fix adds an explicit `if (key === '__proto__') continue` guard inside the copy loop in src/assign.mjs so the dangerous `__proto__` key is skipped during attribute assembly. test/tests.js was updated by the fix commit."
+  },
+  "py-data-wger-barcode": {
+    "hunks": [
+      {
+        "file": "wger/nutrition/api/filtersets.py",
+        "start": 61,
+        "end": 74
+      }
+    ],
+    "files": [
+      "wger/nutrition/api/filtersets.py"
+    ],
+    "description": "search_barcode() in filtersets.py filters the queryset by barcode and, when no local match exists, calls Ingredient.fetch_ingredient_from_off() to pull the ingredient from OpenFoodFacts. The newly fetched ingredient is discarded: the function returns the original (still-empty) queryset rather than a queryset containing the just-fetched row, so a successful remote fetch yields an empty barcode-search result.",
+    "fix_summary": "The fix captures the fetched ingredient (`ingredient = Ingredient.fetch_ingredient_from_off(value)`) and, when non-None, rebuilds the result queryset filtered to that ingredient's pk, returning `result` instead of the stale queryset. It also switches the existence check from `.count() == 0` to `.exists()`. Test file wger/nutrition/tests/test_search_api.py was updated by the fix commit (PR #2355)."
+  },
+  "py-logic-wger-language": {
+    "hunks": [
+      {
+        "file": "wger/nutrition/api/filtersets.py",
+        "start": 23,
+        "end": 29
+      },
+      {
+        "file": "wger/nutrition/api/filtersets.py",
+        "start": 99,
+        "end": 110
+      }
+    ],
+    "files": [
+      "wger/nutrition/api/filtersets.py"
+    ],
+    "description": "search_languagecode() in filtersets.py maps each comma-separated language code through load_language(). load_language() defaults unknown codes to English, so an unrecognized language code silently resolves to English rather than being ignored as the docstring promises ('Unknown codes are ignored'). The filter then matches English ingredients for a bogus code instead of returning no language constraint.",
+    "fix_summary": "The fix calls load_language(code, default_to_english=False) inside a try/except that swallows Language.DoesNotExist, so unknown codes are dropped instead of defaulting to English; only resolvable languages are appended to the filter list. It adds the `from wger.core.models import Language` import needed for the exception. Test file wger/nutrition/tests/test_search_api.py was updated by the fix commit (PR #2356)."
+  },
+  "py-sec-flask-security-46715": {
+    "hunks": [
+      {
+        "file": "flask_security/oauth_glue.py",
+        "start": 105,
+        "end": 118
+      },
+      {
+        "file": "flask_security/oauth_glue.py",
+        "start": 208,
+        "end": 214
+      }
+    ],
+    "files": [
+      "flask_security/oauth_glue.py"
+    ],
+    "description": "The OAuth account-verification flow in oauth_glue.py trusts the identity attribute returned by the OAuth provider without confirming it belongs to the currently logged-in user. oauth_verify_response() set the freshness/verification timestamp for any user resolved from the OAuth response, so an attacker who can complete an OAuth flow with a different provider account could 'verify' the victim's session. The identity field was also not constrained to configured IDENTITY_ATTRIBUTES nor passed through the attribute mapper.",
+    "fix_summary": "The fix gates the verification branch on `user and user.email == current_user.email` so the OAuth identity must match the logged-in user, and validates the returned field against get_identity_attribute() (raising OAuthError for unknown attributes) before running it through the attribute mapper. Test file tests/test_oauthglue.py and CHANGES.rst were also updated by the fix commit."
+  },
+  "py-sec-sqlfluff-46374": {
+    "hunks": [
+      {
+        "file": "src/sqlfluff/core/parser/context.py",
+        "start": 56,
+        "end": 71
+      },
+      {
+        "file": "src/sqlfluff/core/parser/context.py",
+        "start": 76,
+        "end": 83
+      },
+      {
+        "file": "src/sqlfluff/core/parser/context.py",
+        "start": 134,
+        "end": 167
+      },
+      {
+        "file": "src/sqlfluff/core/parser/parser.py",
+        "start": 44,
+        "end": 50
+      },
+      {
+        "file": "src/sqlfluff/core/config/validate.py",
+        "start": 151,
+        "end": 194
+      },
+      {
+        "file": "src/sqlfluff/core/config/validate.py",
+        "start": 210,
+        "end": 214
+      },
+      {
+        "file": "src/sqlfluff/core/default_config.cfg",
+        "start": 3,
+        "end": 10
+      }
+    ],
+    "files": [
+      "src/sqlfluff/core/parser/context.py",
+      "src/sqlfluff/core/parser/parser.py",
+      "src/sqlfluff/core/config/validate.py",
+      "src/sqlfluff/core/default_config.cfg"
+    ],
+    "description": "The SQLFluff parser has no bound on the number of parse nodes it will produce, so a maliciously crafted query can drive the parser into uncontrolled resource consumption (CPU/memory exhaustion). ParseContext (context.py) tracked no node count, parse() (parser.py) imposed no limit, and there was no max_parse_nodes configuration or validation.",
+    "fix_summary": "The fix introduces a max_parse_nodes parser limit: ParseContext gains node counting/limit tracking in context.py, parse() in parser.py enforces it, default_config.cfg ships a default limit, and validate.py adds _validate_max_parse_depth/nodes config validation. The change is mirrored in the Rust parser (sqlfluffrs/*.rs / .pyi / rust_parser.py) and accompanied by tests (max_parse_nodes_test.py, validate_test.py, rust_parser_test.py, dialects_test.py), which the fix commit also touched."
+  },
+  "ts-sec-fedify-42462": {
+    "hunks": [
+      {
+        "file": "packages/fedify/src/sig/ld.ts",
+        "start": 8,
+        "end": 622
+      },
+      {
+        "file": "packages/fedify/src/sig/ld.ts",
+        "start": 975,
+        "end": 1015
+      },
+      {
+        "file": "packages/fedify/src/sig/ld.ts",
+        "start": 1050,
+        "end": 1056
+      },
+      {
+        "file": "packages/fedify/src/federation/inbox.ts",
+        "start": 85,
+        "end": 118
+      },
+      {
+        "file": "packages/fedify/src/federation/inbox.ts",
+        "start": 122,
+        "end": 138
+      },
+      {
+        "file": "packages/fedify/src/federation/inbox.ts",
+        "start": 158,
+        "end": 171
+      },
+      {
+        "file": "packages/fedify/src/federation/inbox.ts",
+        "start": 265,
+        "end": 276
+      },
+      {
+        "file": "packages/fedify/src/federation/inbox.ts",
+        "start": 317,
+        "end": 330
+      }
+    ],
+    "files": [
+      "packages/fedify/src/sig/ld.ts",
+      "packages/fedify/src/federation/inbox.ts",
+      "packages/fedify/src/federation/context.ts",
+      "packages/fedify/src/federation/handler.ts",
+      "packages/fedify/src/federation/middleware.ts",
+      "packages/fedify/src/federation/queue.ts",
+      "packages/fedify/src/federation/temporal.ts"
+    ],
+    "description": "Fedify's Linked Data Signature verification (verifyJsonLd in sig/ld.ts) does not normalize a signed JSON-LD payload against a trusted local context before interpreting it, and inbox routing (inbox.ts) acts on the raw received representation. A crafted payload using JSON-LD named-graph restructuring keywords (@graph, @included, @reverse) can present one document to the signature check and a different interpreted graph to the application, bypassing the Linked Data Signature (improper verification of cryptographic signature).",
+    "fix_summary": "The fix normalizes signed JSON-LD payloads against a fixed localContext before interpretation and rejects unsupported JSON-LD keywords (@graph, @included, @reverse) via UnsafeJsonLdError in sig/ld.ts; inbox.ts is updated to route on the normalized/verified activity while preserving the original body for forwarding. context.ts, handler.ts, middleware.ts, queue.ts, and temporal.ts were updated to thread the normalized representation. Test files (handler.test.ts, middleware.test.ts, temporal.test.ts, ld.test.ts) and CHANGES.md were also touched by the fix commit."
+  },
+  "ts-sec-samlify-46490": {
+    "hunks": [
+      {
+        "file": "src/entity-idp.ts",
+        "start": 105,
+        "end": 118
+      },
+      {
+        "file": "src/libsaml.ts",
+        "start": 389,
+        "end": 403
+      },
+      {
+        "file": "src/libsaml.ts",
+        "start": 414,
+        "end": 421
+      }
+    ],
+    "files": [
+      "src/entity-idp.ts",
+      "src/libsaml.ts"
+    ],
+    "description": "The SAML login-response builder injects attribute values into the XML template without escaping element text. escapeTag() in libsaml.ts XML-escapes attribute values (quoted positions) but returns element-text replacements verbatim, and IdentityProvider.createLoginResponse() in entity-idp.ts builds the AttributeStatement through replaceTagsByValue() relying on that replacer. An attacker who controls an attribute value can inject XML elements into a signed SAML assertion (XML injection / privilege escalation via crafted AttributeValue).",
+    "fix_summary": "The fix makes escapeTag() always XML-escape the replacement text in both attribute and element-text contexts (returning xmlEscape(text) in the unquoted branch), and entity-idp.ts stops routing the attribute statement through replaceTagsByValue(), instead substituting the already-built attributeStatement via a single context.replace('{AttributeStatement}', attributeStatement). Test files test/attribute-injection.ts and test/units.ts were added/updated by the fix commit."
+  }
+}

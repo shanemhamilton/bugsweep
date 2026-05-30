@@ -1,0 +1,27 @@
+# Pre-push / pre-commit quality checks for bugsweep.
+# Setup:  pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push
+# Pin current versions with:  pre-commit autoupdate
+repos:
+  # Bash: lint the skill's scripts/ (applies today)
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+
+  # Python: lint + format the bench/ harness (applies once Python lands)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Run the test suite before push (not on every commit)
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (pre-push)
+        entry: pytest --cov --cov-fail-under=80
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

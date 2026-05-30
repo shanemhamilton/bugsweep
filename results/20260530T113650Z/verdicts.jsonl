@@ -1,0 +1,2 @@
+{"case_id":"go-sec-nezha-ssrf","run":1,"arm":"bugsweep","verdict":"DETECTED","post_cutoff":true}
+{"case_id":"go-sec-nezha-ssrf","run":1,"arm":"baseline","verdict":"NOT_DETECTED","post_cutoff":true}

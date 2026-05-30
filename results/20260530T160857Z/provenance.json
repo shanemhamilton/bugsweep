@@ -1,0 +1,22 @@
+{
+  "runner_model_id": "claude-sonnet-4-6",
+  "runner_cutoff_date": "2026-01-31",
+  "judge_model_id": "gpt-5.3-codex",
+  "judge_prompt_hash": "4b2d88c37101b6c53fb14dec3ef7d7e2d2f496e661a73c8c1584c628de4f9ed0",
+  "bugsweep_commit": "ce037bf",
+  "case_verified_shas": {
+    "go-sec-nezha-cron-46716": "d06d539d34c143d842b91e2a64326e8c8f9bc405",
+    "go-sec-nezha-ssrf": "85b0dd2992733037b019442caffc6c049ba937dd",
+    "js-sec-js-cookie-46625": "f6f157f430d707d2ffd0c9c9138227a6cea564e5",
+    "py-data-wger-barcode": "a6cddb94d494405fbfc4da158b6ae710cd83e207",
+    "py-logic-wger-language": "a6cddb94d494405fbfc4da158b6ae710cd83e207",
+    "py-sec-flask-security-46715": "18808e1e642c4466f8daa46a68d4e1f77a6d1713",
+    "py-sec-sqlfluff-46374": "4649341a8d651ccc73b0d7e71e57e987d246f03c",
+    "ts-sec-fedify-42462": "aab002d2fe091e6c38eb4f319e9a766392c40a21",
+    "ts-sec-samlify-46490": "0235cab01f0a1602ffac89ce28f4e253aace2ff5"
+  },
+  "container_image_digest": "sha256:f73210f6d5c446324abdc1bc3ec8b0947fd17fa71c49a8337910189cba586152",
+  "egress_proxy_image": "bugsweep-bench-proxy:latest@sha256:84057e26c47f048e7c2fc1c23635cdb00e1de9836c2de3ae95e9c4a7685f2bf4",
+  "line_window": 10,
+  "k": 1
+}

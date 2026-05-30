@@ -1,0 +1,14 @@
+I've verified each finding by reading the actual code paths. Here are the confirmed runtime bugs.
+
+## Confirmed but not fixed
+- BUG-001 · high · concurrency · service/singleton/alertsentinel.go:156 · checkStatus mutates AlertsCycleTransferStatsStore inner maps via Snapshot while holding only RLock, and showService reads them under RLock too, so the two run concurrently → "concurrent map read and map write" process crash
+- BUG-002 · high · error-handling · model/rule.go:70 · gpu_max does slices.Max(server.State.GPU) with no empty-slice guard; an agent reporting no GPU panics the recover-less checkStatus ticker goroutine and crashes the dashboard
+- BUG-003 · high · error-handling · model/rule.go:136 · temperature_max calls slices.Max(temp) when Temperatures!=nil but every reading is 0, leaving temp empty → panic crashes the checkStatus ticker
+- BUG-004 · medium · logic · model/rule.go:82 · net_all_speed computes NetOutSpeed + NetOutSpeed, double-counting net-out and dropping net-in, so the alert metric is always wrong
+- BUG-005 · medium · logic · service/rpc/nezha.go:220 · IOStream magic-number guard ANDs the byte tests and ends with id.Data[3] == 0x05 instead of != 0x05, so the check is almost never true and malformed stream IDs bypass validation
+- BUG-006 · medium · logic · service/singleton/servicesentinel.go:710 · delayCheck swaps mute labels — the Delay>MaxLatency branch uses minMuteLabel and Delay<MinLatency uses maxMuteLabel — so latency notifications mute/unmute the wrong cache keys
+- BUG-007 · medium · error-handling · service/rpc/nezha.go:47 · RequestTask discards the ok from ServerShared.Get(clientID) then dereferences server.TaskStream, nil-panicking if the server was deleted between Auth.Check and Get (ReportGeoIP guards this, RequestTask does not)
+- BUG-008 · medium · logic · pkg/tsdb/query.go:198 · daily bucketing dayIndex = (days-1) - int(today.Sub(ts).Hours())/24 floors hour-diffs from midnight, so a full calendar day lands in the wrong bucket (yesterday→today's index), shifting the 30-day Up/Down/Delay history
+- BUG-009 · low · logic · cmd/dashboard/controller/oauth2.go:159 · .Limit(1).Find never returns gorm.ErrRecordNotFound, so the Create branch is dead and an openId already bound to another user is loaded then Save-reassigned to the current user
+- BUG-010 · low · error-handling · service/rpc/nezha.go:279 · log.Printf("...server %d: %v", err, server.ID) passes the arguments in swapped order, logging the error where the ID is expected
+- BUG-011 · low · data-integrity · model/rule.go:142 · cycle rule seconds = max(1800*((u.Max-src)/u.Max),180) divides by u.Max while validateRule never enforces Max!=0, so a Max==0 cycle rule yields NaN/Inf and a garbage NextTransferAt

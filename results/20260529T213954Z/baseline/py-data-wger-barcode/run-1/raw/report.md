@@ -1,0 +1,17 @@
+## Confirmed but not fixed
+- BUG-001 · high · security/logic · wger/core/views/weight_units.py:105 · guard `self.kwargs['pk'] == '1'` compares int pk (URL is `<int:pk>`) to a string, always False, so reserved unit ID 1 can be deleted
+- BUG-002 · high · calculation · wger/core/models/profile.py:488 · imperial BMI uses `AbstractHeight(self.height,'inches').inches` (height left in inches) feeding a cm-based formula; should be `.cm`, yielding grossly wrong BMI
+- BUG-003 · high · data-integrity · wger/manager/validators.py:31 · `NullMinValueValidator.compare` returns True for `None`, and BaseValidator treats True as invalid, so NULL is rejected — inverted; should return False
+- BUG-004 · high · error-handling · wger/nutrition/models/plan.py:214 · `get_nutritional_values()['total']` is a NutritionalValues dataclass; subscripting `['energy']` raises TypeError so `get_calories_approximation` always crashes
+- BUG-005 · medium · api-contract · wger/nutrition/api/views.py:354 · returns raw NutritionalValues dataclass to `Response` (sibling code uses `.to_dict`); not JSON serializable → 500
+- BUG-006 · medium · api-contract · wger/nutrition/api/views.py:388 · same raw-dataclass `Response` defect in `LogItemViewSet.nutritional_values` → 500
+- BUG-007 · medium · permission · wger/gym/views/admin_config.py:36 · `ConfigUpdateView` omits `PermissionRequiredMixin` (commented out of `WgerFormMixin`), so `permission_required='gym.change_gymadminconfig'` is never enforced
+- BUG-008 · medium · logic · wger/gym/helpers.py:45 · session-folding block is commented out, so `get_user_last_activity` ignores WorkoutSession; users with only sessions are wrongly reported inactive
+- BUG-009 · medium · logic · wger/manager/models/log.py:271 · `repetitions_unit == 2` compares a FK object to int (always False) and assigns non-field `self.reps`; "Until Failure → 1 rep" normalization never applies
+- BUG-010 · low · logic · wger/manager/management/commands/email-reminders.py:67 · `counter` is never incremented after `send_email`, so the "Sent N email reminders" summary at line 71 never prints
+- BUG-011 · low · logic · wger/utils/generic_views.py:317 · `super().dispatch(request, args, kwargs)` passes the args tuple/kwargs dict as positional values instead of `*args, **kwargs`, misrouting URL kwargs
+- BUG-012 · low · error-handling · wger/utils/images.py:50 · `getattr(img,'is_animated')` lacks a default (sibling uses `False`); webp/avif lacking the attribute raise AttributeError during upload validation
+- BUG-013 · low · error-handling · wger/exercises/views/history.py:307 · `object_class.history.get(...)` on an arbitrary `content_type_id` raises AttributeError for non-historized models and reverts any tracked model, not just exercises
+- BUG-014 · low · data-integrity · wger/trophies/services/statistics.py:150 · `workout_log.repetitions or Decimal('1')` treats 0 reps as falsy and substitutes 1, inflating total_weight_lifted and diverging from the full recalc
+- BUG-015 · low · error-handling · wger/utils/viewsets.py:40 · `entry[0].objects.get(pk=pk)` on client-supplied owner pk raises uncaught DoesNotExist → HTTP 500 instead of 400/404 (also line 56)
+- BUG-016 · low · error-handling · wger/core/models/profile.py:55 · `birthdate_validator` uses `birthdate.replace(year=...)`; a Feb-29 birthdate on a non-leap target year raises an uncaught ValueError

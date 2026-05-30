@@ -1,0 +1,16 @@
+{
+  "js-sec-js-cookie-46625": {
+    "hunks": [
+      {
+        "file": "src/assign.mjs",
+        "start": 2,
+        "end": 8
+      }
+    ],
+    "files": [
+      "src/assign.mjs"
+    ],
+    "description": "The assign() helper in src/assign.mjs copies every enumerable key from source objects onto the target with a `for (var key in source)` loop that does not exclude `__proto__`. Because cookie attributes are assembled through this helper, an attacker who controls attribute input can set `__proto__`, polluting the target object's prototype and injecting/overwriting cookie attributes (prototype pollution leading to cookie-attribute injection).",
+    "fix_summary": "The fix adds an explicit `if (key === '__proto__') continue` guard inside the copy loop in src/assign.mjs so the dangerous `__proto__` key is skipped during attribute assembly. test/tests.js was updated by the fix commit."
+  }
+}

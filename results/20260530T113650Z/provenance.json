@@ -1,0 +1,14 @@
+{
+  "runner_model_id": "claude-opus-4-8",
+  "runner_cutoff_date": "2026-01-31",
+  "judge_model_id": "gpt-5.3-codex",
+  "judge_prompt_hash": "4b2d88c37101b6c53fb14dec3ef7d7e2d2f496e661a73c8c1584c628de4f9ed0",
+  "bugsweep_commit": "ce037bf",
+  "case_verified_shas": {
+    "go-sec-nezha-ssrf": "85b0dd2992733037b019442caffc6c049ba937dd"
+  },
+  "container_image_digest": "sha256:f73210f6d5c446324abdc1bc3ec8b0947fd17fa71c49a8337910189cba586152",
+  "egress_proxy_image": "bugsweep-bench-proxy:latest@sha256:84057e26c47f048e7c2fc1c23635cdb00e1de9836c2de3ae95e9c4a7685f2bf4",
+  "line_window": 10,
+  "k": 1
+}

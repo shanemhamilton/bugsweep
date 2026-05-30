@@ -1,0 +1,21 @@
+Re-scored 2026-05-29 after the multi-location parser fix (commit follows 0348e3f).
+
+WHY: This run executed with the af564b0 parser, which dropped multi-location H3
+headers. The captured report DID detect the ground-truth bug — BUG-4,
+`src/assign.mjs:4` + `src/api.mjs:24`, prototype pollution — but the parser
+extracted a garbage file path, so the file-overlap gate missed it and the run
+scored NOT_DETECTED (a parser false-negative, not a bugsweep miss).
+
+WHAT CHANGED: bench/scorer/parse_report.py now emits one Finding per cited
+location (order-independent). Re-scoring the UNCHANGED captured report
+(raw/report.md) with the fixed parser + the same codex judge backend the run
+used (gpt-5.3-codex, per provenance.json) yields DETECTED (BUG-4 gate+judge
+match, confidence 95; the 5 unrelated findings correctly rejected).
+
+ARTIFACTS:
+- verdicts.jsonl / leaderboard.md   — corrected (verdict DETECTED).
+- verdicts.jsonl.pre-fix / leaderboard.md.pre-fix — the original NOT_DETECTED
+  outputs, kept for audit.
+- raw/report.md                     — the original captured report, UNCHANGED.
+
+No claude re-run was performed; only the derived scoring was regenerated.

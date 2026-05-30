@@ -1,0 +1,2 @@
+{"case_id":"js-sec-js-cookie-46625","run":1,"arm":"bugsweep","verdict":"DETECTED","post_cutoff":true}
+{"case_id":"js-sec-js-cookie-46625","run":1,"arm":"baseline","verdict":"DETECTED","post_cutoff":true}

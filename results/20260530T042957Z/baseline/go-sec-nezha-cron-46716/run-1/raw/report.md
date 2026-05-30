@@ -1,0 +1,21 @@
+All major findings independently verified. The cron command-execution bypass, the AB-BA deadlock, the IOStream magic-number fail-open, the `net_all_speed` typo, the `slices.Max`/divide-by-zero panics, the notification reverse-map bug, the `ServerClass.Delete` nil-deref, and the `listNotificationGroup` IDOR are all confirmed against the source. (I dropped the `listServerGroup` candidate — it sits under `optionalAuth` as a deliberately guest-readable endpoint.)
+
+## Confirmed but not fixed
+- BUG-001 · critical · authz-bypass/command-exec · cmd/dashboard/controller/cron.go:53 · createCron: CheckPermission over an empty cf.Servers passes vacuously, so a non-admin sets Cover=CronCoverAll with empty Servers and CronTrigger fans TaskTypeCommand to every agent
+- BUG-002 · critical · authz-bypass/command-exec · cmd/dashboard/controller/cron.go:111 · updateCron has the same empty-Servers permission gap, letting a member edit a cron to run commands fleet-wide
+- BUG-003 · high · deadlock · service/singleton/user.go:119 · OnUserDelete takes UserLock then AlertsLock while checkStatus (alertsentinel.go:144) takes AlertsLock(R) then UserLock(R) — inverse ordering deadlocks the alert ticker and user deletion
+- BUG-004 · high · logic-error/fail-open · service/rpc/nezha.go:220 · IOStream magic-number guard uses && chain ending in `Data[3] == 0x05` instead of an || / != check, so it accepts nearly all forged stream IDs
+- BUG-005 · high · slice-panic · model/rule.go:70 · Rule.Snapshot "gpu_max" calls slices.Max(server.State.GPU) with no empty-slice guard; a server reporting no GPU panics
+- BUG-006 · high · divide-by-zero · model/alertrule.go:125 · AlertRule.Check computes fail*100/total with total=int(rule.Duration); a regular rule with Duration==0 panics on integer divide
+- BUG-007 · high · nil-pointer · model/rule.go:187 · GetTransferDurationStart/End dereference *u.CycleStart unconditionally; a cycle rule with nil CycleStart panics
+- BUG-008 · medium · logic-error · service/singleton/notification.go:136 · UpdateGroup does delete(c.groupToIDList[oldID], ng.ID) using a notification ID to index the group-keyed map; should be idToGroupList, so reverse-map entries leak
+- BUG-009 · medium · data-integrity · model/rule.go:82 · Rule.Snapshot "net_all_speed" computes NetOutSpeed+NetOutSpeed, ignoring inbound and double-counting outbound
+- BUG-010 · medium · slice-panic · model/rule.go:136 · Rule.Snapshot "temperature_max" calls slices.Max(temp) where temp is empty when all temperatures are filtered as zero
+- BUG-011 · medium · divide-by-zero · model/rule.go:217 · GetTransferDurationStart/End divide by interval=3600*CycleInterval; a cycle rule with CycleInterval==0 panics on integer divide
+- BUG-012 · medium · nil-pointer · service/singleton/server.go:67 · ServerClass.Delete reads c.list[id].UUID without an ok check; a duplicate/stale ID in a batch-delete request nil-derefs (sibling NATClass.Delete guards this)
+- BUG-013 · medium · IDOR · cmd/dashboard/controller/alertrule.go:60 · createAlertRule/updateAlertRule copy FailTriggerTasks/RecoverTriggerTasks cron IDs from the form unchecked, letting a member fire crons they don't own when the alert triggers
+- BUG-014 · medium · IDOR · cmd/dashboard/controller/service.go:428 · createService/updateService set FailTriggerTasks/RecoverTriggerTasks from form input unchecked; a member's service can trigger crons owned by others
+- BUG-015 · low · IDOR/info-disclosure · cmd/dashboard/controller/notification_group.go:24 · listNotificationGroup does DB.Find over all groups and is wired via commonHandler (no filter), so any member reads every user's notification groups
+- BUG-016 · low · nil-pointer · service/rpc/nezha.go:48 · RequestTask ignores the ok from ServerShared.Get then sets server.TaskStream, nil-dereferencing if the server was deleted between auth and lookup
+- BUG-017 · low · authz-bypass · cmd/dashboard/controller/service.go:543 · validateServers only checks permission on SkipServers keys; Cover=ServiceCoverAll with empty SkipServers dispatches a member's probe to every agent
+- BUG-018 · low · nil-pointer · pkg/ddns/ddns.go:58 · updateDomain dereferences *EnableIPv4/*EnableIPv6 with no nil check; a profile row with NULL flags panics during the DDNS cron
