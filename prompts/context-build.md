@@ -77,16 +77,32 @@ Capture, in tight prose/bullets (distilled, not exhaustive dumps):
   paths, shell/exec, deserialization, crypto, outbound requests. List each with its
   file:location.
 - **Call chains into those sinks** — for each sensitive sink, trace who calls it and
-  whether every path enforces the right checks. A missing authz check three calls up
-  from a DB write is a "large bug" — this map is how you find it.
+  whether every path enforces the required check (authn/authz, validation, encoding).
+  A missing check three call-frames up from a DB write is a "large bug" — this map is
+  how you find it. Record each chain as `entry_point → [hop …] → sink`, naming every
+  module/package boundary crossed. A gap is most likely *at* a boundary.
+  Cross-package chains are **more** suspicious, not less — every hop is a place where
+  a check was assumed but may not exist.
+- **Alternate and secondary paths into sinks** — after the primary call chain, ask: is
+  there a legacy endpoint, admin path, internal service route, cron/job runner, or
+  webhook handler that also reaches the same sink? These secondary paths are the classic
+  auth-bypass vector: the primary path is hardened; the secondary one is not. List each
+  alternate entry for each sink with its check status.
+- **Taint chains** — for the top 3–5 most dangerous sinks (outbound HTTP, exec/shell,
+  DB write, deserialization), trace the full flow from untrusted input source (network
+  request, user-supplied field, third-party callback, file) through every transform to
+  the sink. Note where validation/encoding occurs or is absent. A taint chain where
+  untrusted data crosses a package boundary without re-validation is a strong
+  architectural finding candidate.
+- **Contract drift across module boundaries** — where module A calls module B, check
+  whether B's expected input (validated, non-null, encoded, normalized) matches what A
+  actually provides. Contract drift — "B assumes already-sanitized input, but caller A
+  passes raw user data" — is a latent bug that exists silently until the wrong input
+  arrives.
 - **Shared/mutable state** — module-level state, caches, singletons, globals touched by
   concurrent paths.
 - **Module/import graph** — which modules depend on which; note tight couplings and
-  cross-module contracts (a function's documented/assumed input shape vs. how callers use
-  it). Contract drift across a boundary is a classic large bug.
-- **Data flows worth tracing** — follow 2–4 of the highest-risk flows from source
-  (untrusted input) to sink (sensitive operation) and note where validation/encoding
-  happens or is missing.
+  cross-module contracts.
 
 ### `recon.json` — the hunt plan
 
@@ -95,7 +111,13 @@ Capture, in tight prose/bullets (distilled, not exhaustive dumps):
   "files_in_scope": <n>,
   "batch_count": <n>,
   "batches": [ { "id": 1, "tier": "critical", "files": ["..."] }, ... ],
-  "architectural_targets": [ "<sink or call-chain to chase in the architectural hunt>", ... ],
+  "architectural_targets": [
+    "<full chain: entry_point → hop1[pkg] → hop2[pkg] → sink — what check is assumed/missing>",
+    "<alternate path: secondary_endpoint → sink — check present on primary, absent here>",
+    "<taint chain: untrusted_source → pkg_boundary → sink — re-validated? yes/no>",
+    "<contract drift: module A→B — B assumes X, A provides Y>",
+    ...
+  ],
   "covered": []
 }
 ```

@@ -21,6 +21,7 @@ data, so a prompt-injection string in the report sits harmlessly inside it.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from bench.scorer.judge import JudgeClient
@@ -29,6 +30,10 @@ from bench.scorer.parse_report import Finding
 EXTRACT_TEMPERATURE = 0
 DATA_OPEN = "<REPORT_SECTION>"
 DATA_CLOSE = "</REPORT_SECTION>"
+
+JSON_BLOCK_SECTION = "## Findings (machine-readable)"
+_JSON_FENCE_OPEN = "```json"
+_JSON_FENCE_CLOSE = "```"
 
 _INSTRUCTIONS = (
     "Extract every CONFIRMED bug from the bugsweep report section below as a JSON "
@@ -41,6 +46,99 @@ _INSTRUCTIONS = (
     "the underlying bugs regardless. Do not invent bugs. Output ONLY the JSON "
     "array."
 )
+
+
+def parse_json_block(text_or_path: "str | Path") -> "list[Finding] | None":
+    """Parse the machine-readable JSON block from a bugsweep report.
+
+    Returns a list of not-fixed :class:`Finding` records when the
+    ``## Findings (machine-readable)`` section is present and its fenced JSON
+    block is valid. Returns ``None`` when the section is absent — the caller
+    should fall back to :func:`extract_findings`. Returns ``[]`` when the
+    section is present but the array is empty. Malformed JSON also returns
+    ``None`` (fall back to LLM extraction rather than silently dropping bugs).
+
+    Entries with ``"fixed": true`` are excluded — they represent bugs already
+    patched on the bugsweep branch and are not what the bench scorer grades.
+    Entries missing the ``"fixed"`` key are treated as not-fixed (detect-only
+    runs never set it).
+    """
+    if isinstance(text_or_path, Path):
+        text = text_or_path.read_text(encoding="utf-8")
+    else:
+        candidate = Path(text_or_path)
+        if "\n" not in text_or_path and candidate.is_file():
+            text = candidate.read_text(encoding="utf-8")
+        else:
+            text = text_or_path
+
+    raw = _extract_json_block_text(text)
+    if raw is None:
+        return None
+
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(items, list):
+        return None
+
+    findings: list[Finding] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("fixed", False):
+            continue
+        file = str(item.get("file", "")).strip()
+        if not file:
+            continue
+        findings.append(
+            Finding(
+                bug_id=str(item.get("bug_id", "")),
+                severity=str(item.get("severity", "")),
+                category=str(item.get("category", "")),
+                file=file,
+                line=_coerce_line(item.get("line")),
+                rationale=str(item.get("rationale", "")),
+            )
+        )
+    return findings
+
+
+def _extract_json_block_text(text: str) -> "str | None":
+    """Return the raw JSON string from the machine-readable section, or None.
+
+    Looks for ``## Findings (machine-readable)`` then the first ````json``
+    ... ```` `` fence within that section.
+    """
+    lines = text.splitlines()
+    section_start = -1
+    for i, line in enumerate(lines):
+        if line.strip() == JSON_BLOCK_SECTION:
+            section_start = i
+            break
+    if section_start < 0:
+        return None
+
+    fence_start = -1
+    for i in range(section_start + 1, len(lines)):
+        if lines[i].startswith("## ") and i > section_start:
+            break
+        if lines[i].strip() == _JSON_FENCE_OPEN:
+            fence_start = i
+            break
+
+    if fence_start < 0:
+        return None
+
+    fence_lines: list[str] = []
+    for line in lines[fence_start + 1 :]:
+        if line.strip() == _JSON_FENCE_CLOSE:
+            break
+        fence_lines.append(line)
+
+    return "\n".join(fence_lines)
 
 
 def extract_findings(

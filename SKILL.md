@@ -104,6 +104,15 @@ boundaries, sensitive sinks, call chains, import graph, key data flows, and
 what lets the hunt find **large** cross-file bugs, and it is small enough to survive a
 context reset. Append a `context_built` event.
 
+**Large-repo budget flag.** After writing `recon.json`, compare `batch_count` against
+`floor(max_runtime_minutes / observed_minutes_per_batch)`. On the very first run
+`observed_minutes_per_batch` is unknown — use 10 as a conservative prior; update after
+iteration 1. If `batch_count > budget_batches`, set `"large_repo_mode": true` and
+`"budget_batches": <n>` in `recon.json` and append a `large_repo_mode_activated` event
+(`{"event":"large_repo_mode_activated","batch_count":<n>,"budget_batches":<n>}`) to the
+ledger. This is a warning, not a stop — it tells the loop when partial coverage is expected
+so it can emit an informative report instead of silently running out of time.
+
 **Coverage-first scope (read `prior-coverage.json` first).** Preflight wrote
 `<RUN_DIR>/prior-coverage.json` from bugsweep's cross-run state (`.bugsweep/state/`). The
 whole repo is ALWAYS in scope — bugsweep finds latent bugs in old, unchanged code, it is
@@ -130,8 +139,11 @@ If it prints `STOP <reason>`, go to Step 5. Otherwise run one iteration:
    available) following `prompts/hunt.md` on the next uncovered batch. The hunter loads
    `repo-context.md` and `antipatterns.md` and runs BOTH the local lens (this batch) and
    the architectural lens (cross-file targets). On **iteration 1**, run a dedicated
-   whole-repo architectural hunt over all `architectural_targets` first — this is where the
-   large bugs surface. Hunters never fix anything.
+   architectural hunt over the top-N `architectural_targets` (cap N so the hunt fits
+   comfortably in one subagent context — typically 5–10 targets; if the list is longer,
+   pick the highest-risk ones and note the rest for later iterations). This bounded hunt is
+   what surfaces large cross-file bugs without stalling on huge repos. Hunters never fix
+   anything.
 2. **CHALLENGE (Skeptic)** — Dispatch a *separate* adversary following
    `prompts/challenge.md`. It actively tries to disprove each candidate, calibrated to
    punish dismissing real bugs twice as hard as missing a false-positive catch. Verdicts:
@@ -167,13 +179,23 @@ iterations with zero new confirmed bugs; or any cap hit. Non-`--autonomous` mode
 single pass over all batches and then stop.
 
 ### Step 5 — Finalize
+**Write `<RUN_DIR>/report.md` BEFORE calling `finalize.sh`.** This must happen regardless
+of why the loop stopped — cap hit, convergence, or early interrupt. A partial report is
+always better than no report; use the Report structure template below and include
+`— PARTIAL RUN (<stop_reason>)` in the Coverage line if not all batches were covered.
+
+If the run stalled before reaching this step (e.g. during context-build or the
+architectural hunt), `finalize.sh` will automatically emit a stub report from on-disk state
+(`recon.json` counts + ledger events) so the user always gets a coverage summary.
+
 ```bash
 bash scripts/finalize.sh "<RUN_DIR>"
 ```
 Restores the user's stashed work onto their original branch, preserves all fix commits on
-`bugsweep/<timestamp>`, and points to the report. It also persists this run's audit
-coverage + risk into `.bugsweep/state/` so the next run resumes the whole-repo frontier
-instead of starting blind. Present the summary and tell the user to review with
+`bugsweep/<timestamp>`, emits the stub report if `report.md` is still missing, and points
+to the report. It also persists this run's audit coverage + risk into `.bugsweep/state/`
+so the next run resumes the whole-repo frontier instead of starting blind. Present the
+summary and tell the user to review with
 `git diff <original-branch>..bugsweep/<timestamp>`.
 
 **Land-or-discard handoff (REQUIRED — the run is not "done" until the human chooses).** A
@@ -219,7 +241,7 @@ Write `<RUN_DIR>/report.md` and present a condensed version. ALWAYS use this tem
 ## Summary
 - Confirmed bugs: <n> (critical <n>, high <n>, medium <n>, low <n>); architectural: <n>
 - Fixed & verified: <n>   Quarantined (needs human): <n>
-- Coverage: <batches covered>/<total>; reviewed via Hunter->Skeptic->Referee
+- Coverage: <batches covered>/<total> batches [COMPLETE | PARTIAL — <stop reason>]; reviewed via Hunter→Skeptic→Referee
 
 ## Fixed
 <one line per fix: BUG-ID · severity · lens · file:line · what was wrong · commit sha>

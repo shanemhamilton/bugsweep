@@ -56,6 +56,33 @@ Examples:
   offline; turn on only when a web/search tool is available and you want current CVE-class
   awareness.
 
+## Large repos
+
+When a repo has more files than can be covered within `max_runtime_minutes`, bugsweep sets
+`large_repo_mode: true` in `recon.json` at the end of Step 2 and logs a
+`large_repo_mode_activated` event. This is a signal, not a failure — the loop continues but
+the report will be labelled `PARTIAL`.
+
+To tune for large repos:
+
+- **Increase `max_runtime_minutes`** to give the loop more wall-clock budget. A repo with
+  ~150 batches needs roughly 25 hours at 10 min/batch — overnight `--autonomous` runs are
+  the right mode.
+- **Use `--autonomous` with `session.checkpoint_every_iterations: 3`** so context resets
+  happen regularly. Every reset is free (all state is on disk); skipping them bloats context
+  until the model degrades.
+- **Raise `severity_floor` to `"medium"` or `"high"`** to spend adversarial review time only
+  on impactful findings. Low-severity findings on large repos fill the report but aren't
+  worth the runtime cost on a first pass.
+- **Use `exclude_globs`** to drop generated code, vendored deps, and migration files that
+  rarely contain runtime bugs. Reducing file count is the single biggest lever.
+- **Run iteratively across sessions.** Cross-run state in `.bugsweep/state/` means each run
+  picks up where the last left off — a large repo does not need to be fully covered in one
+  run to accumulate value.
+
+If a run stalls completely (no report written), `finalize.sh` will emit a stub from
+`recon.json` coverage counts and the ledger. Check `ledger.jsonl` to see where it stopped.
+
 ## Session continuity (new)
 
 - `session.checkpoint_every_iterations` — how often to refresh `SESSION.md` and recommend a

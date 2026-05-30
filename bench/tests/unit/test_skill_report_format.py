@@ -5,11 +5,16 @@ structured, ``·``-separated line. If the template ever loses that structure thi
 test fails in CI before the parser silently mis-reads a future report.
 """
 
+import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SKILL_MD = REPO_ROOT / "SKILL.md"
 SECTION_HEADER = "## Confirmed but not fixed (detect-only or below severity floor)"
+JSON_BLOCK_SECTION = "## Findings (machine-readable)"
+JSON_FENCE_OPEN = "```json"
+JSON_FENCE_CLOSE = "```"
+REQUIRED_JSON_KEYS = {"bug_id", "severity", "category", "file", "line", "fixed", "rationale"}
 
 # Tokens the structured line MUST contain (bare angle-bracket placeholders in the
 # template). file:line is checked as the joined token to pin the colon form.
@@ -59,3 +64,73 @@ def test_detect_only_section_has_no_unstructured_placeholder() -> None:
     """The old free-form placeholder must be gone so the parser has one shape."""
     window = _section_window(SKILL_MD.read_text(encoding="utf-8"), SECTION_HEADER)
     assert "<one line per item>" not in window
+
+
+def _find_json_block_in_skill_md(text: str) -> "str | None":
+    """Extract the fenced JSON from the machine-readable section in SKILL.md.
+
+    Returns the raw JSON string, or None if the section or fence is absent.
+    """
+    lines = text.splitlines()
+    section_start = next(
+        (i for i, line in enumerate(lines) if line.strip() == JSON_BLOCK_SECTION),
+        -1,
+    )
+    if section_start < 0:
+        return None
+    fence_start = next(
+        (
+            i
+            for i in range(section_start + 1, len(lines))
+            if lines[i].strip() == JSON_FENCE_OPEN
+        ),
+        -1,
+    )
+    if fence_start < 0:
+        return None
+    fence_lines: list[str] = []
+    for line in lines[fence_start + 1 :]:
+        if line.strip() == JSON_FENCE_CLOSE:
+            break
+        fence_lines.append(line)
+    return "\n".join(fence_lines)
+
+
+def test_skill_md_has_machine_readable_section() -> None:
+    text = SKILL_MD.read_text(encoding="utf-8")
+    assert JSON_BLOCK_SECTION in text, (
+        f"SKILL.md is missing the machine-readable section header: {JSON_BLOCK_SECTION!r}"
+    )
+
+
+def test_skill_md_machine_readable_section_has_json_fence() -> None:
+    text = SKILL_MD.read_text(encoding="utf-8")
+    raw = _find_json_block_in_skill_md(text)
+    assert raw is not None, (
+        f"SKILL.md's {JSON_BLOCK_SECTION!r} section has no {JSON_FENCE_OPEN!r} fence"
+    )
+
+
+def test_skill_md_json_example_is_valid_json() -> None:
+    text = SKILL_MD.read_text(encoding="utf-8")
+    raw = _find_json_block_in_skill_md(text)
+    assert raw is not None
+    try:
+        json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            f"SKILL.md machine-readable JSON example is not valid JSON: {exc}"
+        ) from exc
+
+
+def test_skill_md_json_example_has_required_keys() -> None:
+    text = SKILL_MD.read_text(encoding="utf-8")
+    raw = _find_json_block_in_skill_md(text)
+    assert raw is not None
+    items = json.loads(raw)
+    assert isinstance(items, list) and items, "JSON example must be a non-empty array"
+    example = items[0]
+    missing = REQUIRED_JSON_KEYS - set(example.keys())
+    assert not missing, (
+        f"SKILL.md JSON example is missing required keys: {sorted(missing)}"
+    )
