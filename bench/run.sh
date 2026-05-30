@@ -238,7 +238,7 @@ from bench.scorer.parse_report import parse_report, confirmed_section
 from bench.scorer.localize import gate
 from bench.scorer.score import score_case_run, DETECTED, NOT_DETECTED
 from bench.scorer.judge import judge_match, Judgement, OpenAIClient, CodexClient
-from bench.scorer.extract import extract_findings
+from bench.scorer.extract import extract_findings, parse_json_block
 
 report_path, case_path = sys.argv[1], sys.argv[2]
 with open(case_path, encoding="utf-8") as fh:
@@ -260,10 +260,12 @@ else:
         client = CodexClient()
     else:
         client = OpenAIClient(api_key=os.environ.get("OPENAI_API_KEY", ""))
-    # Format-robust path: the LLM extracts findings from the raw section, then
-    # each goes through the validated location-aware judge. The regex parser is
-    # too brittle for the skill report-format variance (bold/em-dash/batch/etc.).
-    findings = extract_findings(confirmed_section(report_path), client, judge_model)
+    # Fast path: if the report contains the machine-readable JSON block, parse
+    # it directly — zero LLM calls for extraction. Falls back to the LLM
+    # extraction path when the block is absent (old or non-conforming reports).
+    findings = parse_json_block(report_path)
+    if findings is None:
+        findings = extract_findings(confirmed_section(report_path), client, judge_model)
 
 pairs = []
 for finding in findings:

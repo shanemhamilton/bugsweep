@@ -34,14 +34,49 @@ resources), concurrency (races, missing await/lock, check-then-act), data integr
 (truncation, encoding, timezone, overflow, money precision).
 
 ### Architectural lens (whole-repo, using repo-context)
-This is how you catch the *large* bugs. Walk the `architectural_targets` and call chains
-from `repo-context.md` and ask:
-- Does every path into each sensitive sink enforce the required check (authn/authz,
-  validation, encoding)? Find the path that skips it.
-- Do callers honor the contract the callee assumes (input shape, nullability, units,
-  ordering)? Find the boundary where the assumption breaks.
-- Does untrusted input reach a sink without validation/encoding along the way (taint)?
-- Is shared/mutable state mutated from concurrent paths without coordination?
+This is how you catch the *large* bugs — the ones a per-file scanner is blind to. On
+iteration 1, treat this lens as the priority: run the dedicated whole-repo architectural
+hunt over all `architectural_targets` before batch scanning begins.
+
+Walk every `architectural_target` and call chain in `repo-context.md`. For each, you
+must name **every hop** in the chain — `entry_point → hop1[pkg] → hop2[pkg] → sink` —
+and identify where the gap is. An architectural finding with a vague "somewhere in the
+chain" is not a finding; an architectural finding that names the exact hop where the
+check is absent IS a finding.
+
+Cross-package chains are **more** suspicious, not less — each package boundary is a
+place where a check was assumed by the callee but may not exist in every caller. The
+further data travels from its origin without re-validation, the higher the risk.
+
+Ask these questions per target class:
+
+**SSRF / outbound-request chains:**
+- Which code paths lead to an outbound HTTP/TCP call with a user-controlled or
+  attacker-controlled URL/host?
+- Does every such path validate the resolved IP/hostname against a blocklist *before*
+  dialing? Trace it hop by hop — a check in the primary flow does not protect an
+  alternate flow.
+
+**Auth/authz bypass chains:**
+- Which endpoints or handlers reach a privileged operation (write, delete, admin action)?
+- Is every one of them — including legacy routes, internal routes, webhook handlers,
+  background job triggers, and batch endpoints — covered by the authz check?
+- Find the one that isn't.
+
+**Taint propagation chains:**
+- Follow untrusted input (HTTP param, JSON body, file content, third-party callback)
+  from its source through every transform to a sensitive sink.
+- At each package boundary: is the value re-validated, or is it assumed clean because
+  the previous layer "should have" validated it?
+- An assumption of prior validation that isn't enforced is the taint chain's gap.
+
+**Contract drift:**
+- Where module A calls module B, does B document/assume the input is already validated,
+  encoded, or constrained? Does every caller of B actually fulfill that assumption?
+- Find a caller that passes raw or weakly-typed data where B assumes strong guarantees.
+
+**General rule for all architectural findings:** if you can't name the specific hop
+where the check is missing, you don't have a finding — keep tracing.
 
 ## Evidence is mandatory
 

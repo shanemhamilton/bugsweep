@@ -256,6 +256,27 @@ Write `<RUN_DIR>/report.md` and present a condensed version. ALWAYS use this tem
 git diff <original-branch>..bugsweep/<timestamp>
 ```
 
+After the prose sections above, always append this machine-readable section so CI,
+dashboards, and the bench scorer can consume findings without a slow LLM extraction step.
+Include **all confirmed bugs** (fixed and not-fixed). Set `"fixed": true` for entries from
+the "Fixed" section; `"fixed": false` for all others. Emit the block even when the list is
+empty (`[]`). Omitting it forces a slower LLM-extraction fallback.
+
+## Findings (machine-readable)
+```json
+[
+  {
+    "bug_id": "BUG-1",
+    "severity": "high",
+    "category": "security",
+    "file": "src/auth.py",
+    "line": 42,
+    "fixed": false,
+    "rationale": "Unsanitized user input reaches SQL query without parameterization"
+  }
+]
+```
+
 ## References
 - `references/context-and-continuity.md` — how state persists and how to reset safely.
 - `references/antipatterns/` — the curated stack-specific catalogs (start at `index.md`).

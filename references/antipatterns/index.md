@@ -1,22 +1,28 @@
 # Anti-pattern library — index
 
 Curated, offline catalogs of high-impact, framework-specific bug patterns used to prime
-the Hunt phase. Always load `generic.md` plus the file(s) matching the detected stack.
+the Hunt phase. **Always load `generic.md` and `architectural.md`** plus the file(s)
+matching the detected stack.
 
 | If the repo uses… | Load |
 | --- | --- |
-| TypeScript | `typescript.md` + (`javascript-node.md` if Node/Express backend, `react.md` if React) + `generic.md` |
-| Node.js, Express, Fastify, Nest, plain JS backend | `javascript-node.md` + `generic.md` |
-| React, React Native, Next.js (client) | `react.md` + (`typescript.md` if TS) + `generic.md` |
-| Swift, SwiftUI, UIKit, iOS (any Swift) | `swift-ios.md` + `generic.md` |
-| Kotlin, Android, Kotlin coroutines | `kotlin.md` + `generic.md` |
-| Python, Django, Flask, FastAPI | `python.md` + `generic.md` |
-| Go | `go.md` + `generic.md` |
-| Anything else | `generic.md` (and infer from the closest match) |
+| TypeScript | `typescript.md` + (`javascript-node.md` if Node/Express backend, `react.md` if React) + `generic.md` + `architectural.md` |
+| Node.js, Express, Fastify, Nest, plain JS backend | `javascript-node.md` + `generic.md` + `architectural.md` |
+| React, React Native, Next.js (client) | `react.md` + (`typescript.md` if TS) + `generic.md` + `architectural.md` |
+| Swift, SwiftUI, UIKit, iOS (any Swift) | `swift-ios.md` + `generic.md` + `architectural.md` |
+| Kotlin, Android, Kotlin coroutines | `kotlin.md` + `generic.md` + `architectural.md` |
+| Python, Django, Flask, FastAPI | `python.md` + `generic.md` + `architectural.md` |
+| Go | `go.md` + `generic.md` + `architectural.md` |
+| Anything else | `generic.md` + `architectural.md` (and infer from the closest match) |
+
+`architectural.md` is **always included regardless of stack** — it covers cross-file
+and cross-package patterns (SSRF chains, auth bypass via secondary path, taint
+propagation across boundaries, contract drift, inconsistent middleware) that are blind
+spots for per-file scanning on every language.
 
 Stacks combine — load every file that applies. A Next.js + TypeScript app loads
-`react.md` + `typescript.md` + `javascript-node.md` + `generic.md`. An Android app in
-Kotlin loads `kotlin.md` + `generic.md`.
+`react.md` + `typescript.md` + `javascript-node.md` + `generic.md` + `architectural.md`.
+An Android app in Kotlin loads `kotlin.md` + `generic.md` + `architectural.md`.
 
 These are starting points, not limits. Combine with the repo-context model and, if
 enabled, web research for version-specific issues. Each entry is a *smell* to look for and

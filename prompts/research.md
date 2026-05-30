@@ -13,9 +13,15 @@ Rails). Be specific — "Express with raw SQL" implies different anti-patterns t
 
 ## Step 2 — Load the curated library (always)
 
-Read the matching files under `references/antipatterns/` and always include
-`references/antipatterns/generic.md`. These are offline, auditable catalogs of
-high-impact, framework-specific bug patterns. Index: `references/antipatterns/index.md`.
+Read the matching files under `references/antipatterns/` and always include **both**:
+- `references/antipatterns/generic.md` — general runtime bug patterns for any stack
+- `references/antipatterns/architectural.md` — cross-file and cross-package patterns
+  that per-file scanning misses (SSRF chains, auth bypass via secondary path, taint
+  propagation across boundaries, contract drift, inconsistent middleware, etc.)
+
+These two files are **unconditionally loaded on every run**, regardless of stack.
+Additionally load framework-matched files for the detected languages/frameworks.
+Index: `references/antipatterns/index.md`.
 
 ## Step 3 — Augment with web research (only if enabled)
 
