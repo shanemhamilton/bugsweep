@@ -124,18 +124,17 @@ def test_score_results_dir_multiple_runs(tmp_path) -> None:
     assert results[1].real == 0
 
 
-def test_score_results_dir_uses_line_window_from_provenance(tmp_path) -> None:
+def test_score_results_dir_processes_empty_confirmed_section(tmp_path) -> None:
     run_dir = tmp_path / "bugsweep" / "c1" / "run-1"
-    _write_report(run_dir, "## Confirmed but not fixed\n- B1 · high · sec · a.py:10 · r\n")
+    _write_report(run_dir, "## Confirmed but not fixed\n")
     _write_ground_truths(tmp_path, {"c1": {"description": "d", "files": ["a.py"]}})
-    _write_provenance(tmp_path, line_window=5)
-    client = MultiResponseClient([
-        '[{"bug_id": "B1", "file": "a.py", "line": 10, "rationale": "r"}]',
-        '{"match": false, "confidence": 0, "reason": "no"}',
-        '{"is_real": false, "confidence": 0, "reason": "n/a"}',
-    ])
+    # extract returns [] for empty section → total_confirmed=0, sampled=0
+    client = MultiResponseClient(["[]"])
     results = score_results_dir(tmp_path, client, MODEL)
-    assert len(results) == 1  # completed without error
+    assert len(results) == 1
+    r = results[0]
+    assert r.total_confirmed == 0
+    assert r.sampled == 0
 
 
 # ── write_precision_track ───────────────────────────────────────────────────────
@@ -186,6 +185,7 @@ def test_write_precision_track_finding_detail(tmp_path) -> None:
     f = rec["findings"][0]
     assert f["bug_id"] == "B1"
     assert f["file"] == "a.py"
+    assert f["rationale"] == "r"
     assert f["is_real"] is True
     assert f["confidence"] == 80
     assert f["reason"] == "ok"

@@ -6,7 +6,7 @@ Usage:
 Reads:
     <results-dir>/bugsweep/<case_id>/run-<n>/report.md
     <results-dir>/ground_truths.json
-    <results-dir>/provenance.json   (contains line_window)
+    <results-dir>/provenance.json
 
 Writes:
     <results-dir>/precision_track.jsonl
@@ -40,7 +40,6 @@ from bench.scorer.precision import (
 ARM_BUGSWEEP = "bugsweep"
 DEFAULT_JUDGE_BACKEND = "openai"
 DEFAULT_JUDGE_MODEL = "gpt-4o-judge"
-DEFAULT_LINE_WINDOW = 10
 
 
 def score_results_dir(
@@ -62,12 +61,6 @@ def score_results_dir(
     gt_data: dict = json.loads(
         (results_dir / "ground_truths.json").read_text(encoding="utf-8")
     )
-    provenance_path = results_dir / "provenance.json"
-    line_window = DEFAULT_LINE_WINDOW
-    if provenance_path.is_file():
-        prov = json.loads(provenance_path.read_text(encoding="utf-8"))
-        line_window = int(prov.get("line_window", DEFAULT_LINE_WINDOW))
-
     results: list[PrecisionCaseResult] = []
     for case_dir in sorted(arm_dir.iterdir()):
         if not case_dir.is_dir():
