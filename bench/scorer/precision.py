@@ -147,13 +147,18 @@ def score_precision(
 
 
 def _build_precision_prompt(finding: Mapping[str, Any]) -> str:
-    bug_id = str(finding.get("bug_id", ""))
-    file = str(finding.get("file", ""))
-    rationale = str(finding.get("rationale", ""))
+    bug_id = _sanitize(str(finding.get("bug_id", "")))
+    file = _sanitize(str(finding.get("file", "")))
+    rationale = _sanitize(str(finding.get("rationale", "")))
     data_block = (
         f"{DATA_OPEN}\nBUG_ID: {bug_id}\nFILE: {file}\nRATIONALE: {rationale}\n{DATA_CLOSE}"
     )
     return f"{_INSTRUCTIONS}\n\n{data_block}"
+
+
+def _sanitize(value: str) -> str:
+    """Strip the closing delimiter so attacker text cannot escape the data region."""
+    return value.replace(DATA_CLOSE, "")
 
 
 def _parse_precision_response(response: str, *, model: str, prompt_hash: str) -> PrecisionJudgement:
@@ -166,9 +171,13 @@ def _parse_precision_response(response: str, *, model: str, prompt_hash: str) ->
             model=model,
             prompt_hash=prompt_hash,
         )
+    try:
+        confidence = int(payload.get("confidence", 0))
+    except (TypeError, ValueError):
+        confidence = 0
     return PrecisionJudgement(
-        is_real=bool(payload["is_real"]),
-        confidence=int(payload.get("confidence", 0)),
+        is_real=payload["is_real"] is True,
+        confidence=confidence,
         reason=str(payload["reason"]),
         model=model,
         prompt_hash=prompt_hash,
