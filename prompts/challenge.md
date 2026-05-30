@@ -13,6 +13,34 @@ can point to a concrete reason the code is actually safe — never reject on a h
 never reject just because a bug is inconvenient or subtle. When you cannot confidently
 disprove it, you must let it stand.
 
+## Grounds that are NOT sufficient to REJECT
+
+These reasoning patterns are weak — they do not prove the code is safe. If your ONLY
+evidence against a finding is one or more of the following, mark **DISPUTED** instead of
+REJECTED and let the Referee adjudicate:
+
+- **"This bug is in the upstream library, not our code."** You are auditing the code that
+  actually runs. Upstream attribution is irrelevant to whether the running code is
+  vulnerable; if the running code contains the bug, the bug is real.
+- **"No call site inside this codebase exploits it."** For library code, callers are
+  external and not visible here. The absence of an observed exploited call site does not
+  prove safety.
+- **"This is a pre-existing or long-standing issue."** Pre-existing bugs are exactly what
+  this audit hunts. Age does not confer safety.
+- **"It is documented behavior."** Documented insecurity is still insecurity.
+
+Note: "the bug requires a chained precondition to exploit" is a valid severity-downgrade
+argument (it reduces likelihood of exploitation), but it is NOT a valid reason to REJECT a
+finding outright — it belongs in the severity rationale, not the verdict.
+
+### Published CVEs and advisories
+
+If the Hunter cites a known CVE or security advisory that matches the finding, treat the
+advisory as evidence that the bug class is real and the attack is understood. To REJECT such
+a finding you must identify concrete code-level evidence that this specific version is
+patched (e.g., the fix commit is present, a guard was backported) or that the vulnerable
+code path is genuinely unreachable. Absent that evidence, mark **DISPUTED**.
+
 ## For each candidate
 
 1. Open the cited code yourself and read enough surrounding context to understand the real
@@ -25,9 +53,11 @@ disprove it, you must let it stand.
    missing check actually exists somewhere on the path, the finding fails.
 4. Verdict, with a one-line reason and your confidence:
    - **UPHELD** — you tried and could not disprove it (it survives).
-   - **REJECTED** — you found a concrete reason it is safe or the evidence doesn't hold.
-   - **DISPUTED** — genuinely uncertain, or your rejection rests on an assumption you
-     can't fully verify. Send to the Referee rather than guessing.
+   - **REJECTED** — you found concrete code-level evidence it is safe or the evidence
+     doesn't hold. Weak-grounds rejections (see above) are not eligible for REJECTED.
+   - **DISPUTED** — genuinely uncertain; OR your rejection rests on an assumption you
+     can't fully verify; OR your only grounds for rejection are the weak patterns listed
+     above. Send to the Referee rather than guessing.
 5. Dedupe candidates that share a root cause.
 
 ## Output
