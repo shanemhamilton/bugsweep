@@ -261,7 +261,7 @@ def _pct(rate: float) -> str:
     return f"{rate * PERCENT_SCALE:.{RATE_DECIMALS}f}%"
 
 
-def _load_verdicts(path: Path) -> list[CaseRunVerdict]:  # pragma: no cover
+def load_verdicts(path: Path) -> list[CaseRunVerdict]:  # pragma: no cover
     verdicts: list[CaseRunVerdict] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -292,7 +292,7 @@ def main(argv: Sequence[str]) -> int:  # pragma: no cover
         sys.stderr.write("usage: python -m bench.scorer.leaderboard <results-dir>\n")
         return 2
     results_dir = Path(argv[0])
-    verdicts = _load_verdicts(results_dir / "verdicts.jsonl")
+    verdicts = load_verdicts(results_dir / "verdicts.jsonl")
     ground_truths = json.loads(
         (results_dir / "ground_truths.json").read_text(encoding="utf-8")
     )
