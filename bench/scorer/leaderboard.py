@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from bench.scorer.precision import DEFAULT_PRECISION_SAMPLE, PrecisionCaseResult
 from bench.scorer.score import (
     DETECTED,
     CaseRunVerdict,
@@ -61,6 +62,7 @@ def render_leaderboard(
     baseline: Sequence[CaseRunVerdict],
     ground_truths: Mapping[str, Mapping[str, Any]],
     provenance: Mapping[str, Any],
+    precision_results: Sequence[PrecisionCaseResult] | None = None,
 ) -> str:
     """Render the full leaderboard markdown from resolved verdicts + provenance.
 
@@ -74,6 +76,7 @@ def render_leaderboard(
         _detection_rates(bugsweep, baseline),
         _paired_delta_section(bugsweep, baseline),
         _cutoff_split(bugsweep, baseline),
+        render_precision_section(list(precision_results) if precision_results else []),
         _provenance_block(provenance),
     ]
     return "\n\n".join(sections) + "\n"
@@ -207,6 +210,44 @@ def _split_block(
     if note_inconclusive:
         lines.append(f"- status: {bs_sum.status} (post-cutoff inconclusive floor)")
     return "\n".join(lines)
+
+
+def render_precision_section(
+    precision_results: Sequence[PrecisionCaseResult],
+    max_sample: int = DEFAULT_PRECISION_SAMPLE,
+) -> str:
+    """Render the ## Precision track section; shows a placeholder when empty."""
+    if not precision_results:
+        return (
+            "## Precision track\n\n"
+            "_(no data — run `python3 -m bench.scorer.precision_score <results-dir>`)_"
+        )
+    by_arm: dict[str, list[PrecisionCaseResult]] = {}
+    for r in precision_results:
+        by_arm.setdefault(r.arm, []).append(r)
+
+    header = (
+        "## Precision track\n\n"
+        f"Sample: up to {max_sample} non-GT confirmed findings per case-run.\n\n"
+        "| arm | case-runs | total confirmed | sampled | real | precision |\n"
+        "| --- | --- | --- | --- | --- | --- |"
+    )
+    rows = [
+        "| {arm} | {runs} | {total} | {sampled} | {real} | {prec} |".format(
+            arm=arm_name,
+            runs=len(arm_rs),
+            total=sum(r.total_confirmed for r in arm_rs),
+            sampled=sum(r.sampled for r in arm_rs),
+            real=sum(r.real for r in arm_rs),
+            prec=_pct(
+                sum(r.real for r in arm_rs) / sum(r.sampled for r in arm_rs)
+                if sum(r.sampled for r in arm_rs) > 0
+                else 0.0
+            ),
+        )
+        for arm_name, arm_rs in sorted(by_arm.items())
+    ]
+    return "\n".join([header, *rows])
 
 
 def _provenance_block(provenance: Mapping[str, Any]) -> str:

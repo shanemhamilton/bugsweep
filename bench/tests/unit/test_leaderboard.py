@@ -257,3 +257,88 @@ def test_empty_verdicts_render_without_crash() -> None:
     )
     assert "bugsweep @ abc1234" in md
     assert "post-cutoff" in md.lower()
+
+
+# ── Precision track section ───────────────────────────────────────────────────
+
+from bench.scorer.leaderboard import render_precision_section  # noqa: E402
+from bench.scorer.precision import PrecisionCaseResult  # noqa: E402
+
+
+def _precision_result(
+    case_id: str = "c1",
+    run: int = 1,
+    arm: str = "bugsweep",
+    total_confirmed: int = 5,
+    sampled: int = 4,
+    real: int = 3,
+    precision: float = 0.75,
+) -> PrecisionCaseResult:
+    return PrecisionCaseResult(
+        case_id=case_id,
+        run=run,
+        arm=arm,
+        total_confirmed=total_confirmed,
+        sampled=sampled,
+        real=real,
+        precision=precision,
+        findings=(),
+    )
+
+
+def test_render_precision_section_empty_shows_placeholder() -> None:
+    section = render_precision_section([])
+    assert "## Precision track" in section
+    assert "precision_score" in section
+
+
+def test_render_precision_section_shows_arm_row() -> None:
+    section = render_precision_section([_precision_result()])
+    assert "## Precision track" in section
+    assert "bugsweep" in section
+
+
+def test_render_precision_section_shows_precision_percent() -> None:
+    section = render_precision_section([_precision_result(real=3, sampled=4)])
+    assert "75.0%" in section
+
+
+def test_render_precision_section_aggregates_across_runs() -> None:
+    results = [
+        _precision_result("c1", 1, total_confirmed=5, sampled=4, real=3),
+        _precision_result("c1", 2, total_confirmed=6, sampled=4, real=2),
+    ]
+    section = render_precision_section(results)
+    assert "2" in section   # 2 case-runs
+    assert "11" in section  # total confirmed (5+6)
+    assert "8" in section   # sampled (4+4)
+    assert "5" in section   # real (3+2)
+
+
+def test_render_precision_section_zero_sample_shows_zero_percent() -> None:
+    section = render_precision_section([_precision_result(sampled=0, real=0, precision=0.0)])
+    assert "0.0%" in section
+
+
+def test_render_leaderboard_includes_precision_section() -> None:
+    results = [_precision_result(total_confirmed=10, sampled=5, real=4, precision=0.8)]
+    md = render_leaderboard(
+        bugsweep=[_bs("c-post", DETECTED)],
+        baseline=[_bl("c-post", NOT_DETECTED)],
+        ground_truths=_ground_truths(),
+        provenance=_provenance(),
+        precision_results=results,
+    )
+    assert "## Precision track" in md
+    assert "80.0%" in md
+
+
+def test_render_leaderboard_precision_defaults_to_placeholder() -> None:
+    md = render_leaderboard(
+        bugsweep=[_bs("c-post", DETECTED)],
+        baseline=[_bl("c-post", NOT_DETECTED)],
+        ground_truths=_ground_truths(),
+        provenance=_provenance(),
+    )
+    assert "## Precision track" in md
+    assert "precision_score" in md
