@@ -6,7 +6,12 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 run_dir="${1:-}"
-[ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: finalize.sh <RUN_DIR>"
+[ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: finalize.sh <RUN_DIR> [--autonomous]"
+# Accept optional --autonomous flag (overrides state.env BUGSWEEP_MODE)
+_auto_flag=""
+for _arg in "$@"; do
+  [ "$_arg" = "--autonomous" ] && _auto_flag="yes"
+done
 # Resolve to absolute so appends still work after we switch branches/cwd.
 run_dir="$(cd "$run_dir" && pwd)"
 # shellcheck disable=SC1090
@@ -104,4 +109,56 @@ printf '{"event":"finalize","branch":"%s","orig_branch":"%s"}\n' \
 echo "FINALIZED"
 echo "REVIEW_WITH=git diff ${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}"
 echo "REPORT=${run_dir}/report.md"
-echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
+
+# --- Autonomous mode: auto-merge, push, and clean up --------------------------
+# Triggered by --autonomous flag OR BUGSWEEP_MODE=autonomous in state.env.
+# The invocation of --autonomous is the explicit authorization for end-to-end delivery.
+_effective_mode="${_auto_flag:-}"
+[ -z "$_effective_mode" ] && [ "${BUGSWEEP_MODE:-}" = "autonomous" ] && _effective_mode="yes"
+
+if [ "$_effective_mode" = "yes" ]; then
+  _fix_count="$(git rev-list --count "${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}" 2>/dev/null || echo 0)"
+  case "$_fix_count" in ''|*[!0-9]*) _fix_count=0 ;; esac
+
+  _merged=no
+  if [ "$_fix_count" -gt 0 ]; then
+    log "Autonomous: merging ${_fix_count} fix commit(s) into ${BUGSWEEP_ORIG_BRANCH}..."
+    if git merge --no-ff "$BUGSWEEP_BRANCH" \
+        -m "fix(bugsweep): land ${_fix_count} verified fix(es) from ${BUGSWEEP_BRANCH}" \
+        >/dev/null 2>&1; then
+      _merged=yes
+      log "Merged into ${BUGSWEEP_ORIG_BRANCH}."
+      printf '{"event":"auto_merged","fix_count":%s}\n' "$_fix_count" \
+        >> "${run_dir}/ledger.jsonl" 2>/dev/null || true
+      echo "MERGED=true"
+      if git push >/dev/null 2>&1; then
+        log "Pushed ${BUGSWEEP_ORIG_BRANCH} to remote."
+        printf '{"event":"auto_pushed"}\n' >> "${run_dir}/ledger.jsonl" 2>/dev/null || true
+        echo "PUSHED=true"
+      else
+        log "WARNING: push failed (no remote or insufficient access). Fixes are merged locally. Run: git push"
+        echo "PUSHED=false"
+      fi
+    else
+      log "WARNING: auto-merge failed (possible conflicts). Fixes preserved on ${BUGSWEEP_BRANCH} — merge manually."
+      echo "MERGE_FAILED=true"
+      echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
+    fi
+  else
+    log "No fix commits to merge (detect-only run)."
+    _merged=yes
+    echo "MERGED=skipped"
+  fi
+
+  if [ "$_merged" = "yes" ]; then
+    if git branch -d "$BUGSWEEP_BRANCH" >/dev/null 2>&1; then
+      log "Deleted ${BUGSWEEP_BRANCH}."
+      echo "BRANCH_DELETED=${BUGSWEEP_BRANCH}"
+    else
+      log "NOTE: could not auto-delete ${BUGSWEEP_BRANCH}. Run: git branch -d ${BUGSWEEP_BRANCH}"
+      echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
+    fi
+  fi
+else
+  echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
+fi

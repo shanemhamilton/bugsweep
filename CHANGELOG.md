@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-31
+
+### Added
+
+- **`--autonomous` mode auto-lands fixes end-to-end.** When invoked with `--autonomous`,
+  the run now completes fully: fix commits are merged into the original branch with
+  `--no-ff`, pushed to remote, and the bugsweep branch is deleted. Previously, `--autonomous`
+  stopped at a throwaway branch and required a manual merge step. The invocation itself is
+  the merge+push authorization; non-autonomous modes (`--fix`, `--approve`, detect-only)
+  still use the human handoff as before. If the push fails (no remote or insufficient
+  access), the local merge is preserved and a `git push` is all that remains. If the merge
+  fails (rare; concurrent work landed conflicting changes), the branch is preserved and
+  the normal handoff is presented.
+- **`BUGSWEEP_MODE` written to `state.env` at preflight.** `preflight.sh` now accepts
+  `--mode <mode>` and persists it so mode survives context resets — `finalize.sh` reads
+  it directly from `state.env` and does not rely on the model remembering the invocation
+  flag after a long unattended run.
+
 ## [0.2.0] - 2026-05-30
 
 ### Added

@@ -31,8 +31,11 @@ rest. If a rule can't be honored, STOP and report — never work around it.
 
 1. **Work only on a throwaway branch** (`bugsweep/<timestamp>`, created by preflight).
    Never commit to or switch the user onto their original branch.
-2. **Never touch remotes.** No push/pull/fetch, no PR, no merge. The human is the only
-   merge gate.
+2. **Never touch remotes in detect/fix/approve modes.** No push/pull/fetch, no PR, no
+   merge. The human is the only merge gate. **Exception: `--autonomous` mode.** Invoking
+   `--autonomous` is explicit end-to-end authorization — the terminal step merges fixes into
+   the original branch, pushes to remote, and deletes the bugsweep branch. If the push
+   fails (no remote, insufficient access), finalize warns and leaves the merge in place.
 3. **No destructive operations, ever.** No `git reset --hard` on user content, no force
    anything, no deleting files/dirs, no `rm -rf`, no history rewriting.
 4. **Preserve the user's work.** Preflight stashes uncommitted changes; finalize restores
@@ -103,7 +106,8 @@ fi
 
 ALWAYS run preflight next, before reading any source file:
 ```bash
-bash scripts/preflight.sh
+bash scripts/preflight.sh                     # detect / fix / approve modes
+bash scripts/preflight.sh --mode autonomous   # when invoked with --autonomous
 ```
 It verifies the repo is safe, refuses an unclean protected branch, stashes uncommitted
 work, creates and checks out `bugsweep/<timestamp>`, and prints a `RUN_DIR` (under
@@ -232,16 +236,28 @@ so the next run resumes the whole-repo frontier instead of starting blind. Prese
 summary and tell the user to review with
 `git diff <original-branch>..bugsweep/<timestamp>`.
 
-**Land-or-discard handoff (REQUIRED — the run is not "done" until the human chooses).** A
-fix branch left unlanded will be rediscovered next run, so finalize MUST end by presenting
-the human merge gate. The skill never lands or deletes branches itself; give the user the
-exact commands and let them choose:
+**Terminal step — mode-dependent.**
 
-- **Land** (the fixes are good, merge them yourself — the only path that stops recurrence):
+**`--autonomous` (auto-land):** The invocation authorized end-to-end delivery. Call finalize with the mode flag:
+```bash
+bash scripts/finalize.sh "<RUN_DIR>" --autonomous
+```
+`finalize.sh` merges all fix commits into the original branch (`--no-ff`), pushes to
+remote, and deletes the bugsweep branch. If there are no fix commits (detect-only run), it
+skips the merge and just cleans up the branch. If the push fails (no remote, no push
+access), finalize logs a warning and leaves the local merge in place — the user only needs
+`git push`. If the merge itself fails (rare; e.g. conflicts from concurrent work), finalize
+preserves the bugsweep branch and falls back to the manual handoff below.
+
+**detect/fix/approve (human handoff — REQUIRED, run is not "done" until the human chooses):** A
+fix branch left unlanded will be rediscovered next run. Give the user the exact commands:
+
+- **Land** (the fixes are good — the only path that stops recurrence):
   ```bash
   git checkout <original-branch>
   git merge --no-ff bugsweep/<timestamp>     # or: git cherry-pick <sha>...  for a subset
-  # then push per your normal flow — bugsweep never pushes
+  git push
+  git branch -d bugsweep/<timestamp>
   ```
 - **Discard** (not worth keeping):
   ```bash

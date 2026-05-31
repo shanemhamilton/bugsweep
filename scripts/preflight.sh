@@ -9,6 +9,16 @@
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+# Parse optional --mode flag (e.g. --mode autonomous)
+bs_mode="detect"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mode) bs_mode="${2:-detect}"; shift 2 ;;
+    --mode=*) bs_mode="${1#--mode=}"; shift ;;
+    *) shift ;;
+  esac
+done
+
 require_git_repo
 
 # --- Refuse unsafe repo states ------------------------------------------------
@@ -99,6 +109,7 @@ BUGSWEEP_ORIG_BRANCH=${orig_branch}
 BUGSWEEP_ORIG_HEAD=${orig_head}
 BUGSWEEP_STASH_REF=${stash_ref}
 BUGSWEEP_START_EPOCH=${start_epoch}
+BUGSWEEP_MODE=${bs_mode}
 EOF
 
 : > "${run_dir}/ledger.jsonl"
