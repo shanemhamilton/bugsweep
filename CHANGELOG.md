@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-30
+
 ### Added
 
 - **`scripts/bugsweep-prepare.sh` — activity-aware dirty-tree handling for unattended
@@ -26,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy-paste prompt with placeholders, cleanup settings, and headless scheduling notes
   (including that slash skills aren't available in `claude -p` mode, so the task is
   described instead).
+- **Bench harness (`bench/`).** Full 4-track evaluation framework: 9-CVE detection corpus,
+  bugsweep + baseline runner adapters, cross-model LLM judge (format-robust, location-aware),
+  precision track scorer, leaderboard renderer, and container isolation via Docker + egress
+  proxy. 197 tests covering scorer, runner, corpus, and renderer.
+- **`--update` flag + passive staleness check in `install.sh`.** `install.sh --update`
+  re-runs the installer to pull the latest version. Passive staleness warnings on every
+  invocation when a newer tag is available.
+
+### Fixed
+
+- Skeptic over-conservatism calibrated — weak-grounds rejection brought into correct range.
+- Stale-branch accumulation loop: `SKILL.md` now includes Step 0 stale-branch check and
+  Step 5 land-or-discard handoff.
+- Bash 3.2 compatibility for `bugsweep-cleanup.sh` (macOS default shell).
 
 ## [0.1.0] - 2026-05-24
 
@@ -61,5 +77,6 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/shanemhamilton/bugsweep/releases/tag/v0.1.0
