@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-03
+
+### Added
+
+- Post-finalize continuation contract for autonomous runs: Step 5 now ends with one
+  compound `do it` action covering land, target-branch proof, safe push, configured smoke
+  checks, remote read-back, and cleanup.
+- `finalize.sh` now writes `<RUN_DIR>/post-finalize-handoff.json` with branch, report,
+  fix-commit, quality-gate, smoke-test, push-policy, cleanup-policy, deletion-proof, and
+  read-back state for parent agents.
+- Bats integration tests for cleanup branch deletion, linked worktree handling, conflicts,
+  protected targets, Bash 3.2 syntax, and portability guardrails.
+
+### Changed
+
+- `scripts/bugsweep-cleanup.sh` now deletes `bugsweep/*` branches only after containment
+  proof, removes clean linked worktrees when they block deletion, preserves dirty linked
+  worktrees, and emits stable `CLEANUP_RESULT=...` / `BRANCH_*` / `WORKTREE_REMOVED=...`
+  result lines.
+- `--autonomous` now stops at the same explicit post-finalize continuation gate instead of
+  treating invocation as implicit merge/push/delete authorization.
+
 ## [0.3.0] - 2026-05-31
 
 ### Added
@@ -95,6 +117,8 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/shanemhamilton/bugsweep/releases/tag/v0.1.0

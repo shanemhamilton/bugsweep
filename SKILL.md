@@ -31,11 +31,10 @@ rest. If a rule can't be honored, STOP and report — never work around it.
 
 1. **Work only on a throwaway branch** (`bugsweep/<timestamp>`, created by preflight).
    Never commit to or switch the user onto their original branch.
-2. **Never touch remotes in detect/fix/approve modes.** No push/pull/fetch, no PR, no
-   merge. The human is the only merge gate. **Exception: `--autonomous` mode.** Invoking
-   `--autonomous` is explicit end-to-end authorization — the terminal step merges fixes into
-   the original branch, pushes to remote, and deletes the bugsweep branch. If the push
-   fails (no remote, insufficient access), finalize warns and leaves the merge in place.
+2. **Core run never touches remotes.** During preflight, hunt, fix, and finalize: no
+   push/pull/fetch, no PR, no merge. The human is the only merge gate. Post-finalize
+   merge/push/delete actions are allowed only after an explicit approved continuation, or
+   through the optional cleanup/merge-gate script the human configured.
 3. **No destructive operations, ever.** No `git reset --hard` on user content, no force
    anything, no deleting files/dirs, no `rm -rf`, no history rewriting.
 4. **Preserve the user's work.** Preflight stashes uncommitted changes; finalize restores
@@ -236,38 +235,60 @@ so the next run resumes the whole-repo frontier instead of starting blind. Prese
 summary and tell the user to review with
 `git diff <original-branch>..bugsweep/<timestamp>`.
 
-**Terminal step — mode-dependent.**
+`finalize.sh` also writes `<RUN_DIR>/post-finalize-handoff.json`. Treat this as the
+machine-readable contract for the parent agent. It includes:
 
-**`--autonomous` (auto-land):** The invocation authorized end-to-end delivery. Call finalize with the mode flag:
+- `run_dir`
+- `original_branch`
+- `preserved_branch`
+- `report_path`
+- `fix_commits`
+- `focused_tests`
+- `quality_gate_command`
+- `smoke_test_commands`
+- `push_policy`
+- `cleanup_policy`
+- `safe_to_delete_branch_after`
+- `final_readback_commands`
+
+**Land-or-discard handoff (REQUIRED — the run is not "done" until the human chooses).** A
+fix branch left unlanded will be rediscovered next run, so finalize MUST end by presenting
+the human merge gate. The core bugsweep run never lands, pushes, or deletes branches by
+itself. State plainly which branch holds the fixes and that **nothing reaches the target
+branch until the user approves the continuation**.
+
+For autonomous mode, end with one clear compound next action:
+
+> Reply `do it` to land the preserved branch, re-run proof on the target branch, push if
+> safe, run configured smoke checks, verify remote read-back, and delete the now-merged
+> bugsweep branch.
+
+If the user replies `do it`, that one approval covers the full safe follow-through
+sequence. Do not ask for another vague "do it" after landing. Read
+`post-finalize-handoff.json`, then:
+
+1. Check out the target branch (`original_branch` unless the user configured another
+   target).
+2. Merge the preserved branch with `--no-ff` or use the configured cleanup script.
+3. Re-run the quality gate from `quality_gate_command` on the target branch.
+4. Run every configured smoke command from `smoke_test_commands`; skip only when the list
+   is empty.
+5. Push only if the configured `push_policy` allows it and the checks passed; never
+   force-push.
+6. Run the `final_readback_commands` and report the concrete output.
+7. Delete the `bugsweep/*` branch only after `safe_to_delete_branch_after` is satisfied:
+   the branch is contained in the target branch. If it is checked out in a linked worktree,
+   remove that worktree only when it is clean; dirty worktrees are preserved.
+
+If any step reports `CLEANUP_RESULT=conflict`, `CLEANUP_RESULT=tests_failed`, a dirty
+worktree, or a non-contained branch, stop and report `BRANCH_PRESERVED=<branch>`. Never
+force-delete, reset user content, or remove dirty worktrees.
+
+For manual review, the exact read-only command remains:
+
 ```bash
-bash scripts/finalize.sh "<RUN_DIR>" --autonomous
+git diff <original-branch>..bugsweep/<timestamp>
 ```
-`finalize.sh` merges all fix commits into the original branch (`--no-ff`), pushes to
-remote, and deletes the bugsweep branch. If there are no fix commits (detect-only run), it
-skips the merge and just cleans up the branch. If the push fails (no remote, no push
-access), finalize logs a warning and leaves the local merge in place — the user only needs
-`git push`. If the merge itself fails (rare; e.g. conflicts from concurrent work), finalize
-preserves the bugsweep branch and falls back to the manual handoff below.
-
-**detect/fix/approve (human handoff — REQUIRED, run is not "done" until the human chooses):** A
-fix branch left unlanded will be rediscovered next run. Give the user the exact commands:
-
-- **Land** (the fixes are good — the only path that stops recurrence):
-  ```bash
-  git checkout <original-branch>
-  git merge --no-ff bugsweep/<timestamp>     # or: git cherry-pick <sha>...  for a subset
-  git push
-  git branch -d bugsweep/<timestamp>
-  ```
-- **Discard** (not worth keeping):
-  ```bash
-  git branch -D bugsweep/<timestamp>
-  ```
-- **Defer** (decide later): leave it, but know the next run's stale-branch check will flag it.
-
-State plainly which branch holds the fixes and that **nothing reaches `main` until they
-land it** — bugsweep stops at the gate by design. Do not soften this into "the fixes are
-ready"; they are stranded on a throwaway branch until the human acts.
 
 ## What counts as a bug (and what to ignore)
 FIND: security (injection, auth/authz bypass, SSRF, traversal, hardcoded secrets, unsafe

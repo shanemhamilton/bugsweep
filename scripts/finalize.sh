@@ -6,12 +6,7 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 run_dir="${1:-}"
-[ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: finalize.sh <RUN_DIR> [--autonomous]"
-# Accept optional --autonomous flag (overrides state.env BUGSWEEP_MODE)
-_auto_flag=""
-for _arg in "$@"; do
-  [ "$_arg" = "--autonomous" ] && _auto_flag="yes"
-done
+[ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: finalize.sh <RUN_DIR>"
 # Resolve to absolute so appends still work after we switch branches/cwd.
 run_dir="$(cd "$run_dir" && pwd)"
 # shellcheck disable=SC1090
@@ -86,6 +81,115 @@ STUB
 }
 _emit_stub_report
 
+_write_post_finalize_handoff() {
+  local handoff="${run_dir}/post-finalize-handoff.json"
+  local report="${run_dir}/report.md"
+  local quality_gate="${BUGSWEEP_QUALITY_GATE_COMMAND:-bash scripts/run_checks.sh verify \"${run_dir}\"}"
+  local push_policy="${BUGSWEEP_PUSH_POLICY:-Push the target branch only after merge, quality gate, smoke checks, and remote read-back succeed; never force-push.}"
+  local cleanup_policy="${BUGSWEEP_CLEANUP_POLICY:-Use scripts/bugsweep-cleanup.sh after approval; delete the bugsweep branch only after merge-base containment proof, removing only clean linked worktrees and never using --force.}"
+
+  if command -v python3 >/dev/null 2>&1; then
+    RUN_DIR="$run_dir" \
+    ORIGINAL_BRANCH="$BUGSWEEP_ORIG_BRANCH" \
+    PRESERVED_BRANCH="$BUGSWEEP_BRANCH" \
+    REPORT_PATH="$report" \
+    QUALITY_GATE_COMMAND="$quality_gate" \
+    BUGSWEEP_FOCUSED_TESTS="${BUGSWEEP_FOCUSED_TESTS:-}" \
+    BUGSWEEP_SMOKE_TEST_COMMANDS="${BUGSWEEP_SMOKE_TEST_COMMANDS:-}" \
+    PUSH_POLICY="$push_policy" \
+    CLEANUP_POLICY="$cleanup_policy" \
+    python3 - "$handoff" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+handoff_path = sys.argv[1]
+run_dir = os.environ["RUN_DIR"]
+original = os.environ["ORIGINAL_BRANCH"]
+preserved = os.environ["PRESERVED_BRANCH"]
+report = os.environ["REPORT_PATH"]
+quality_gate = os.environ["QUALITY_GATE_COMMAND"]
+
+
+def split_commands(value):
+    return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def git_lines(args):
+    try:
+        proc = subprocess.run(
+            ["git"] + args,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return []
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+fix_commits = []
+for sha in git_lines(["rev-list", "--reverse", f"{original}..{preserved}"]):
+    subject = git_lines(["log", "-1", "--format=%s", sha])
+    fix_commits.append({"sha": sha, "subject": subject[0] if subject else ""})
+
+handoff = {
+    "run_dir": run_dir,
+    "original_branch": original,
+    "preserved_branch": preserved,
+    "report_path": report,
+    "fix_commits": fix_commits,
+    "focused_tests": split_commands(os.environ.get("BUGSWEEP_FOCUSED_TESTS", "")),
+    "quality_gate_command": quality_gate,
+    "smoke_test_commands": split_commands(os.environ.get("BUGSWEEP_SMOKE_TEST_COMMANDS", "")),
+    "push_policy": os.environ["PUSH_POLICY"],
+    "cleanup_policy": os.environ["CLEANUP_POLICY"],
+    "safe_to_delete_branch_after": (
+        f"git merge-base --is-ancestor {preserved} <target-branch> succeeds; "
+        "if the branch is checked out in a linked worktree, that worktree must be clean "
+        "before it may be removed."
+    ),
+    "final_readback_commands": [
+        "git status --short --branch",
+        f"git merge-base --is-ancestor {preserved} <target-branch> && echo BRANCH_CONTAINED={preserved}",
+        "git branch --list 'bugsweep/*'",
+        "git ls-remote --heads origin <target-branch>",
+    ],
+}
+
+with open(handoff_path, "w", encoding="utf-8") as f:
+    json.dump(handoff, f, indent=2)
+    f.write("\n")
+PY
+  else
+    # Minimal fallback for bare machines. The normal path above records commits too.
+    cat > "$handoff" <<JSON
+{
+  "run_dir": "${run_dir}",
+  "original_branch": "${BUGSWEEP_ORIG_BRANCH}",
+  "preserved_branch": "${BUGSWEEP_BRANCH}",
+  "report_path": "${report}",
+  "fix_commits": [],
+  "focused_tests": [],
+  "quality_gate_command": "${quality_gate}",
+  "smoke_test_commands": [],
+  "push_policy": "${push_policy}",
+  "cleanup_policy": "${cleanup_policy}",
+  "safe_to_delete_branch_after": "git merge-base --is-ancestor ${BUGSWEEP_BRANCH} <target-branch> succeeds; linked worktree must be clean before removal.",
+  "final_readback_commands": [
+    "git status --short --branch",
+    "git merge-base --is-ancestor ${BUGSWEEP_BRANCH} <target-branch> && echo BRANCH_CONTAINED=${BUGSWEEP_BRANCH}",
+    "git branch --list 'bugsweep/*'",
+    "git ls-remote --heads origin <target-branch>"
+  ]
+}
+JSON
+  fi
+}
+_write_post_finalize_handoff
+
 # Return the user to their original branch (the bugsweep branch is preserved).
 if [ "$(current_branch)" != "$BUGSWEEP_ORIG_BRANCH" ]; then
   git checkout "$BUGSWEEP_ORIG_BRANCH" >/dev/null 2>&1 \
@@ -109,56 +213,5 @@ printf '{"event":"finalize","branch":"%s","orig_branch":"%s"}\n' \
 echo "FINALIZED"
 echo "REVIEW_WITH=git diff ${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}"
 echo "REPORT=${run_dir}/report.md"
-
-# --- Autonomous mode: auto-merge, push, and clean up --------------------------
-# Triggered by --autonomous flag OR BUGSWEEP_MODE=autonomous in state.env.
-# The invocation of --autonomous is the explicit authorization for end-to-end delivery.
-_effective_mode="${_auto_flag:-}"
-[ -z "$_effective_mode" ] && [ "${BUGSWEEP_MODE:-}" = "autonomous" ] && _effective_mode="yes"
-
-if [ "$_effective_mode" = "yes" ]; then
-  _fix_count="$(git rev-list --count "${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}" 2>/dev/null || echo 0)"
-  case "$_fix_count" in ''|*[!0-9]*) _fix_count=0 ;; esac
-
-  _merged=no
-  if [ "$_fix_count" -gt 0 ]; then
-    log "Autonomous: merging ${_fix_count} fix commit(s) into ${BUGSWEEP_ORIG_BRANCH}..."
-    if git merge --no-ff "$BUGSWEEP_BRANCH" \
-        -m "fix(bugsweep): land ${_fix_count} verified fix(es) from ${BUGSWEEP_BRANCH}" \
-        >/dev/null 2>&1; then
-      _merged=yes
-      log "Merged into ${BUGSWEEP_ORIG_BRANCH}."
-      printf '{"event":"auto_merged","fix_count":%s}\n' "$_fix_count" \
-        >> "${run_dir}/ledger.jsonl" 2>/dev/null || true
-      echo "MERGED=true"
-      if git push >/dev/null 2>&1; then
-        log "Pushed ${BUGSWEEP_ORIG_BRANCH} to remote."
-        printf '{"event":"auto_pushed"}\n' >> "${run_dir}/ledger.jsonl" 2>/dev/null || true
-        echo "PUSHED=true"
-      else
-        log "WARNING: push failed (no remote or insufficient access). Fixes are merged locally. Run: git push"
-        echo "PUSHED=false"
-      fi
-    else
-      log "WARNING: auto-merge failed (possible conflicts). Fixes preserved on ${BUGSWEEP_BRANCH} — merge manually."
-      echo "MERGE_FAILED=true"
-      echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
-    fi
-  else
-    log "No fix commits to merge (detect-only run)."
-    _merged=yes
-    echo "MERGED=skipped"
-  fi
-
-  if [ "$_merged" = "yes" ]; then
-    if git branch -d "$BUGSWEEP_BRANCH" >/dev/null 2>&1; then
-      log "Deleted ${BUGSWEEP_BRANCH}."
-      echo "BRANCH_DELETED=${BUGSWEEP_BRANCH}"
-    else
-      log "NOTE: could not auto-delete ${BUGSWEEP_BRANCH}. Run: git branch -d ${BUGSWEEP_BRANCH}"
-      echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
-    fi
-  fi
-else
-  echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
-fi
+echo "POST_FINALIZE_HANDOFF=${run_dir}/post-finalize-handoff.json"
+echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"

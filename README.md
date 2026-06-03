@@ -30,11 +30,12 @@ It does four things that make it effective on real, large codebases:
 
 ## The one thing to understand
 
-**The worst case for any run is a branch you delete.** bugsweep never works on your real
-branch, never pushes anywhere, never merges, and never deletes files. It cuts a fresh
-`bugsweep/<timestamp>` branch, makes its fixes there as one commit each, and re-runs your
-tests after every fix — automatically undoing any fix that breaks something. You review
-the branch and decide what to keep. You are always the merge gate.
+**The worst case for any core run is a branch you delete.** bugsweep never works on your
+real branch during the hunt/fix loop, never pushes anywhere, never merges, and never
+deletes files. It cuts a fresh `bugsweep/<timestamp>` branch, makes its fixes there as one
+commit each, and re-runs your tests after every fix — automatically undoing any fix that
+breaks something. You review the branch and decide what to keep. You are always the merge
+gate.
 
 The dangerous, irreversible operations (branching, stashing your work, reverting) are
 done by short shell scripts in `scripts/` that you can read in a few minutes — not by the
@@ -189,9 +190,31 @@ It tells you the branch name and how to review:
 git diff <your-branch>..bugsweep/<timestamp>
 ```
 
-Keep what you like (cherry-pick or merge), and delete the branch if you don't:
-`git branch -D bugsweep/<timestamp>`. Your original branch and uncommitted work are
-exactly as you left them.
+It also writes `<RUN_DIR>/post-finalize-handoff.json`, a machine-readable handoff with the
+preserved branch, report path, fix commits, quality gate, smoke checks, push policy,
+cleanup policy, deletion proof, and final read-back commands.
+
+For `/bugsweep --autonomous`, the recommended next step is intentionally one compound
+approval:
+
+> Reply `do it` to land the preserved branch, re-run proof on the target branch, push if
+> safe, run configured smoke checks, verify remote read-back, and delete the now-merged
+> bugsweep branch.
+
+That does not weaken the trust contract. The core run still stops at finalize and leaves
+the fixes stranded on `bugsweep/<timestamp>` until you approve the continuation. The
+approved follow-through uses the handoff JSON and the optional cleanup script so a parent
+agent does not need to ask again after the merge.
+
+Branch deletion is allowed only after proof that the branch is contained in the target
+branch (`git merge-base --is-ancestor <branch> <target>`). If the branch is checked out in
+a linked worktree, cleanup removes that worktree only when it is clean: no unstaged
+changes, no staged changes, and no untracked files. Dirty worktrees and unmerged branches
+are preserved.
+
+Manual review still works the same way: keep what you like with a cherry-pick or merge, or
+discard explicitly if you decide the branch is not worth keeping. Your original branch and
+uncommitted work are exactly as you left them.
 
 ### Repeatable, unattended runs
 
@@ -199,9 +222,10 @@ Running bugsweep on a schedule makes it dig deeper over time on its own — cove
 cross-run state means each run prioritizes the files it hasn't audited yet. The only thing
 that accumulates is one `bugsweep/<timestamp>` branch per run, because bugsweep never merges
 or deletes (you're the merge gate). To keep scheduled runs ending clean, the optional
-companion script `scripts/bugsweep-cleanup.sh` automates that gate *after* finalize: it
-merges the verified fix branch into a branch you choose, deletes it, and prunes old
-abandoned sweep branches — using only plain git, outside the skill's trust contract. See
+companion script `scripts/bugsweep-cleanup.sh` automates that gate *after* finalize and
+after approval: it merges the verified fix branch into a branch you choose, deletes only
+branches proven contained in that target, and preserves dirty worktrees or unmerged
+branches — using only plain git, outside the core hunt/fix loop. See
 [`references/autonomous-maintenance.md`](references/autonomous-maintenance.md) for the
 copy-paste prompt, settings, and scheduling notes.
 
@@ -249,11 +273,12 @@ Both. The installer sets up whichever you have (`--claude`, `--codex`, or `--all
 - `SKILL.md` — the instructions Claude follows.
 - `scripts/` — the deterministic safety + state layer: `preflight` (branch/stash setup),
   `run_checks` (tests/build), `guard` (stop conditions), `session` (continuity anchor),
-  `finalize` (safe return). Plus two *optional*, user-owned companions for scheduled runs
-  (outside the trust contract): `bugsweep-prepare.sh` (if the tree is dirty, it defers to an
-  active session or commits genuinely idle work to close the tree — never parks, never
-  discards) and `bugsweep-cleanup.sh` (the post-run merge gate; the only script that merges
-  or deletes, and only when you choose to run it).
+  `finalize` (safe return plus `post-finalize-handoff.json`). Plus two *optional*,
+  user-owned companions for scheduled runs (outside the core hunt/fix loop):
+  `bugsweep-prepare.sh` (if the tree is dirty, it defers to an active session or commits
+  genuinely idle work to close the tree — never parks, never discards) and
+  `bugsweep-cleanup.sh` (the post-run merge gate; the only script that merges or deletes,
+  and only when you choose to run it).
 - `prompts/` — the phases, kept separate so the AI never rubber-stamps its own findings:
   `context-build` (whole-repo model), `research` (anti-pattern priming), `hunt` (local +
   architectural lenses), `challenge` (Skeptic), `referee` (final arbiter), `fix`.

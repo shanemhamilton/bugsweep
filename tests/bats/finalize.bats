@@ -67,14 +67,17 @@ JSON
 # ---------------------------------------------------------------------------
 
 setup() {
+  START_CWD="$(pwd)"
   BATS_TMP="$(mktemp -d)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
   ORIG_BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD)"
   RUN_DIR="${BATS_TMP}/run-dir"
+  cd "$REPO"
 }
 
 teardown() {
+  cd "$START_CWD"
   rm -rf "$BATS_TMP"
 }
 
@@ -138,4 +141,45 @@ teardown() {
   [ "$status" -eq 0 ]
 
   echo "$output" | grep -q "FINALIZED"
+}
+
+@test "finalize: writes post-finalize handoff JSON with required fields" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  printf 'fix\n' > "${REPO}/fix.txt"
+  git -C "$REPO" add fix.txt
+  git -C "$REPO" commit -m "fix(bugsweep): test handoff" -q
+
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  local handoff="${RUN_DIR}/post-finalize-handoff.json"
+  [ -f "$handoff" ]
+  echo "$output" | grep -q "POST_FINALIZE_HANDOFF=${handoff}"
+
+  python3 - "$handoff" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+required = {
+    "run_dir",
+    "original_branch",
+    "preserved_branch",
+    "report_path",
+    "fix_commits",
+    "focused_tests",
+    "quality_gate_command",
+    "smoke_test_commands",
+    "push_policy",
+    "cleanup_policy",
+    "safe_to_delete_branch_after",
+    "final_readback_commands",
+}
+missing = sorted(required - set(data))
+assert not missing, missing
+assert data["run_dir"]
+assert data["original_branch"]
+assert data["preserved_branch"].startswith("bugsweep/")
+assert data["fix_commits"]
+PY
 }

@@ -11,12 +11,12 @@ leftover `bugsweep/<timestamp>` branches.
   scores, variant queries) and reprioritizes toward never-audited, stale, and high-risk
   files on each run. Just running it again digs deeper. See
   `references/context-and-continuity.md`.
-- **You DO need a merge gate if you want clean endings.** bugsweep deliberately never
-  merges and never deletes branches — the human is the only merge gate. For unattended,
-  repeatable runs, automate that gate with the optional companion script
-  `scripts/bugsweep-cleanup.sh`. It runs *after* `finalize.sh`, on your own branch, using
-  only plain git. It is intentionally outside the skill's trust contract: the skill's
-  safety guarantees are unchanged.
+- **You DO need a merge gate if you want clean endings.** bugsweep deliberately stops the
+  core run at finalize — the human is the only merge gate. For unattended, repeatable
+  runs, automate the approved continuation with `<RUN_DIR>/post-finalize-handoff.json` and
+  the optional companion script `scripts/bugsweep-cleanup.sh`. They run *after*
+  `finalize.sh`, on your own branch, using only plain git. The hunt/fix safety guarantees
+  are unchanged.
 
 ## Setup (once per project)
 
@@ -41,8 +41,10 @@ leftover `bugsweep/<timestamp>` branches.
 >
 > Background to respect: bugsweep cuts a throwaway `bugsweep/<timestamp>` branch, fixes
 > only adversarially-confirmed bugs there, re-runs my tests after each fix, and auto-reverts
-> regressions. It does NOT merge or delete branches — I automate that gate in step 4. Do not
-> raise, bypass, or work around any bugsweep cap or safety script.
+> regressions. Its core run stops at the human merge gate. After finalize, one approved
+> continuation may land, verify, push, smoke-test, read back remote state, and clean up the
+> now-merged bugsweep branch. Do not raise, bypass, or work around any bugsweep cap or
+> safety script.
 >
 > 1. Get the tree clean by running `bash <PREPARE_PATH>`, then act on its result:
 >    - `RESULT=PROCEED` (exit 0): the tree is clean (or stale work was committed) — continue to step 2.
@@ -56,18 +58,25 @@ leftover `bugsweep/<timestamp>` branches.
 >    autonomous bug-hunt-and-fix audit, high severity only." Let bugsweep's coverage-first
 >    state set the file order; in hunting, prioritize high-risk backend/runtime paths first,
 >    then iOS, then frontend.
-> 3. When `finalize.sh` completes, capture `BRANCH_PRESERVED=...` and the `REPORT=...` path.
-> 4. Act as the merge gate:
+> 3. When `finalize.sh` completes, capture `POST_FINALIZE_HANDOFF=...`,
+>    `BRANCH_PRESERVED=...`, and the `REPORT=...` path. Read the handoff JSON before doing
+>    any continuation work.
+> 4. Act as the approved merge gate in one pass:
 >    `BUGSWEEP_TARGET=<DEV_BRANCH> BUGSWEEP_POLICY=merge BUGSWEEP_TEST_CMD="<TEST_CMD>" bash <CLEANUP_PATH> <BRANCH_PRESERVED>`
->    If it reports a merge conflict or failing tests, leave that branch untouched and flag
->    it — do not force anything.
-> 5. VERIFY and report the end state explicitly: I am on `<DEV_BRANCH>`, `git status` is
->    clean, and `git branch --list 'bugsweep/*'` shows no leftover branches except any you
->    flagged for review.
-> 6. Produce the findings report ordered by severity (critical → low). For each finding:
+>    If it reports `CLEANUP_RESULT=conflict`, `CLEANUP_RESULT=tests_failed`, or
+>    `BRANCH_PRESERVED=...`, leave that branch untouched and flag it — do not force
+>    anything.
+> 5. Re-run proof on `<DEV_BRANCH>` using `quality_gate_command` from the handoff JSON, then
+>    run every command in `smoke_test_commands` if the list is non-empty.
+> 6. Push only if the handoff `push_policy` allows it and all checks passed. Never
+>    force-push. Run the handoff `final_readback_commands` and report the concrete output.
+> 7. VERIFY and report the end state explicitly: I am on `<DEV_BRANCH>`, `git status` is
+>    clean, `git branch --list 'bugsweep/*'` shows no leftover branches except any flagged
+>    for review, and cleanup printed one of the stable `CLEANUP_RESULT=...` lines.
+> 8. Produce the findings report ordered by severity (critical → low). For each finding:
 >    ABSOLUTE file path + exact line number(s), what was wrong, the fix commit SHA (or why
 >    quarantined), and the test/build evidence (baseline vs final from bugsweep's report.md).
-> 7. Append a dated progress note to issue tracker item `<ISSUE_ID>`: pass timestamp, counts
+> 9. Append a dated progress note to issue tracker item `<ISSUE_ID>`: pass timestamp, counts
 >    by severity, fixed vs quarantined, coverage (batches covered / total), and the cleanup
 >    outcome (merged / conflict / kept).
 
@@ -114,12 +123,34 @@ git-ignored so they don't register as dirty. A crashed git process can leave a s
 | `BUGSWEEP_TARGET`          | current branch   | Branch to merge verified fixes into.               |
 | `BUGSWEEP_POLICY`          | `merge`          | `merge` \| `discard` (throw the run away) \| `keep` (leave for review). |
 | `BUGSWEEP_TEST_CMD`        | _(none)_         | Optional command re-run on the branch before merge; failure blocks the merge. |
-| `BUGSWEEP_RETENTION_DAYS`  | `7`              | Force-prune abandoned older sweep branches past this age. |
+| `BUGSWEEP_RETENTION_DAYS`  | `7`              | Compatibility setting; unmerged branches are preserved unless `BUGSWEEP_POLICY=discard` is explicit. |
 | `BUGSWEEP_ALLOW_PROTECTED` | `0`              | Set `1` to permit merging into a protected branch. |
 
 The script merges with `--no-ff` (preserving the one-commit-per-bug history), deletes the
-branch only after a successful merge, aborts cleanly on conflict, and leaves a branch in
-place if its re-test fails.
+branch only after containment proof (`git merge-base --is-ancestor <branch> <target>`),
+aborts cleanly on conflict, and leaves a branch in place if its re-test fails.
+
+If a fully merged bugsweep branch is checked out in another linked worktree, cleanup
+locates that worktree with `git worktree list --porcelain`. It removes the worktree with
+plain `git worktree remove <path>` only when the worktree is clean: no unstaged changes, no
+staged changes, and no untracked files. Dirty linked worktrees are preserved, and cleanup
+prints `BRANCH_PRESERVED=<branch>`.
+
+Stable result lines are printed at the end so a parent agent can make deterministic
+decisions:
+
+```text
+CLEANUP_RESULT=merged_deleted
+CLEANUP_RESULT=merged_branch_preserved
+CLEANUP_RESULT=kept_for_review
+CLEANUP_RESULT=conflict
+CLEANUP_RESULT=tests_failed
+CLEANUP_RESULT=discarded
+BRANCH_DELETED=<branch>
+BRANCH_PRESERVED=<branch>
+WORKTREE_REMOVED=<path>
+TARGET_BRANCH=<branch>
+```
 
 ## Scheduling
 
