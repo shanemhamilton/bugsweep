@@ -54,7 +54,7 @@ flowchart TD
         C["run_checks.sh baseline\nrecord test / build / lint state"]
         L["run_checks.sh verify\ndiff against baseline"]
         Q["guard.sh\ncheck iteration / time / fix caps"]
-        FIN["finalize.sh\nrestore original branch\npop stash\npersist audit coverage"]
+        FIN["finalize.sh\nrestore original branch\npop stash\npersist audit coverage\nwrite handoff JSON"]
     end
 
     subgraph ai ["🤖 AI phases — reasoning only, no git ops"]
@@ -77,7 +77,10 @@ flowchart TD
     RPT --> FIN
     Q --> |CONTINUE| F
     Q --> |STOP| FIN
-    FIN --> R(["User reviews\ngit diff main..bugsweep/&lt;timestamp&gt;"])
+    FIN --> HANDOFF["post-finalize handoff\nbranch preserved\none compound next action"]
+    HANDOFF --> DECIDE{"User replies do it?"}
+    DECIDE --> |"No"| R(["Review manually\ngit diff main..bugsweep/&lt;timestamp&gt;"])
+    DECIDE --> |"Yes"| LAND["land preserved branch\nre-run proof on target\npush if safe\nsmoke + remote read-back\ncleanup merged branch"]
 ```
 
 ### Adversarial review — why bugsweep has a low false-positive rate
@@ -116,7 +119,7 @@ flowchart TD
     T1 --> HUNT["hunt loop"]
     T2 --> HUNT
 
-    HUNT --> FIN["finalize.sh\n→ state.sh persist\nupdate audit-log + risk"]
+    HUNT --> FIN["finalize.sh\n→ state.sh persist\nupdate audit-log + risk\nwrite handoff JSON"]
     FIN -->|next run| P
 ```
 
@@ -263,7 +266,9 @@ goes only to the AI tool you already use.
 **Can it run unattended or in CI?**
 Yes. `/bugsweep --autonomous` runs a find-and-fix loop until the codebase is clean or a
 configured limit (time, iterations, or fix count) is hit, re-running your tests after
-every fix. State persists to disk so long runs survive context resets.
+every fix. State persists to disk so long runs survive context resets. Landing, pushing,
+smoke checks, remote read-back, and branch cleanup happen through the explicit
+post-finalize continuation so the merge gate stays visible.
 
 **Does it work with OpenAI Codex too, or just Claude Code?**
 Both. The installer sets up whichever you have (`--claude`, `--codex`, or `--all`).
