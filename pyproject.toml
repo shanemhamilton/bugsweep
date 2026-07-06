@@ -8,6 +8,9 @@ testpaths = ["bench/tests/unit"]
 
 [tool.coverage.run]
 source = ["bench/scorer"]
+# bench/scorer/run_summary.py (bugsweep-mu3) already lives inside this source
+# root, so no extra wiring is needed beyond keeping this comment as a pointer
+# for the next person extending coverage scope.
 
 [tool.coverage.report]
 fail_under = 80

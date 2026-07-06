@@ -119,9 +119,17 @@ teardown() {
   run bash "$FINALIZE_SH" "$RUN_DIR"
   [ "$status" -eq 0 ]
 
+  # The original prose must survive untouched as a prefix. finalize.sh (bugsweep-mu3)
+  # appends a script-generated "Findings (machine-readable)" section derived from
+  # run-summary.json even onto a pre-existing report.md, so the file is no longer
+  # required to be byte-identical afterward — only its original content must be
+  # preserved (never overwritten or replaced).
   local after
   after="$(cat "${RUN_DIR}/report.md")"
-  [ "$before" = "$after" ]
+  case "$after" in
+    "$before"*) : ;;
+    *) echo "original report.md content was not preserved as a prefix" >&2; return 1 ;;
+  esac
 }
 
 @test "finalize: stub report includes branch names" {

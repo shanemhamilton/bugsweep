@@ -231,8 +231,11 @@ bash scripts/finalize.sh "<RUN_DIR>"
 Restores the user's stashed work onto their original branch, preserves all fix commits on
 `bugsweep/<timestamp>`, emits the stub report if `report.md` is still missing, and points
 to the report. It also persists this run's audit coverage + risk into `.bugsweep/state/`
-so the next run resumes the whole-repo frontier instead of starting blind. Present the
-summary and tell the user to review with
+so the next run resumes the whole-repo frontier instead of starting blind. It also
+unconditionally reduces `ledger.jsonl` + `recon.json` into `<RUN_DIR>/run-summary.json`
+(via `scripts/summarize.sh`) and appends the report's "Findings (machine-readable)" section
+from that same reduction — so `run-summary.json` exists, and the report's JSON matches it,
+even on a stalled/partial run. Present the summary and tell the user to review with
 `git diff <original-branch>..bugsweep/<timestamp>`.
 
 `finalize.sh` also writes `<RUN_DIR>/post-finalize-handoff.json`. Treat this as the
@@ -327,26 +330,13 @@ Write `<RUN_DIR>/report.md` and present a condensed version. ALWAYS use this tem
 git diff <original-branch>..bugsweep/<timestamp>
 ```
 
-After the prose sections above, always append this machine-readable section so CI,
-dashboards, and the bench scorer can consume findings without a slow LLM extraction step.
-Include **all confirmed bugs** (fixed and not-fixed). Set `"fixed": true` for entries from
-the "Fixed" section; `"fixed": false` for all others. Emit the block even when the list is
-empty (`[]`). Omitting it forces a slower LLM-extraction fallback.
-
-## Findings (machine-readable)
-```json
-[
-  {
-    "bug_id": "BUG-1",
-    "severity": "high",
-    "category": "security",
-    "file": "src/auth.py",
-    "line": 42,
-    "fixed": false,
-    "rationale": "Unsanitized user input reaches SQL query without parameterization"
-  }
-]
-```
+Do **not** author a "Findings (machine-readable)" section yourself. `scripts/finalize.sh`
+(via `scripts/summarize.sh`) appends that section automatically, generated from the
+deterministic `<RUN_DIR>/run-summary.json` reduction of `ledger.jsonl` + `recon.json` — the
+same script-emitted source of truth a headless scheduler reads. This keeps prose and JSON
+from ever diverging, which a model-authored block (format varied run-to-run) could not
+guarantee. Just write the prose sections above and stop; the machine-readable JSON block is
+appended for you, including on a stub/partial report.
 
 ## References
 - `references/context-and-continuity.md` — how state persists and how to reset safely.

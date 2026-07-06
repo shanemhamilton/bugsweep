@@ -77,9 +77,78 @@ git diff ${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}
 git -C . log --oneline ${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}
 STUB
 
+  # Sentinel: the durable, content-independent record that this run's report.md
+  # is the script-emitted stub. Primary stub-detection signal (see below) — a
+  # retried finalize must classify from this, never from a this-invocation-wrote-it
+  # flag, and never from an unanchored content grep that a REAL report quoting the
+  # warning text (or our own appended machine block) could trigger.
+  : > "${run_dir}/.report-is-stub"
+
   log "WARNING: report.md was missing — emitted a stub from on-disk state. Check ledger.jsonl."
 }
 _emit_stub_report
+
+# Stub-ness detection, in priority order:
+#   1. Sentinel file .report-is-stub — written by _emit_stub_report alongside the
+#      stub. Content-independent, so a REAL report whose prose merely QUOTES the
+#      stub's warning text (routine on bugsweep-on-bugsweep runs) can never be
+#      misclassified, and a retried finalize stays stable.
+#   2. Fallback for PRE-SENTINEL run dirs only (stub written by an older finalize
+#      that had no sentinel): grep for the stub template's exact warning-line form
+#      (the line the heredoc above starts with '**WARNING: INCOMPLETE RUN**'),
+#      restricted to the region of report.md BEFORE the script-appended
+#      '## Findings (machine-readable)' heading — so our own appended block, which
+#      may embed marker-quoting finding rationales from the ledger, can never
+#      trigger it on a retry.
+_bugsweep_report_was_stub=false
+if [ -f "${run_dir}/.report-is-stub" ]; then
+  _bugsweep_report_was_stub=true
+elif [ -f "${run_dir}/report.md" ] \
+  && sed '/^## Findings (machine-readable)$/,$d' "${run_dir}/report.md" 2>/dev/null \
+     | grep -q '^\*\*WARNING: INCOMPLETE RUN\*\*'; then
+  _bugsweep_report_was_stub=true
+fi
+
+# Reduce ledger.jsonl + recon.json into run-summary.json UNCONDITIONALLY — on both
+# the real-report path and the stub/partial path above — so a headless scheduler
+# (nightshift) always has a deterministic, schema-valid summary to branch on,
+# regardless of where the run stopped. See scripts/summarize.sh.
+_bugsweep_run_summary_path=""
+_write_run_summary_and_machine_block() {
+  local report="${run_dir}/report.md"
+  local summary_out
+  if ! summary_out="$(bash "${BUGSWEEP_SCRIPT_DIR}/summarize.sh" "$run_dir" "$_bugsweep_report_was_stub" "${BUGSWEEP_MODE:-}" 2>&1)"; then
+    log "WARNING: summarize.sh failed; run-summary.json may be missing. Output: ${summary_out}"
+    return 0
+  fi
+  _bugsweep_run_summary_path="${summary_out#RUN_SUMMARY=}"
+  [ -f "$_bugsweep_run_summary_path" ] || { log "WARNING: summarize.sh reported success but ${_bugsweep_run_summary_path} is missing."; return 0; }
+
+  # Generate the report's "Findings (machine-readable)" block FROM run-summary.json
+  # so prose and JSON never diverge (SKILL.md's report template no longer asks the
+  # model to author this block itself). Skip only if report.md already has one —
+  # idempotent re-runs (e.g. a retried finalize) must not duplicate the section —
+  # but WARN when skipping: a pre-existing block (an old-format model-authored
+  # report, or a prior finalize's block over changed state) may diverge from the
+  # freshly reduced run-summary.json, and that divergence must be visible.
+  if [ -f "$report" ]; then
+    if grep -q '^## Findings (machine-readable)$' "$report" 2>/dev/null; then
+      log "WARNING: report.md already contains a 'Findings (machine-readable)' section — leaving it untouched. If it predates this finalize (e.g. a model-authored block from an older template), its JSON may diverge from ${_bugsweep_run_summary_path}; trust run-summary.json."
+    else
+      {
+        printf '\n## Findings (machine-readable)\n```json\n'
+        if command -v python3 >/dev/null 2>&1; then
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d.get("findings",[]), indent=2))' \
+            "$_bugsweep_run_summary_path" 2>/dev/null || printf '[]'
+        else
+          printf '[]'
+        fi
+        printf '\n```\n'
+      } >> "$report"
+    fi
+  fi
+}
+_write_run_summary_and_machine_block
 
 _write_post_finalize_handoff() {
   local handoff="${run_dir}/post-finalize-handoff.json"
@@ -213,5 +282,6 @@ printf '{"event":"finalize","branch":"%s","orig_branch":"%s"}\n' \
 echo "FINALIZED"
 echo "REVIEW_WITH=git diff ${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}"
 echo "REPORT=${run_dir}/report.md"
+echo "RUN_SUMMARY=${_bugsweep_run_summary_path:-${run_dir}/run-summary.json}"
 echo "POST_FINALIZE_HANDOFF=${run_dir}/post-finalize-handoff.json"
 echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
