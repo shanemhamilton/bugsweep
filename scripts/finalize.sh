@@ -28,6 +28,7 @@ if bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" persist "$run_dir" >/dev/null 2>&1; th
 else
   log "WARNING: could not persist cross-run state (continuing; not fatal)."
 fi
+bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-release "$run_dir" >/dev/null 2>&1 || true  # bugsweep-p74: release this run's lease (best-effort, non-fatal)
 
 # Emit a stub report when report.md was never written (silent-failure backstop).
 # A large-repo run may stall during context-build or the architectural hunt before
@@ -165,6 +166,7 @@ _write_post_finalize_handoff() {
     QUALITY_GATE_COMMAND="$quality_gate" \
     BUGSWEEP_FOCUSED_TESTS="${BUGSWEEP_FOCUSED_TESTS:-}" \
     BUGSWEEP_SMOKE_TEST_COMMANDS="${BUGSWEEP_SMOKE_TEST_COMMANDS:-}" \
+    BUGSWEEP_WORKTREE="${BUGSWEEP_WORKTREE:-}" \
     PUSH_POLICY="$push_policy" \
     CLEANUP_POLICY="$cleanup_policy" \
     python3 - "$handoff" <<'PY'
@@ -209,6 +211,9 @@ handoff = {
     "original_branch": original,
     "preserved_branch": preserved,
     "report_path": report,
+    # Manual-cleanup breadcrumb for worktree-mode runs (empty string otherwise);
+    # full worktree teardown is bead 8d0's job, not finalize's.
+    "worktree_path": os.environ.get("BUGSWEEP_WORKTREE", ""),
     "fix_commits": fix_commits,
     "focused_tests": split_commands(os.environ.get("BUGSWEEP_FOCUSED_TESTS", "")),
     "quality_gate_command": quality_gate,
@@ -240,6 +245,7 @@ PY
   "original_branch": "${BUGSWEEP_ORIG_BRANCH}",
   "preserved_branch": "${BUGSWEEP_BRANCH}",
   "report_path": "${report}",
+  "worktree_path": "${BUGSWEEP_WORKTREE:-}",
   "fix_commits": [],
   "focused_tests": [],
   "quality_gate_command": "${quality_gate}",
@@ -260,18 +266,31 @@ JSON
 _write_post_finalize_handoff
 
 # Return the user to their original branch (the bugsweep branch is preserved).
-if [ "$(current_branch)" != "$BUGSWEEP_ORIG_BRANCH" ]; then
-  git checkout "$BUGSWEEP_ORIG_BRANCH" >/dev/null 2>&1 \
-    || log "WARNING: could not switch back to ${BUGSWEEP_ORIG_BRANCH}; you are still on ${BUGSWEEP_BRANCH}."
-fi
+#
+# Review fix E (bugsweep-p74): in worktree mode there is nothing to return or
+# restore — the run never touched the user's tree (it worked in its own linked
+# worktree, and STASH is always none), and git's checkout collision guard
+# would (correctly) refuse to check the original branch out here anyway, since
+# the user's main checkout still holds it. Skipping with an accurate log line
+# replaces the old misleading generic WARNING. Worktree/branch teardown itself
+# is deliberately NOT done here (bead 8d0's job); post-finalize-handoff.json
+# carries worktree_path as the manual-cleanup breadcrumb.
+if [ -n "${BUGSWEEP_WORKTREE:-}" ]; then
+  log "worktree run — user's tree untouched, nothing to restore (worktree: ${BUGSWEEP_WORKTREE})."
+else
+  if [ "$(current_branch)" != "$BUGSWEEP_ORIG_BRANCH" ]; then
+    git checkout "$BUGSWEEP_ORIG_BRANCH" >/dev/null 2>&1 \
+      || log "WARNING: could not switch back to ${BUGSWEEP_ORIG_BRANCH}; you are still on ${BUGSWEEP_BRANCH}."
+  fi
 
-# Restore the user's stashed work, if any.
-if [ "${BUGSWEEP_STASH_REF}" != "none" ]; then
-  if git stash list | grep -q "bugsweep-autostash-${BUGSWEEP_TS}"; then
-    if git stash pop >/dev/null 2>&1; then
-      log "Restored your stashed work onto ${BUGSWEEP_ORIG_BRANCH}."
-    else
-      log "WARNING: could not auto-restore your stash. It is safe in: git stash list (bugsweep-autostash-${BUGSWEEP_TS})."
+  # Restore the user's stashed work, if any.
+  if [ "${BUGSWEEP_STASH_REF}" != "none" ]; then
+    if git stash list | grep -q "bugsweep-autostash-${BUGSWEEP_TS}"; then
+      if git stash pop >/dev/null 2>&1; then
+        log "Restored your stashed work onto ${BUGSWEEP_ORIG_BRANCH}."
+      else
+        log "WARNING: could not auto-restore your stash. It is safe in: git stash list (bugsweep-autostash-${BUGSWEEP_TS})."
+      fi
     fi
   fi
 fi

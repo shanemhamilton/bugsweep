@@ -9,11 +9,23 @@
 #   state.sh persist <RUN_DIR>   harvest this run's coverage+risk into .bugsweep/state/
 #   state.sh prime   <RUN_DIR>   write <RUN_DIR>/prior-coverage.json; print SUMMARY=...
 #   state.sh catalog-version     print the current anti-pattern catalog version
+#   state.sh lease-acquire <RUN_DIR>   record a per-run liveness lease (bugsweep-p74)
+#   state.sh lease-release <RUN_DIR>   release this run's lease
+#   state.sh lease-list                list currently-live leases (LEASE=<run_dir> lines)
 #
 # Coverage-first contract: this layer NEVER narrows scope; it only REPRIORITIZES.
 # The repo is never "done" — files never audited at the current catalog version,
 # or audited too long ago, stay on the frontier across runs. If anything here
 # fails, callers continue (a broken cache must never fail or shrink a run).
+#
+# bugsweep-p74 concurrency note: up to N subagents of one metaswarm orchestrator
+# may call `persist` at the same moment against the SAME .bugsweep/state/ dir
+# (they share BUGSWEEP_STATE_DIR — see common.sh). Leases below are bookkeeping
+# only (liveness + stale reclaim); they COEXIST, they never block a sibling run.
+# The one true mutual-exclusion need is meta.json's run counter: the ordinal
+# MUST be computed and written inside a single lock's critical section, or two
+# concurrent persists both read runs=R and both write runs=R+1, silently losing
+# a count. See persist() below.
 
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
@@ -23,11 +35,66 @@ STATE_DIR="$BUGSWEEP_STATE_DIR"
 AUDIT_LOG="${STATE_DIR}/audit-log.jsonl"
 RISK_LOG="${STATE_DIR}/risk.jsonl"
 META="${STATE_DIR}/meta.json"
+META_LOCK="${STATE_DIR}/meta.lock"
+LEASES_DIR="${STATE_DIR}/leases"
+# How old (seconds) an on-disk lease may be before it's considered stale even
+# with a live pid (defends against a pid recycled by the OS onto an unrelated
+# process). A dead pid is NOT reclaimed immediately — the recorded pid
+# legitimately dies with the shell that ran preflight — it is reclaimed only
+# once the lease file's mtime ages past BUGSWEEP_LEASE_GRACE_SECONDS (default
+# 900s; see _lease_is_stale).
+LEASE_STALE_SECONDS="${BUGSWEEP_LEASE_STALE_SECONDS:-14400}"  # 4h
 
 # Coverage uses the AGGREGATE catalog version (sum of per-class versions, from common.sh):
 # a file's audit goes stale when ANY detector class advances, so any catalog change re-audits
 # broadly. Falls back to the legacy single-integer VERSION when versions.json is unreadable.
 catalog_version() { catalog_aggregate_version; }
+
+# Reserve the next run ordinal and persist it into meta.json, ALL inside a single
+# mkdir-lock critical section. This is the fix for bugsweep-p74: previously the
+# ordinal was computed via bugsweep_meta_runs() (a plain read of meta.json)
+# BEFORE any lock was taken, so N concurrent persists all read the same "runs"
+# value and each wrote back runs+1 — last writer wins, count silently loses
+# N-1 increments. Reading AND writing meta.json now happens only while holding
+# META_LOCK, so five concurrent finalizes yield runs == prior + 5, never less.
+# Prints the reserved ordinal on stdout. Falls back to an unlocked read (best
+# effort, may race) only if the lock cannot be acquired within its timeout —
+# this keeps `persist` non-fatal per the coverage-first contract.
+_reserve_run_ordinal() {
+  local run_dir="${1:-}" lock_timeout="${BUGSWEEP_META_LOCK_TIMEOUT:-15}" ordinal
+  if bugsweep_lock_acquire "$META_LOCK" "$lock_timeout"; then
+    ordinal=$(( $(bugsweep_meta_runs) + 1 ))
+    if have_python; then
+      ORDINAL="$ordinal" META="$META" python3 -c '
+import json, os
+meta, ordinal = os.environ["META"], int(os.environ["ORDINAL"])
+d = {}
+if os.path.exists(meta):
+    try:
+        d = json.load(open(meta))
+    except Exception:
+        d = {}
+d["runs"] = ordinal
+d.setdefault("schema", 1)
+json.dump(d, open(meta, "w"))
+' 2>/dev/null || printf '{"schema":1,"runs":%s}\n' "$ordinal" > "$META"
+    else
+      printf '{"schema":1,"runs":%s}\n' "$ordinal" > "$META"
+    fi
+    bugsweep_lock_release "$META_LOCK"
+  else
+    log "state: meta.lock busy after ${lock_timeout} poll attempts — reserving ordinal unlocked (best effort)."
+    ordinal=$(( $(bugsweep_meta_runs) + 1 ))
+    # Review fix G (bugsweep-p74): make the degraded path LOUD in the run's own
+    # ledger, not just a stderr line nobody persists — an unlocked ordinal is a
+    # silent risk of an incorrect cross-run count and must be auditable.
+    if [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
+      printf '{"event":"state_lock_timeout","ts":"%s","lock":"meta.lock","ordinal_best_effort":%s}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ordinal" >> "${run_dir}/ledger.jsonl" 2>/dev/null || true
+    fi
+  fi
+  printf '%s' "$ordinal"
+}
 
 # ---------------------------------------------------------------------------
 persist() {
@@ -44,17 +111,32 @@ persist() {
   cat_v="$(catalog_version)"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   run_id="${BUGSWEEP_TS:-$(date +%Y%m%d-%H%M%S)}"
-  ordinal=$(( $(bugsweep_meta_runs) + 1 ))
+  ordinal="$(_reserve_run_ordinal "$run_dir")"
 
   if have_python; then
-    AUDIT_LOG="$AUDIT_LOG" RISK_LOG="$RISK_LOG" META="$META" \
+    AUDIT_LOG="$AUDIT_LOG" RISK_LOG="$RISK_LOG" \
     python3 - "$run_dir" "$run_id" "$ordinal" "$cat_v" "$ts" <<'PY' 2>/dev/null || {
 import json, os, sys
 run_dir, run_id, ordinal, cat_v, ts = sys.argv[1:6]
 ordinal = int(ordinal)
-audit_log, risk_log, meta = os.environ["AUDIT_LOG"], os.environ["RISK_LOG"], os.environ["META"]
+audit_log, risk_log = os.environ["AUDIT_LOG"], os.environ["RISK_LOG"]
 ledger = os.path.join(run_dir, "ledger.jsonl")
 recon  = os.path.join(run_dir, "recon.json")
+
+# bugsweep-p74: append one full JSON line per record via a dedicated
+# os.open(..., O_APPEND) + os.write() call each time, instead of batching many
+# writes inside one `open(...).write()` block. A single write(2) syscall of a
+# small buffer (well under PIPE_BUF) with O_APPEND is atomic on POSIX: the
+# kernel seeks-to-end and writes in one step, so concurrent bugsweep processes
+# appending to the SAME audit-log.jsonl / risk.jsonl can never interleave
+# mid-line or tear a record, even without any external lock.
+def append_line(path, obj):
+    data = (json.dumps(obj) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
 
 events, covered_ids = [], set()
 if os.path.exists(ledger):
@@ -88,29 +170,18 @@ for b in batches:
         for f in (b.get("files", []) or []):
             files.add(f)
 
-with open(audit_log, "a") as out:
-    for f in sorted(files):
-        out.write(json.dumps({"run": ordinal, "run_id": run_id, "ts": ts,
-                              "catalog_version": cat_v, "file": f, "outcome": "audited"}) + "\n")
+for f in sorted(files):
+    append_line(audit_log, {"run": ordinal, "run_id": run_id, "ts": ts,
+                             "catalog_version": cat_v, "file": f, "outcome": "audited"})
 
 RISK = {"fix_committed", "quarantine", "confirmed", "false_positive"}
-with open(risk_log, "a") as out:
-    for e in events:
-        ev = e.get("event")
-        if ev in RISK and e.get("file"):
-            out.write(json.dumps({"run": ordinal, "run_id": run_id, "ts": ts,
-                                  "file": e["file"], "event": ev,
-                                  "severity": e.get("severity", "")}) + "\n")
+for e in events:
+    ev = e.get("event")
+    if ev in RISK and e.get("file"):
+        append_line(risk_log, {"run": ordinal, "run_id": run_id, "ts": ts,
+                                "file": e["file"], "event": ev,
+                                "severity": e.get("severity", "")})
 
-d = {}
-if os.path.exists(meta):
-    try:
-        d = json.load(open(meta))
-    except Exception:
-        d = {}
-d["runs"] = ordinal
-d.setdefault("schema", 1)
-json.dump(d, open(meta, "w"))
 print("AUDITED_FILES=%d" % len(files))
 PY
       log "state: python harvest failed; persisting risk events via fallback."
@@ -122,8 +193,14 @@ PY
   fi
 }
 
-# Minimal degraded persist: harvest fix_committed lines that carry a file, and
-# bump the runs counter, without the recon batch→file expansion.
+# Minimal degraded persist: harvest fix_committed/quarantine lines that carry a
+# file into the risk log, without the recon batch→file expansion. It
+# deliberately does NOT touch meta.json — the run ordinal was already reserved
+# AND persisted inside _reserve_run_ordinal's locked critical section before
+# this runs. Rewriting meta.json here (as this function once did) happened
+# OUTSIDE the lock and clobbered concurrent runs' counts: N concurrent
+# fallback-path persists could end with runs advanced by only 1 (review
+# blocker A, bugsweep-p74).
 _persist_fallback() {
   local run_dir="$1" run_id="$2" ordinal="$3" ts="$4"
   local ledger="${run_dir}/ledger.jsonl"
@@ -142,7 +219,6 @@ _persist_fallback() {
       esac
     done < "$ledger"
   fi
-  printf '{"schema":1,"runs":%s}\n' "$ordinal" > "$META"
 }
 
 # ---------------------------------------------------------------------------
@@ -272,10 +348,155 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Per-run leases (bugsweep-p74).
+#
+# A lease is a liveness record for ONE run — "this pid, working in this
+# worktree/run-dir, is still alive". Leases are bookkeeping, not a mutex: any
+# number of them may exist at once (that is the whole point of `preflight.sh
+# --worktree` — up to 5 sibling subagents run concurrently). The ONLY lock
+# used here is the short mkdir-lock around LEASES_DIR list/write operations,
+# to avoid two callers racing on the same lease file's create/delete.
+#
+# Lease id is derived from the run dir's basename so it's stable and
+# human-readable in `lease-list` output (e.g. "run-20260706-153000-8421-a1b2").
+_lease_id() {
+  local run_dir="$1"
+  basename "$run_dir" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# Portable file mtime in epoch seconds (GNU vs BSD stat); 0 when unreadable —
+# which makes an unreadable lease file "very old", i.e. reclaimable.
+_file_mtime() {
+  local m
+  if stat --version >/dev/null 2>&1; then
+    m="$(stat -c %Y "$1" 2>/dev/null || true)"
+  else
+    m="$(stat -f %m "$1" 2>/dev/null || true)"
+  fi
+  case "$m" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$m" ;; esac
+}
+
+# True (0) if a lease is stale and may be reclaimed. Review-hardened semantics
+# (bugsweep-p74 retry 1, review blocker B):
+#   - alive pid  -> stale only past the hard age cap (LEASE_STALE_SECONDS, 4h):
+#                   guards against an OS-recycled pid keeping a zombie lease alive.
+#   - dead pid   -> stale only when the lease FILE's mtime is older than the
+#                   grace window (BUGSWEEP_LEASE_GRACE_SECONDS, default 900s).
+#                   The recorded pid legitimately dies the moment preflight
+#                   exits in the plain `bash preflight.sh` invocation path, so
+#                   a dead pid alone must NEVER trigger reclaim mid-run; a
+#                   genuinely crashed run is still reclaimed once the grace
+#                   window passes.
+#   - unreadable pid -> treated as dead (grace window applies).
+_lease_is_stale() {
+  local lease_file="$1" pid started now age mtime grace
+  grace="${BUGSWEEP_LEASE_GRACE_SECONDS:-900}"
+  pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$lease_file" 2>/dev/null | head -1)"
+  started="$(sed -n 's/.*"started"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$lease_file" 2>/dev/null | head -1)"
+  now="$(date +%s)"
+  case "$pid" in
+    ''|*[!0-9]*) pid="" ;;
+  esac
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    case "$started" in
+      ''|*[!0-9]*) return 1 ;;  # alive and no timestamp to judge age -> not stale
+    esac
+    age=$(( now - started ))
+    if [ "$age" -ge "$LEASE_STALE_SECONDS" ]; then return 0; fi
+    return 1
+  fi
+  # Dead/unknown pid: reclaim only once the lease file has aged past the grace window.
+  mtime="$(_file_mtime "$lease_file")"
+  [ $(( now - mtime )) -ge "$grace" ]
+}
+
+# Reclaim (delete) any stale lease files. Best-effort; runs inside the caller's
+# lock so it never races a concurrent acquire/list/release.
+_lease_reclaim_stale() {
+  [ -d "$LEASES_DIR" ] || return 0
+  local f
+  for f in "$LEASES_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    if _lease_is_stale "$f"; then
+      rm -f "$f" 2>/dev/null || true
+    fi
+  done
+}
+
+lease_acquire() {
+  local run_dir="${1:-}"
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: state.sh lease-acquire <RUN_DIR>"
+  run_dir="$(cd "$run_dir" && pwd)"
+  bugsweep_state_dir_ready || { log "state: no project-scoped state dir; skipping lease."; return 0; }
+  mkdir -p "$LEASES_DIR" 2>/dev/null || true
+
+  local lock="${LEASES_DIR}.lock" id lease_file
+  id="$(_lease_id "$run_dir")"
+  lease_file="${LEASES_DIR}/${id}.json"
+  # The lease's liveness pid must be the PROCESS THAT OWNS THE RUN, not this
+  # short-lived `state.sh` invocation (which exits the instant this command
+  # returns). That is normally the calling shell — $PPID. Allow an explicit
+  # override via BUGSWEEP_LEASE_PID for callers (e.g. a long-running
+  # orchestrator dispatching subagents) that know a more accurate owner pid.
+  local BUGSWEEP_LEASE_PID="${BUGSWEEP_LEASE_PID:-$PPID}"
+
+  if bugsweep_lock_acquire "$lock" 10; then
+    _lease_reclaim_stale
+    printf '{"pid":%s,"run_dir":"%s","started":%s}\n' "$BUGSWEEP_LEASE_PID" "$run_dir" "$(date +%s)" > "$lease_file"
+    bugsweep_lock_release "$lock"
+  else
+    # Lock contention should never block a sibling run from starting; write
+    # the lease unlocked as a best-effort fallback (a lost stale-reclaim pass
+    # just means cleanup happens on the next acquire/list instead).
+    log "state: leases.lock busy — writing lease unlocked (best effort)."
+    printf '{"pid":%s,"run_dir":"%s","started":%s}\n' "$BUGSWEEP_LEASE_PID" "$run_dir" "$(date +%s)" > "$lease_file"
+  fi
+  echo "LEASE_ACQUIRED=${run_dir}"
+}
+
+lease_release() {
+  local run_dir="${1:-}"
+  [ -n "$run_dir" ] || die "usage: state.sh lease-release <RUN_DIR>"
+  bugsweep_state_dir_ready || return 0
+  [ -d "$run_dir" ] && run_dir="$(cd "$run_dir" && pwd)"
+
+  local lock="${LEASES_DIR}.lock" id lease_file
+  id="$(_lease_id "$run_dir")"
+  lease_file="${LEASES_DIR}/${id}.json"
+
+  if bugsweep_lock_acquire "$lock" 10; then
+    rm -f "$lease_file" 2>/dev/null || true
+    bugsweep_lock_release "$lock"
+  else
+    rm -f "$lease_file" 2>/dev/null || true
+  fi
+  echo "LEASE_RELEASED=${run_dir}"
+}
+
+lease_list() {
+  bugsweep_state_dir_ready || return 0
+  [ -d "$LEASES_DIR" ] || return 0
+
+  local lock="${LEASES_DIR}.lock" f run_dir
+  if bugsweep_lock_acquire "$lock" 10; then
+    _lease_reclaim_stale
+    bugsweep_lock_release "$lock"
+  fi
+  for f in "$LEASES_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    run_dir="$(sed -n 's/.*"run_dir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    [ -n "$run_dir" ] && echo "LEASE=${run_dir}"
+  done
+}
+
+# ---------------------------------------------------------------------------
 cmd="${1:-}"
 case "$cmd" in
   persist)         persist "${2:-}" ;;
   prime)           prime "${2:-}" ;;
   catalog-version) catalog_version; echo ;;
-  *)               die "usage: state.sh <persist|prime|catalog-version> [RUN_DIR]" ;;
+  lease-acquire)   lease_acquire "${2:-}" ;;
+  lease-release)   lease_release "${2:-}" ;;
+  lease-list)      lease_list ;;
+  *)               die "usage: state.sh <persist|prime|catalog-version|lease-acquire|lease-release|lease-list> [RUN_DIR]" ;;
 esac

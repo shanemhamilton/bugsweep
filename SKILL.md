@@ -47,6 +47,11 @@ rest. If a rule can't be honored, STOP and report — never work around it.
 8. **Stay inside the caps** (iterations, runtime, fixes) and stop when converged.
 9. **Everything is logged** to the run ledger so an overnight run is auditable.
 
+Worktree-mode note on rule 4: with `preflight.sh --worktree` (concurrent runs), preservation
+is achieved by never touching the user's tree at all — no stash is taken and none is needed;
+the run works in an isolated linked worktree and the user's branch, index, and files stay
+byte-for-byte untouched.
+
 The worst possible outcome of any run is a throwaway branch the user deletes. That is what
 makes unattended autonomy safe.
 
@@ -107,11 +112,21 @@ ALWAYS run preflight next, before reading any source file:
 ```bash
 bash scripts/preflight.sh                     # detect / fix / approve modes
 bash scripts/preflight.sh --mode autonomous   # when invoked with --autonomous
+BUGSWEEP_LEASE_PID=$$ bash scripts/preflight.sh --worktree   # concurrent subagents (see note below)
 ```
 It verifies the repo is safe, refuses an unclean protected branch, stashes uncommitted
 work, creates and checks out `bugsweep/<timestamp>`, and prints a `RUN_DIR` (under
 `.bugsweep/`) plus the branch name. If it exits non-zero, STOP and show the user the error
 verbatim. Capture `RUN_DIR`; all artifacts live there.
+
+**Concurrent runs (`--worktree`).** When several bugsweep runs must share one repository
+(e.g. an orchestrator dispatching parallel subagents), add `--worktree`: preflight cuts each
+run its own linked worktree under `.bugsweep/worktrees/` on a collision-free
+`bugsweep/<ts>-<pid>-<rand>` branch and never touches the user's working tree, branch, or
+index. In this mode `STASH=none` means "nothing to restore" (no stash is ever taken), not
+"the tree was clean". Do all hunt/fix work inside the printed `WORKTREE=` path. Callers
+should pass `BUGSWEEP_LEASE_PID=$$` so the run's lease tracks the shell that actually owns
+the run (liveness for stale-lease reclaim); `finalize.sh` releases the lease.
 
 **Stale-branch check (do this right after preflight succeeds).** Unlanded fix branches
 from prior runs are the #1 failure mode: because each run forks from current main, any fix
