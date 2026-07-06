@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bugsweep — the bug hunt that runs all night</title>
+<meta name="description" content="bugsweep is an autonomous, adversarial AI code-review skill for Claude Code and Codex. It hunts real security, logic, and data bugs across your whole repo and fixes them on a throwaway branch — safe enough to run unattended overnight. The worst case is a branch you delete." />
+<meta property="og:title" content="bugsweep — the bug hunt that runs all night" />
+<meta property="og:description" content="Autonomous, adversarial AI bug-hunting for Claude Code & Codex. Whole-repo context, a Hunter→Skeptic→Referee gauntlet, and a safety model where the worst case is a branch you delete." />
+<meta property="og:type" content="website" />
+<meta name="theme-color" content="#0B1020" />
+<style>
+  :root{
+    --night:#0B1020;
+    --panel:#141B33;
+    --panel-2:#0F1528;
+    --haze:#232C4D;
+    --ink:#EAE6D9;
+    --muted:#9AA3C2;
+    --brass:#E7B24C;
+    --brass-dim:#B98A31;
+    --safe:#57C1A6;
+    --crit:#E8705B;
+    --high:#E7B24C;
+
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+
+    --measure:65ch;
+    --maxw:1080px;
+    --gut:clamp(20px,5vw,64px);
+    --radius:14px;
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;
+    background:var(--night);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:clamp(16px,1.05vw + 12px,18px);
+    line-height:1.65;
+    letter-spacing:.002em;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  a{color:var(--brass);text-decoration:none}
+  a:hover{text-decoration:underline;text-underline-offset:3px}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:4px}
+  img,canvas{max-width:100%}
+
+  .wrap{max-width:var(--maxw);margin-inline:auto;padding-inline:var(--gut)}
+  .prose{max-width:var(--measure)}
+
+  h1,h2,h3{font-family:var(--serif);font-weight:600;text-wrap:balance;line-height:1.1;margin:0}
+  h2{font-size:clamp(1.9rem,3.6vw,2.9rem);letter-spacing:-.01em}
+  h3{font-size:1.3rem;letter-spacing:-.005em}
+  p{margin:0}
+
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:.72rem;
+    letter-spacing:.22em;
+    text-transform:uppercase;
+    color:var(--brass);
+    display:inline-flex;align-items:center;gap:.6em;
+  }
+  .eyebrow::before{content:"";width:26px;height:1px;background:linear-gradient(90deg,var(--brass),transparent)}
+
+  section{padding-block:clamp(64px,9vw,120px)}
+  .rule{height:1px;background:linear-gradient(90deg,transparent,var(--haze) 15%,var(--haze) 85%,transparent);border:0;margin:0}
+
+  /* ---------- HERO ---------- */
+  .hero{position:relative;min-height:min(92vh,860px);display:flex;align-items:flex-end;overflow:hidden;padding-block:0}
+  #sweep{position:absolute;inset:0;width:100%;height:100%;display:block;z-index:0}
+  .hero-scrim{position:absolute;inset:0;z-index:1;pointer-events:none;
+    background:
+      radial-gradient(120% 90% at 12% 100%, rgba(11,16,32,.82), transparent 60%),
+      linear-gradient(180deg, rgba(11,16,32,.55) 0%, rgba(11,16,32,0) 26%, rgba(11,16,32,.15) 62%, rgba(11,16,32,.92) 100%);
+  }
+  .hero-inner{position:relative;z-index:2;width:100%;padding-block:clamp(40px,7vw,86px)}
+  .hero h1{
+    font-size:clamp(2.7rem,7.4vw,5.6rem);
+    letter-spacing:-.02em;
+    margin-top:.5rem;
+    max-width:16ch;
+  }
+  .hero h1 em{font-style:italic;color:var(--brass)}
+  .hero-sub{margin-top:1.4rem;max-width:52ch;color:var(--ink);font-size:clamp(1.05rem,1.4vw,1.28rem);line-height:1.55}
+  .hero-sub b{color:#fff;font-weight:600}
+
+  .cta-row{margin-top:2.2rem;display:flex;flex-wrap:wrap;gap:14px 16px;align-items:center}
+  .btn{
+    display:inline-flex;align-items:center;gap:.55em;
+    font-family:var(--sans);font-weight:600;font-size:.98rem;
+    padding:.82em 1.25em;border-radius:10px;border:1px solid transparent;cursor:pointer;
+    transition:transform .12s ease, box-shadow .2s ease, background .2s ease;
+  }
+  .btn:hover{text-decoration:none;transform:translateY(-1px)}
+  .btn-primary{background:var(--brass);color:#241a06;box-shadow:0 8px 30px -10px rgba(231,178,76,.55)}
+  .btn-primary:hover{background:#f1bf5e;box-shadow:0 12px 38px -12px rgba(231,178,76,.7)}
+  .btn-ghost{border-color:var(--haze);color:var(--ink);background:rgba(255,255,255,.02)}
+  .btn-ghost:hover{border-color:var(--brass);color:#fff}
+  .btn svg{width:1.05em;height:1.05em;flex:none}
+
+  .badges{margin-top:1.9rem;display:flex;flex-wrap:wrap;gap:8px 10px}
+  .badge{
+    font-family:var(--mono);font-size:.72rem;letter-spacing:.04em;
+    color:var(--muted);border:1px solid var(--haze);border-radius:999px;
+    padding:.34em .8em;background:rgba(255,255,255,.015);
+    display:inline-flex;align-items:center;gap:.5em;
+  }
+  .dot{width:6px;height:6px;border-radius:50%;flex:none}
+  .dot.safe{background:var(--safe)} .dot.brass{background:var(--brass)} .dot.crit{background:var(--crit)}
+
+  /* ---------- GUARANTEE ---------- */
+  .guarantee{background:
+      linear-gradient(180deg,var(--panel-2),transparent 40%),
+      var(--night);
+  }
+  .stamp{
+    position:relative;
+    border:1px solid var(--haze);
+    border-radius:var(--radius);
+    background:
+      radial-gradient(140% 120% at 100% 0%, rgba(231,178,76,.06), transparent 55%),
+      var(--panel);
+    padding:clamp(26px,4vw,46px);
+    overflow:hidden;
+  }
+  .stamp::after{
+    content:"NO REMOTES · NO FORCE · NO DELETE";
+    position:absolute;right:-42px;top:26px;transform:rotate(35deg);
+    font-family:var(--mono);font-size:.66rem;letter-spacing:.24em;
+    color:rgba(231,178,76,.34);border-block:1px solid rgba(231,178,76,.28);
+    padding:.4em 3.4em;
+  }
+  .stamp .kicker{font-family:var(--mono);font-size:.74rem;letter-spacing:.2em;text-transform:uppercase;color:var(--safe)}
+  .stamp h2{margin-top:.8rem;font-size:clamp(1.7rem,3.4vw,2.7rem)}
+  .stamp h2 u{text-decoration-color:var(--brass);text-decoration-thickness:2px;text-underline-offset:5px}
+  .stamp p{margin-top:1.1rem;color:var(--muted);max-width:60ch}
+  .stamp p b{color:var(--ink)}
+  .stamp-grid{margin-top:2rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1px;background:var(--haze);border:1px solid var(--haze);border-radius:10px;overflow:hidden}
+  .stamp-cell{background:var(--panel);padding:1.1rem 1.2rem}
+  .stamp-cell .n{font-family:var(--serif);font-size:1.7rem;color:var(--brass);line-height:1;font-variant-numeric:tabular-nums}
+  .stamp-cell .l{margin-top:.5rem;font-size:.86rem;color:var(--muted);line-height:1.4}
+
+  /* ---------- GENERIC SECTION HEADER ---------- */
+  .sec-head{max-width:60ch}
+  .sec-head h2{margin-top:.9rem}
+  .sec-head .lede{margin-top:1.1rem;color:var(--muted);font-size:1.08rem}
+  .sec-head .lede b{color:var(--ink)}
+
+  /* ---------- TRIBUNAL ---------- */
+  .tribunal{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:clamp(34px,5vw,56px)}
+  .role{
+    border:1px solid var(--haze);border-radius:var(--radius);background:var(--panel);
+    padding:1.5rem 1.4rem 1.6rem;position:relative;overflow:hidden;
+    transition:transform .18s ease,border-color .2s ease,background .2s ease;
+  }
+  .role:hover{transform:translateY(-3px);border-color:var(--brass);background:linear-gradient(180deg,rgba(231,178,76,.05),var(--panel))}
+  .role .seal{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--haze);margin-bottom:1.1rem}
+  .role .seal svg{width:20px;height:20px}
+  .role .step{position:absolute;top:1.1rem;right:1.2rem;font-family:var(--mono);font-size:.72rem;color:var(--muted);letter-spacing:.1em}
+  .role h3{font-family:var(--serif)}
+  .role .job{margin-top:.2rem;font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;color:var(--brass);text-transform:uppercase}
+  .role p{margin-top:.9rem;color:var(--muted);font-size:.95rem;line-height:1.55}
+  .flow-note{margin-top:1.5rem;font-family:var(--mono);font-size:.8rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:.5em;align-items:center}
+  .flow-note b{color:var(--ink);font-weight:600}
+  .arrow{color:var(--brass)}
+
+  /* ---------- READOUT / TERMINAL ---------- */
+  .readout-grid{display:grid;grid-template-columns:1.05fr 1fr;gap:clamp(28px,4vw,52px);align-items:center;margin-top:clamp(30px,4vw,48px)}
+  .term{
+    border:1px solid var(--haze);border-radius:var(--radius);background:var(--panel-2);
+    font-family:var(--mono);font-size:.82rem;line-height:1.7;overflow:hidden;
+    box-shadow:0 30px 70px -40px rgba(0,0,0,.9);
+  }
+  .term-bar{display:flex;align-items:center;gap:.5em;padding:.7em 1em;border-bottom:1px solid var(--haze);background:rgba(255,255,255,.02)}
+  .term-bar .tdot{width:10px;height:10px;border-radius:50%;background:var(--haze)}
+  .term-bar .ttitle{margin-left:.6em;font-size:.72rem;color:var(--muted);letter-spacing:.06em}
+  .term-body{padding:1.1em 1.2em;overflow-x:auto}
+  .term-body pre{margin:0;white-space:pre;color:var(--ink)}
+  .c-muted{color:var(--muted)} .c-brass{color:var(--brass)} .c-safe{color:var(--safe)} .c-crit{color:var(--crit)} .c-hi{color:var(--high)}
+  .story h3{margin-bottom:.7rem}
+  .story p{color:var(--muted);margin-top:.9rem}
+  .story p b{color:var(--ink)}
+  .story .tag{display:inline-block;margin-top:1.3rem;font-family:var(--mono);font-size:.74rem;letter-spacing:.05em;color:var(--safe);border:1px solid rgba(87,193,166,.35);border-radius:999px;padding:.35em .9em}
+
+  /* ---------- DEEPENS ---------- */
+  .deepen{background:linear-gradient(180deg,transparent,var(--panel-2))}
+  .deepen-grid{display:grid;grid-template-columns:1fr 1fr;gap:clamp(28px,4vw,52px);align-items:center;margin-top:clamp(30px,4vw,48px)}
+  .map{border:1px solid var(--haze);border-radius:var(--radius);background:var(--panel-2);padding:14px}
+  .map svg{display:block;width:100%;height:auto}
+  .nights{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px;background:var(--haze);border:1px solid var(--haze);border-radius:12px;overflow:hidden}
+  .nights li{background:var(--panel);padding:1.05rem 1.2rem;display:flex;gap:1rem;align-items:baseline}
+  .nights .when{font-family:var(--mono);font-size:.74rem;color:var(--brass);letter-spacing:.06em;flex:none;width:5.4em}
+  .nights .what{color:var(--muted);font-size:.95rem}
+  .nights .what b{color:var(--ink)}
+
+  /* ---------- NIGHTSHIFT ---------- */
+  .night-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-top:clamp(30px,4vw,48px)}
+  .ncard{border:1px solid var(--haze);border-radius:var(--radius);background:var(--panel);padding:1.4rem 1.3rem}
+  .ncard .ic{width:34px;height:34px;color:var(--brass);margin-bottom:.9rem}
+  .ncard h3{font-size:1.08rem}
+  .ncard p{margin-top:.6rem;color:var(--muted);font-size:.92rem;line-height:1.55}
+
+  /* ---------- INSTALL ---------- */
+  .install{text-align:center}
+  .install h2{max-width:18ch;margin-inline:auto}
+  .install p{margin-top:1rem;color:var(--muted);max-width:52ch;margin-inline:auto}
+  .cmd{
+    margin:2rem auto 0;max-width:720px;display:flex;align-items:center;gap:1rem;
+    border:1px solid var(--haze);border-radius:12px;background:var(--panel-2);
+    padding:1rem 1.1rem;font-family:var(--mono);font-size:.86rem;text-align:left;overflow-x:auto;
+  }
+  .cmd code{color:var(--ink);white-space:nowrap}
+  .cmd .prompt{color:var(--brass)}
+  .copy{margin-left:auto;flex:none;border:1px solid var(--haze);background:transparent;color:var(--muted);
+    font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;padding:.5em .8em;border-radius:7px;cursor:pointer;transition:.15s}
+  .copy:hover{color:var(--brass);border-color:var(--brass)}
+  .install .sub-cmds{margin-top:1.2rem;font-family:var(--mono);font-size:.8rem;color:var(--muted)}
+  .install .sub-cmds b{color:var(--ink)}
+
+  /* ---------- FOOTER ---------- */
+  footer{border-top:1px solid var(--haze);padding-block:2.4rem}
+  .foot{display:flex;flex-wrap:wrap;gap:1rem 2rem;align-items:center;justify-content:space-between}
+  .foot .brand{font-family:var(--serif);font-size:1.15rem;color:var(--ink)}
+  .foot .brand b{color:var(--brass)}
+  .foot nav{display:flex;flex-wrap:wrap;gap:1.2rem;font-size:.9rem}
+  .foot nav a{color:var(--muted)} .foot nav a:hover{color:var(--brass)}
+  .foot .fine{width:100%;color:var(--muted);font-size:.8rem;font-family:var(--mono);letter-spacing:.03em}
+
+  @media (max-width:820px){
+    .tribunal{grid-template-columns:1fr}
+    .readout-grid,.deepen-grid{grid-template-columns:1fr}
+    .stamp::after{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none !important;transition:none !important;scroll-behavior:auto !important}
+  }
+  .reveal{opacity:0;transform:translateY(18px)}
+  .reveal.in{opacity:1;transform:none;transition:opacity .7s ease,transform .7s ease}
+  @media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none}}
+</style>
+<noscript><style>.reveal{opacity:1 !important;transform:none !important}#sweep{display:none}</style></noscript>
+</head>
+<body>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <canvas id="sweep" aria-hidden="true"></canvas>
+  <div class="hero-scrim"></div>
+  <div class="hero-inner">
+    <div class="wrap">
+      <span class="eyebrow">Night shift · autonomous code review</span>
+      <h1>It hunts the bugs <em>while you sleep.</em></h1>
+      <p class="hero-sub">
+        <b>bugsweep</b> is an autonomous, adversarial AI bug-hunter for Claude Code and Codex.
+        It builds a model of your whole repo, finds real security, logic, and data-integrity
+        bugs, and — when you let it — fixes them on a throwaway branch you fully control.
+        Safe enough to run unattended, all night.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/shanemhamilton/bugsweep">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.87-.01-1.71-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.36 1.11 2.94.85.09-.67.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.9-1.33 2.74-1.05 2.74-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.79-4.57 5.05.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49A10.06 10.06 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z"/></svg>
+          View on GitHub
+        </a>
+        <a class="btn btn-ghost" href="#install">Install the skill</a>
+      </div>
+      <div class="badges">
+        <span class="badge"><span class="dot brass"></span>Claude Code &amp; Codex</span>
+        <span class="badge"><span class="dot safe"></span>Zero dependencies</span>
+        <span class="badge"><span class="dot safe"></span>MIT licensed</span>
+        <span class="badge"><span class="dot crit"></span>Finds real CVEs</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ============ GUARANTEE ============ -->
+<section class="guarantee">
+  <div class="wrap">
+    <div class="stamp reveal">
+      <span class="kicker">The one thing to understand</span>
+      <h2>The worst case is <u>a branch you delete.</u></h2>
+      <p>
+        During the hunt-and-fix loop, bugsweep never touches your real branch, never pushes,
+        never merges, and never deletes a file. It cuts a fresh <code style="font-family:var(--mono);color:var(--brass)">bugsweep/&lt;timestamp&gt;</code>
+        branch, lands one commit per bug, and re-runs your tests after every fix —
+        <b>automatically reverting any fix that breaks something.</b> You are always the merge gate.
+      </p>
+      <p style="margin-top:.9rem">
+        The irreversible git operations are done by short, auditable shell scripts you can
+        read in a few minutes — not left to the model's judgment. That's what makes it
+        trustworthy to leave running overnight.
+      </p>
+      <div class="stamp-grid">
+        <div class="stamp-cell"><div class="n">1</div><div class="l">commit per bug — clean, reviewable history</div></div>
+        <div class="stamp-cell"><div class="n">0</div><div class="l">remote operations during the core run</div></div>
+        <div class="stamp-cell"><div class="n">Auto</div><div class="l">revert the instant a fix turns a check red</div></div>
+        <div class="stamp-cell"><div class="n">You</div><div class="l">decide what — if anything — ever lands</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ TRIBUNAL ============ -->
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Why the false-positive rate stays low</span>
+      <h2>Every finding faces a tribunal.</h2>
+      <p class="lede">Most AI reviewers grade their own homework. bugsweep doesn't. A candidate bug has to survive
+        three independent roles before it's ever fixed or even reported — <b>the model never rubber-stamps its own guess.</b></p>
+    </div>
+
+    <div class="tribunal">
+      <article class="role reveal">
+        <span class="step">01</span>
+        <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></div>
+        <div class="job">Finds</div>
+        <h3>The Hunter</h3>
+        <p>Sweeps a batch of files against a whole-repo architecture model and a stack-specific
+          anti-pattern library, and raises candidate bugs with the exact evidence trail.</p>
+      </article>
+
+      <article class="role reveal">
+        <span class="step">02</span>
+        <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.4-3 8-7 10-4-2-7-5.6-7-10V6z"/><path d="m9 12 2 2 4-4"/></svg></div>
+        <div class="job">Disproves</div>
+        <h3>The Skeptic</h3>
+        <p>Actively tries to kill each candidate — alternate explanations, guarding code paths,
+          tests that already catch it — tuned to punish dismissing a real bug more than missing a false alarm.</p>
+      </article>
+
+      <article class="role reveal">
+        <span class="step">03</span>
+        <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7 3 13h4z"/><path d="M19 7l-2 6h4z"/><path d="M8 21h8"/></svg></div>
+        <div class="job">Decides</div>
+        <h3>The Referee</h3>
+        <p>A neutral arbiter reads the code independently and issues the final verdict. Only its
+          confirmed list is eligible to be fixed — and it seeds variant queries to hunt siblings next time.</p>
+      </article>
+    </div>
+
+    <p class="flow-note reveal">
+      <b>Hunter</b> <span class="arrow">→</span> <b>Skeptic</b> <span class="arrow">→</span> <b>Referee</b>
+      <span class="c-muted">— confirmed bugs go to the fix queue; everything else is dropped, not reported.</span>
+    </p>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ READOUT / MOAT ============ -->
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">The moat: whole-repo context</span>
+      <h2>It catches the bugs a single prompt can't see.</h2>
+      <p class="lede">Before hunting, bugsweep distills your architecture — trust boundaries, sensitive sinks, and
+        the call chains into them. That's how it finds <b>cross-file</b> bugs: a missing authorization check on one
+        path into a database write, contract drift across a module boundary, untrusted input reaching a sink three files away.</p>
+    </div>
+
+    <div class="readout-grid">
+      <div class="term reveal" role="img" aria-label="Example bugsweep findings readout showing a confirmed cross-package SSRF and a reverted regression.">
+        <div class="term-bar">
+          <span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>
+          <span class="ttitle">report.md — findings (machine-readable)</span>
+        </div>
+        <div class="term-body">
+<pre><span class="c-muted"># bugsweep report — 0300 · branch bugsweep/night</span>
+<span class="c-muted">Reviewed via</span> <span class="c-brass">Hunter→Skeptic→Referee</span>
+
+<span class="c-crit">▲ CRITICAL</span>  <span class="c-hi">security · cross-file</span>
+  server/proxy.go:88 ← api/fetch.go:41
+  untrusted host reaches outbound
+  request — <span class="c-hi">SSRF chain</span> across 2 pkgs
+  <span class="c-safe">✔ confirmed</span>  <span class="c-muted">fix committed a1b90c4</span>
+
+<span class="c-hi">▲ HIGH</span>  <span class="c-muted">logic</span>
+  billing/tax.py:212  money rounded with
+  float — precision loss on totals
+  <span class="c-safe">✔ confirmed</span>  <span class="c-muted">fix committed 7c31e8b</span>
+
+<span class="c-muted">▲ MED   error-handling</span>
+  jobs/retry.ts:57  swallowed rejection
+  <span class="c-crit">✖ reverted</span>  <span class="c-muted">fix broke a test → quarantined</span>
+
+<span class="c-brass">coverage 14/14 batches · 0 red checkpoints</span></pre>
+        </div>
+      </div>
+
+      <div class="story reveal">
+        <h3>A real find, not a lint warning</h3>
+        <p>In a benchmark case whose planted bug was a <b>cross-package SSRF chain</b>, a single-prompt
+          baseline review missed it entirely. bugsweep's architecture model traced untrusted input from one
+          package into an outbound request in another — and flagged it.</p>
+        <p>It ignores the noise on purpose. Style, formatting, naming, unused imports, TODOs, dependency
+          versions — <b>those are a linter's job.</b> bugsweep spends its attention on bugs that actually fault at runtime.</p>
+        <span class="tag">◆ where whole-repo context beats a single prompt</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ DEEPENS EACH NIGHT ============ -->
+<section class="deepen">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Coverage-first · not a diff scanner</span>
+      <h2>It gets deeper every night.</h2>
+      <p class="lede">The whole repo is always in scope — bugsweep finds latent bugs in old, unchanged code, not just
+        your last diff. It keeps a map on disk of what's been audited and reprioritizes toward the never-seen, the stale,
+        and the high-risk. <b>The repo is never permanently "done" while a frontier remains.</b></p>
+    </div>
+
+    <div class="deepen-grid">
+      <div class="map reveal" aria-hidden="true">
+        <svg viewBox="0 0 400 260" role="presentation">
+          <defs>
+            <radialGradient id="g" cx="50%" cy="50%" r="60%">
+              <stop offset="0%" stop-color="#E7B24C" stop-opacity=".16"/>
+              <stop offset="100%" stop-color="#E7B24C" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect width="400" height="260" fill="#0F1528"/>
+          <g stroke="#232C4D" stroke-width="1">
+            <line x1="0" y1="65" x2="400" y2="65"/><line x1="0" y1="130" x2="400" y2="130"/><line x1="0" y1="195" x2="400" y2="195"/>
+            <line x1="100" y1="0" x2="100" y2="260"/><line x1="200" y1="0" x2="200" y2="260"/><line x1="300" y1="0" x2="300" y2="260"/>
+          </g>
+          <ellipse cx="150" cy="120" rx="140" ry="120" fill="url(#g)"/>
+          <!-- audited (safe teal), stale (brass), never-seen (muted) points + a few links -->
+          <g stroke="#2C3766" stroke-width="1">
+            <line x1="70" y1="70" x2="140" y2="110"/><line x1="140" y1="110" x2="220" y2="90"/>
+            <line x1="220" y1="90" x2="300" y2="150"/><line x1="140" y1="110" x2="120" y2="180"/>
+            <line x1="300" y1="150" x2="340" y2="210"/>
+          </g>
+          <g>
+            <circle cx="70" cy="70" r="4.5" fill="#57C1A6"/>
+            <circle cx="140" cy="110" r="5.5" fill="#57C1A6"/>
+            <circle cx="220" cy="90" r="4" fill="#57C1A6"/>
+            <circle cx="120" cy="180" r="5" fill="#E7B24C"/>
+            <circle cx="300" cy="150" r="6" fill="#E7B24C"/>
+            <circle cx="340" cy="210" r="4" fill="#9AA3C2"/>
+            <circle cx="60" cy="200" r="3.5" fill="#9AA3C2"/>
+            <circle cx="250" cy="200" r="3.5" fill="#9AA3C2"/>
+            <circle cx="360" cy="80" r="3.5" fill="#9AA3C2"/>
+          </g>
+        </svg>
+        <div style="display:flex;gap:1.1rem;flex-wrap:wrap;padding:.7rem .2rem 0;font-family:var(--mono);font-size:.72rem;color:var(--muted)">
+          <span><span class="dot safe" style="display:inline-block;margin-right:.4em"></span>audited &amp; fresh</span>
+          <span><span class="dot brass" style="display:inline-block;margin-right:.4em"></span>stale / high-risk</span>
+          <span><span class="dot" style="display:inline-block;margin-right:.4em;background:var(--muted)"></span>never seen</span>
+        </div>
+      </div>
+
+      <ul class="nights reveal">
+        <li><span class="when">Night 1</span><span class="what">Builds the architecture model, sweeps the highest-risk sinks, <b>lands the first fixes.</b></span></li>
+        <li><span class="when">Night 2</span><span class="what">Skips what's fresh, pushes the frontier into <b>never-audited</b> modules.</span></li>
+        <li><span class="when">Night 3</span><span class="what">Replays <b>variant queries</b> from earlier finds — hunts the whole repo for siblings of confirmed bugs.</span></li>
+        <li><span class="when">Ongoing</span><span class="what">Re-checks stale files as the catalog evolves. Survives context resets — all progress lives on disk.</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ NIGHTSHIFT ============ -->
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Built for the night shift</span>
+      <h2>Point it at a repo. Read the report at breakfast.</h2>
+      <p class="lede">bugsweep is designed to run unattended on a schedule — and to end every session in a clean git
+        state, with no pile of leftover branches.</p>
+    </div>
+
+    <div class="night-grid">
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <h3>Runs headless</h3>
+        <p>Drive it from <code style="font-family:var(--mono);color:var(--brass)">claude -p</code> under cron or launchd. It auto-triggers from a plain-English task — no interactive slash command needed.</p>
+      </div>
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M8 7V5a4 4 0 0 1 8 0v2"/></svg>
+        <h3>Won't collide</h3>
+        <p>An activity-aware pre-check defers politely if another session is working the tree, and closes stale work without ever discarding it.</p>
+      </div>
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        <h3>Bounded &amp; capped</h3>
+        <p>Iteration, runtime, and fix caps keep cost predictable. It stops when it converges and writes a report either way.</p>
+      </div>
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6"/></svg>
+        <h3>Auditable</h3>
+        <p>Every iteration is appended to a run ledger on disk. Findings are emitted as a machine-readable block for CI and dashboards.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ INSTALL ============ -->
+<section class="install" id="install">
+  <div class="wrap">
+    <span class="eyebrow" style="justify-content:center">Get started</span>
+    <h2 style="margin-top:.9rem">One command. No dependencies.</h2>
+    <p>Installs as a skill for Claude Code and Codex. Then just ask it to <em>find bugs</em>, or run <code style="font-family:var(--mono);color:var(--brass)">/bugsweep --autonomous</code> for the overnight hunt.</p>
+
+    <div class="cmd">
+      <span class="prompt">$</span>
+      <code id="installcmd">bash &lt;(curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh)</code>
+      <button class="copy" id="copybtn" type="button" aria-label="Copy install command">COPY</button>
+    </div>
+
+    <div class="sub-cmds">
+      <b>/bugsweep</b> detect-only &nbsp;·&nbsp; <b>--fix</b> confirm &amp; patch &nbsp;·&nbsp; <b>--approve</b> ask first &nbsp;·&nbsp; <b>--autonomous</b> loop all night
+    </div>
+
+    <div class="cta-row" style="justify-content:center;margin-top:2rem">
+      <a class="btn btn-primary" href="https://github.com/shanemhamilton/bugsweep">Read the docs on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <div class="brand"><b>◆</b> bugsweep</div>
+    <nav>
+      <a href="https://github.com/shanemhamilton/bugsweep">GitHub</a>
+      <a href="https://github.com/shanemhamilton/bugsweep/releases">Releases</a>
+      <a href="https://github.com/shanemhamilton/bugsweep/blob/main/SECURITY.md">Security</a>
+      <a href="https://claude.ai/code">Claude Code</a>
+    </nav>
+    <div class="fine">An autonomous, adversarial bug-hunting skill · MIT licensed · the worst case is a branch you delete.</div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---- scroll reveals ---- */
+  var reveals = [].slice.call(document.querySelectorAll(".reveal"));
+  if ("IntersectionObserver" in window && !reduce){
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target);} });
+    },{threshold:.14});
+    reveals.forEach(function(el){ io.observe(el); });
+  } else { reveals.forEach(function(el){ el.classList.add("in"); }); }
+
+  /* ---- copy button ---- */
+  var btn = document.getElementById("copybtn");
+  if (btn){
+    btn.addEventListener("click", function(){
+      var txt = document.getElementById("installcmd").textContent;
+      var done = function(){ btn.textContent="COPIED"; setTimeout(function(){ btn.textContent="COPY"; },1600); };
+      if (navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(done, done); }
+      else { done(); }
+    });
+  }
+
+  /* ---- hero sweep canvas ---- */
+  var canvas = document.getElementById("sweep");
+  if (!canvas) return;
+  var ctx = canvas.getContext("2d");
+  var W=0, H=0, DPR=Math.min(window.devicePixelRatio||1, 2);
+  var glyphs=[], bugs=[], beamX=0, dir=1, running=true, raf=0;
+  var CHARS="{}[]()<>=;/*+-_.:$#01x".split("");
+  var SEV=["#E8705B","#E7B24C","#E7B24C","#9AA3C2"]; // weighted toward warn
+
+  function rand(a,b){ return a + Math.random()*(b-a); }
+
+  function build(){
+    var area = W*H;
+    var gn = Math.max(70, Math.min(240, Math.round(area/9000)));
+    glyphs = [];
+    for (var i=0;i<gn;i++){
+      glyphs.push({ x:Math.random()*W, y:Math.random()*H,
+        c:CHARS[(Math.random()*CHARS.length)|0], a:rand(.05,.16), s:rand(10,17) });
+    }
+    var bn = Math.max(6, Math.min(16, Math.round(W/130)));
+    bugs = [];
+    for (var j=0;j<bn;j++){
+      bugs.push({ x:rand(W*.06,W*.94), y:rand(H*.12,H*.9),
+        col:SEV[(Math.random()*SEV.length)|0], lit:0, confirmed:Math.random()<.34, ring:0 });
+    }
+  }
+
+  function resize(){
+    var r = canvas.getBoundingClientRect();
+    W = r.width; H = r.height;
+    canvas.width = Math.max(1, Math.round(W*DPR));
+    canvas.height = Math.max(1, Math.round(H*DPR));
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    build();
+    if (reduce){ beamX = W*0.5; drawFrame(); }
+  }
+
+  function drawFrame(){
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = "#0B1020";
+    ctx.fillRect(0,0,W,H);
+
+    var beamW = Math.max(120, W*0.13);
+
+    // faint code field
+    ctx.textBaseline = "middle";
+    for (var i=0;i<glyphs.length;i++){
+      var g = glyphs[i];
+      var d = Math.abs(g.x - beamX);
+      var near = d < beamW ? (1 - d/beamW) : 0;
+      var a = g.a + near*0.5;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = near>0.15 ? "#E7B24C" : "#7C87AD";
+      ctx.font = g.s + "px ui-monospace, Menlo, monospace";
+      ctx.fillText(g.c, g.x, g.y);
+    }
+    ctx.globalAlpha = 1;
+
+    // the beam
+    var grad = ctx.createLinearGradient(beamX-beamW,0,beamX+beamW,0);
+    grad.addColorStop(0,"rgba(231,178,76,0)");
+    grad.addColorStop(0.5,"rgba(231,178,76,0.10)");
+    grad.addColorStop(1,"rgba(231,178,76,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(beamX-beamW, 0, beamW*2, H);
+    // bright core
+    var core = ctx.createLinearGradient(beamX-2,0,beamX+2,0);
+    core.addColorStop(0,"rgba(231,178,76,0)");
+    core.addColorStop(0.5,"rgba(244,214,150,0.55)");
+    core.addColorStop(1,"rgba(231,178,76,0)");
+    ctx.fillStyle = core;
+    ctx.fillRect(beamX-2, 0, 4, H);
+
+    // bugs
+    for (var b=0;b<bugs.length;b++){
+      var bg = bugs[b];
+      var dd = Math.abs(bg.x - beamX);
+      if (dd < beamW*0.5){ bg.lit = 1; if(bg.confirmed && bg.ring<1) bg.ring = Math.min(1, bg.ring+0.06); }
+      else { bg.lit *= 0.955; }
+      if (bg.lit < 0.02) { bg.ring *= 0.9; continue; }
+
+      var R = 3 + bg.lit*3;
+      // glow
+      var gl = ctx.createRadialGradient(bg.x,bg.y,0,bg.x,bg.y,R*5);
+      gl.addColorStop(0, hexA(bg.col, 0.5*bg.lit));
+      gl.addColorStop(1, hexA(bg.col, 0));
+      ctx.fillStyle = gl;
+      ctx.beginPath(); ctx.arc(bg.x,bg.y,R*5,0,6.2832); ctx.fill();
+      // dot
+      ctx.globalAlpha = Math.min(1,bg.lit+0.15);
+      ctx.fillStyle = bg.col;
+      ctx.beginPath(); ctx.arc(bg.x,bg.y,R,0,6.2832); ctx.fill();
+      // confirmed ring (verified teal)
+      if (bg.confirmed && bg.ring>0.05){
+        ctx.globalAlpha = bg.ring*bg.lit;
+        ctx.strokeStyle = "#57C1A6";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.arc(bg.x,bg.y, R+4+bg.ring*3, 0, 6.2832); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function hexA(hex,a){
+    var n = parseInt(hex.slice(1),16);
+    return "rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+","+a+")";
+  }
+
+  function tick(){
+    if(!running) return;
+    beamX += dir * Math.max(0.6, W*0.0016);
+    if (beamX > W*1.02){ beamX = W*1.02; dir=-1; }
+    if (beamX < -W*0.02){ beamX = -W*0.02; dir=1; }
+    drawFrame();
+    raf = requestAnimationFrame(tick);
+  }
+
+  window.addEventListener("resize", resize, {passive:true});
+  resize();
+
+  if (!reduce){
+    beamX = -W*0.02;
+    // pause when hero off-screen
+    if ("IntersectionObserver" in window){
+      var vio = new IntersectionObserver(function(es){
+        es.forEach(function(e){
+          if (e.isIntersecting){ if(!running){ running=true; raf=requestAnimationFrame(tick); } }
+          else { running=false; cancelAnimationFrame(raf); }
+        });
+      },{threshold:0});
+      vio.observe(canvas);
+    }
+    document.addEventListener("visibilitychange", function(){
+      if (document.hidden){ running=false; cancelAnimationFrame(raf); }
+      else if(!running){ running=true; raf=requestAnimationFrame(tick); }
+    });
+    raf = requestAnimationFrame(tick);
+  }
+})();
+</script>
+</body>
+</html>
