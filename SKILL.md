@@ -150,29 +150,46 @@ the starting state to `baseline.json`. Every fix is measured against this. If it
 `NO_CHECKS`, follow `references/no-tests.md` — fixes must be more conservative.
 
 ### Step 2 — Build whole-repo context (once)
-Follow `prompts/context-build.md`. Produce `repo-context.md` (architecture, trust
-boundaries, sensitive sinks, call chains, import graph, key data flows, and
-`architectural_targets`) and `recon.json` (risk-ranked batch plan). This distilled model is
+Follow `prompts/context-build.md`. Its first move (Step 0 in that prompt, bugsweep-e1r) is
+now to run `scripts/recon-plan.sh` over a `git ls-files` listing and seed `recon.json` from
+the resulting deterministic plan **before any modeling happens** — so `recon.json` exists,
+valid and non-empty, from minute one, and a run that stalls immediately after still leaves
+a resumable, reportable artifact (the historical failure this fixes: a 1474-file repo used
+to stall mid-modeling with no `recon.json` ever written — bead 2e5, "large repos fail
+silently"). Modeling then proceeds batch by batch, appending each batch's findings to
+`repo-context.md` and updating `recon.json`'s `covered` list after each batch, so the two
+files stay mutually consistent on disk throughout the run — not just at the end. The
+finished `repo-context.md` covers architecture, trust boundaries, sensitive sinks, call
+chains, import graph, key data flows, and `architectural_targets`. This distilled model is
 what lets the hunt find **large** cross-file bugs, and it is small enough to survive a
 context reset. Append a `context_built` event.
 
-**Large-repo budget flag.** After writing `recon.json`, compare `batch_count` against
-`floor(max_runtime_minutes / observed_minutes_per_batch)`. On the very first run
-`observed_minutes_per_batch` is unknown — use 10 as a conservative prior; update after
-iteration 1. If `batch_count > budget_batches`, set `"large_repo_mode": true` and
-`"budget_batches": <n>` in `recon.json` and append a `large_repo_mode_activated` event
-(`{"event":"large_repo_mode_activated","batch_count":<n>,"budget_batches":<n>}`) to the
-ledger. This is a warning, not a stop — it tells the loop when partial coverage is expected
-so it can emit an informative report instead of silently running out of time.
+**Large-repo budget flag.** `scripts/recon-plan.sh` computes `large_repo_mode` and
+`budget_batches` itself, from `batch_count` against a file-count threshold (`cfg_get
+'.context.large_repo_file_threshold'`, default 800; first-pass cap `cfg_get
+'.context.large_repo_first_pass_batches'`, default 40) — this is now known BEFORE modeling
+starts, not after a full pass. If the plan's `large_repo_mode` is `true`, `recon.json` is
+seeded with it immediately in Step 0 of `prompts/context-build.md`, and the
+`large_repo_mode_activated` event
+(`{"event":"large_repo_mode_activated","batch_count":<n>,"budget_batches":<n>}`) is
+appended to the ledger as soon as the plan says so. This is a warning, not a stop — it
+tells the loop when partial coverage is expected so it can emit an informative report
+instead of silently running out of time. Batches beyond the cap are marked
+`"deferred": true` in `recon.json`; `prompts/context-build.md` models only the
+non-deferred batches this run and stops after the last one, so a large-repo run is bounded
+instead of grinding through the whole tree. Deferred batches are never dropped — the
+coverage-first frontier picks them up on a later run (and a batch the coverage-first pass
+promotes to critical, e.g. a sink, is set `deferred: false` so it is always in-budget).
 
-**Coverage-first scope (read `prior-coverage.json` first).** Preflight wrote
-`<RUN_DIR>/prior-coverage.json` from bugsweep's cross-run state (`.bugsweep/state/`). The
-whole repo is ALWAYS in scope — bugsweep finds latent bugs in old, unchanged code, it is
-not a diff scanner. Prior coverage only *reorders* batches: put never-audited, stale (older
-catalog version or audited too long ago), high-risk, and all sink-bearing files in the
-critical tier; put already-audited-and-fresh files in a final cheap re-confirmation tier.
-Never drop a file from the plan. The repo is never permanently "done" while a frontier
-remains. See `references/context-and-continuity.md`.
+**Coverage-first scope (read `prior-coverage.json` next).** Preflight wrote
+`<RUN_DIR>/prior-coverage.json` from bugsweep's cross-run state (`.bugsweep/state/`). By
+this point `recon.json` already exists (seeded from the plan); prior coverage *reorders*
+its batches in place: put never-audited, stale (older catalog version or audited too long
+ago), high-risk, and all sink-bearing files in the critical tier; put
+already-audited-and-fresh files in a final cheap re-confirmation tier. The whole repo is
+ALWAYS in scope — bugsweep finds latent bugs in old, unchanged code, it is not a diff
+scanner — so this step never drops a file from the plan. The repo is never permanently
+"done" while a frontier remains. See `references/context-and-continuity.md`.
 
 ### Step 3 — Research anti-patterns for this stack (once)
 Follow `prompts/research.md`. Detect the languages/frameworks, load the matching catalogs

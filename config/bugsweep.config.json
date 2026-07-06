@@ -32,7 +32,9 @@
     "variants_enabled": true,
     "variant_max_match_ratio": 0.25,
     "variant_overmatch_min_files": 2,
-    "variant_retire_after_nonmatch_runs": 10
+    "variant_retire_after_nonmatch_runs": 10,
+    "large_repo_file_threshold": 800,
+    "large_repo_first_pass_batches": 40
   },
   "commands": {
     "test": "",

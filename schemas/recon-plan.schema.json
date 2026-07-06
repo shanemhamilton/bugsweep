@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/schemas/recon-plan.schema.json",
+  "title": "bugsweep recon-plan",
+  "description": "Deterministic batch plan produced by bench/scorer/recon_plan.py (via scripts/recon-plan.sh) from a bare file list, BEFORE any modeling happens. prompts/context-build.md seeds recon.json from this plan so a resumable, reportable artifact exists from minute one, even on a run that stalls immediately after initialization (bugsweep-e1r).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "files_in_scope",
+    "batch_count",
+    "large_repo_mode",
+    "budget_batches",
+    "batches",
+    "covered"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "files_in_scope": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "batch_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "large_repo_mode": {
+      "type": "boolean"
+    },
+    "budget_batches": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "batches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "dir", "tier", "files", "deferred"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 1},
+          "dir": {"type": "string"},
+          "tier": {"type": "string", "enum": ["critical", "normal", "low"]},
+          "files": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "deferred": {"type": "boolean"}
+        }
+      }
+    },
+    "covered": {
+      "type": "array",
+      "items": {}
+    }
+  }
+}
