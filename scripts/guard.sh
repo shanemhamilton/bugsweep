@@ -11,6 +11,8 @@ run_dir="${1:-}"
 # shellcheck disable=SC1090
 . "${run_dir}/state.env"
 
+bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-touch "$run_dir" >/dev/null 2>&1 || true  # bugsweep-re9: per-iteration lease heartbeat (best-effort, non-fatal)
+
 max_iter="$(cfg_get '.caps.max_iterations' '10')"
 max_minutes="$(cfg_get '.caps.max_runtime_minutes' '120')"
 max_fixes="$(cfg_get '.caps.max_fixes_per_run' '50')"

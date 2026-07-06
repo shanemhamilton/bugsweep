@@ -164,12 +164,28 @@ have_python() { [ -z "${BUGSWEEP_NO_PYTHON:-}" ] && command -v python3 >/dev/nul
 # caller uses a short timeout and degrades gracefully (skip / proceed
 # unlocked) rather than blocking a sibling subagent indefinitely.
 #
+# bugsweep-re9: a release-on-EXIT trap fired ALONGSIDE an unconditional
+# explicit release (as an earlier revision of this comment showed) is
+# hazardous and must not be reintroduced. bugsweep_lock_release force-clears
+# whatever CURRENTLY holds lockdir/pid — it has no notion of "is this still
+# my lock" — so if the explicit release below runs and the trap ALSO fires
+# later on some other exit path (a subshell quirk, a signal after the
+# explicit release, or a future edit that adds another exit route), the trap
+# can force-clear a lock some UNRELATED subsequent holder has since
+# legitimately acquired. A trap must therefore be guarded so it no-ops once
+# the explicit release has already run.
+#
 # Usage:
 #   if bugsweep_lock_acquire "$lockdir" 10; then
-#     trap 'bugsweep_lock_release "$lockdir"' EXIT
+#     released=0
+#     trap '[ "$released" = 1 ] || { bugsweep_lock_release "$lockdir"; released=1; }' EXIT
 #     ...critical section...
 #     bugsweep_lock_release "$lockdir"
+#     released=1
 #   fi
+# Simpler still (preferred when the critical section has no early-return
+# paths that would otherwise skip the explicit release): skip the trap
+# entirely and rely solely on the explicit release.
 bugsweep_lock_acquire() {
   local lockdir="$1" timeout="${2:-10}" waited=0 holder_pid marker_pid current_pid marker
   marker="${lockdir}/takeover"
@@ -200,6 +216,26 @@ bugsweep_lock_acquire() {
     # An orphaned marker (claimant died mid-takeover) is itself reclaimed by
     # the same dead-pid rule; an unreadable marker fails CLOSED (wait), so a
     # half-written marker can never be stolen from a live claimant.
+    #
+    # bugsweep-re9 (verify-after-write): the orphaned-marker CLEANUP above
+    # ("Clear it only if it is provably dead") is itself check-then-act — a
+    # claimant can observe $marker, read its pid, confirm it's dead, and then
+    # be PREEMPTED before its `rm -f "$marker"` runs. If a NEW claimant's
+    # noclobber-write races into that same window (marker now briefly absent
+    # again after the preempted claimant's stale-check but not yet removed),
+    # a schedule replay showed the preempted claimant's `rm -f` can go on to
+    # delete that NEW claimant's fresh, live marker after it already won its
+    # noclobber-write — reopening the marker slot while the new claimant
+    # still believes it holds exclusivity, letting a THIRD claimant's
+    # noclobber-write also succeed. Both would then pass the
+    # current_pid==holder_pid re-verify (neither has adopted yet) and both
+    # would write "$$" into lockdir/pid, with only the last writer's pid
+    # surviving — the loser believes it holds the lock but does not.
+    # Closing this requires a verify AFTER the adoption write, not just
+    # before: immediately after writing "$$", re-read lockdir/pid. If it does
+    # not read back as "$$", some other claimant's write landed after ours —
+    # we lost the generation race and must back off and re-loop rather than
+    # return 0 believing we hold the lock.
     if [ -f "${lockdir}/pid" ]; then
       holder_pid="$(cat "${lockdir}/pid" 2>/dev/null || true)"
       case "$holder_pid" in
@@ -218,11 +254,19 @@ bugsweep_lock_acquire() {
               current_pid="$(cat "${lockdir}/pid" 2>/dev/null || true)"
               if [ "$current_pid" = "$holder_pid" ]; then
                 printf '%s' "$$" > "${lockdir}/pid" 2>/dev/null || true
+                # Verify-after-write: confirm OUR write is still the one on
+                # disk before declaring victory. If another claimant's write
+                # landed after ours (the preemption race above), back off —
+                # do NOT remove the marker (it may be the winner's) and do
+                # NOT return 0.
+                if [ "$(cat "${lockdir}/pid" 2>/dev/null || true)" = "$$" ]; then
+                  rm -f "$marker" 2>/dev/null || true
+                  return 0
+                fi
+              else
+                # The generation changed under us (live holder) — abort the claim.
                 rm -f "$marker" 2>/dev/null || true
-                return 0
               fi
-              # The generation changed under us (live holder) — abort the claim.
-              rm -f "$marker" 2>/dev/null || true
             fi
           fi
           ;;

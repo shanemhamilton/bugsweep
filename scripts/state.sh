@@ -10,6 +10,7 @@
 #   state.sh prime   <RUN_DIR>   write <RUN_DIR>/prior-coverage.json; print SUMMARY=...
 #   state.sh catalog-version     print the current anti-pattern catalog version
 #   state.sh lease-acquire <RUN_DIR>   record a per-run liveness lease (bugsweep-p74)
+#   state.sh lease-touch   <RUN_DIR>   refresh an EXISTING lease's mtime (bugsweep-re9 heartbeat)
 #   state.sh lease-release <RUN_DIR>   release this run's lease
 #   state.sh lease-list                list currently-live leases (LEASE=<run_dir> lines)
 #
@@ -106,6 +107,13 @@ persist() {
 
   bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
     || { log "state: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping persist."; return 0; }
+
+  # bugsweep-re9 retry 1 (MAJOR 2): persist() deliberately does NOT touch the
+  # lease. persist() is invoked exactly ONCE per run, at the very end
+  # (finalize.sh, five lines before lease-release) — never per iteration — so a
+  # heartbeat here would refresh a lease that is about to be deleted and gives
+  # ZERO mid-run protection. guard.sh (called between every iteration) is the
+  # SOLE per-iteration heartbeat.
 
   local cat_v ts run_id ordinal
   cat_v="$(catalog_version)"
@@ -357,6 +365,25 @@ EOF
 # used here is the short mkdir-lock around LEASES_DIR list/write operations,
 # to avoid two callers racing on the same lease file's create/delete.
 #
+# bugsweep-re9 HEARTBEAT: liveness here is ultimately judged by the lease
+# FILE's mtime once the recorded pid is dead (_lease_is_stale's grace-window
+# branch) — and the recorded pid is *routinely* dead almost immediately in
+# agent-driven flows, because every Bash tool call is a fresh shell. Even the
+# documented `BUGSWEEP_LEASE_PID=$$` override only records the pid of THAT
+# shell invocation, which exits the moment the tool call returns. Without a
+# heartbeat, the lease file's mtime is set once at lease-acquire time and
+# never refreshed, so any run longer than BUGSWEEP_LEASE_GRACE_SECONDS
+# (default 900s) is reclaimed by a sibling's stale-lease pass while still
+# genuinely in-flight. `lease_touch` (below) closes this: guard.sh, which
+# runs between every loop iteration, calls it (best-effort, non-fatal) on
+# every pass so the lease's mtime keeps advancing for as long as the run is
+# alive, independent of whether its recorded pid still exists. guard.sh is the
+# SOLE per-iteration heartbeat — persist() runs only once at teardown and does
+# NOT touch the lease (bugsweep-re9 retry 1, MAJOR 2). `lease_touch` MUST NOT
+# create a lease that was never acquired — it only refreshes a lease file that
+# already exists, under the leases lock so a concurrent lease-release can never
+# be raced into recreating a zombie (bugsweep-re9 retry 1, BLOCKER 1).
+#
 # Lease id is derived from the run dir's basename so it's stable and
 # human-readable in `lease-list` output (e.g. "run-20260706-153000-8421-a1b2").
 _lease_id() {
@@ -454,6 +481,70 @@ lease_acquire() {
   echo "LEASE_ACQUIRED=${run_dir}"
 }
 
+# Heartbeat (bugsweep-re9): refresh an EXISTING lease's mtime so a run that
+# outlives BUGSWEEP_LEASE_GRACE_SECONDS is not reclaimed by a sibling's
+# stale-lease pass while genuinely still in-flight. Deliberately a NO-OP
+# (never creates a lease) when no lease file exists for this run_dir — a
+# heartbeat must never resurrect or fabricate a lease that lease-acquire was
+# never called for. The lifecycle is: lease-acquire once up front
+# (preflight.sh), then lease-touch on every loop iteration (guard.sh — the
+# SOLE per-iteration heartbeat), then lease-release once at teardown
+# (finalize.sh). persist() does NOT touch the lease: it runs a single time at
+# the end of the run, so a heartbeat there would refresh a lease that is about
+# to be released and provide no mid-run protection (bugsweep-re9 retry 1,
+# MAJOR 2). Best-effort and non-fatal like every other lease operation: a
+# failed touch just means the NEXT touch (or the grace window) determines
+# reclaim, never a hard failure of the caller.
+lease_touch() {
+  local run_dir="${1:-}"
+  [ -n "$run_dir" ] || die "usage: state.sh lease-touch <RUN_DIR>"
+  bugsweep_state_dir_ready || return 0
+  [ -d "$run_dir" ] && run_dir="$(cd "$run_dir" && pwd)"
+
+  local lock="${LEASES_DIR}.lock" id lease_file
+  id="$(_lease_id "$run_dir")"
+  lease_file="${LEASES_DIR}/${id}.json"
+
+  # Fast unlocked pre-check: if there is plainly no lease, do nothing and skip
+  # the lock entirely (the common case — most runs have exactly one lease and
+  # never race). This is ONLY an optimization; the create-vs-touch decision is
+  # re-made UNDER the lock below, so a lease deleted after this check can never
+  # be resurrected by us.
+  [ -f "$lease_file" ] || return 0
+
+  # bugsweep-re9 retry 1 (BLOCKER 1): `touch` CREATES the file when absent — it
+  # is NOT a pure mtime bump. Without a lock, a concurrent lock-guarded
+  # lease-release could delete the lease between the pre-check above and the
+  # touch below, and our touch would then recreate a 0-byte ZOMBIE lease (no
+  # pid/run_dir/started, fresh mtime) that survives the entire grace window.
+  # Take the SAME leases lock that lease-acquire/lease-release use, and
+  # re-verify existence UNDER the lock before touching — so a delete that
+  # committed before we got the lock is observed and we do nothing, and a
+  # delete that comes after cannot interleave (release must take this lock).
+  if bugsweep_lock_acquire "$lock" 10; then
+    # Deterministic race hook (tests only): force the check→act window open so
+    # a concurrent lease-release can commit its delete before we re-check. In
+    # production this variable is unset and this is a no-op. The point of the
+    # test is that even WITH the window forced open, the re-check under the
+    # lock below refuses to recreate the file.
+    [ -n "${BUGSWEEP_LEASE_TOUCH_RACE_SLEEP:-}" ] && sleep "${BUGSWEEP_LEASE_TOUCH_RACE_SLEEP}" 2>/dev/null
+    if [ -f "$lease_file" ]; then
+      touch "$lease_file" 2>/dev/null || true
+    fi
+    bugsweep_lock_release "$lock"
+  else
+    # Lock contention must never block/fail a heartbeat — but it must also never
+    # do an UNGUARDED touch (that reintroduces exactly the check-then-act zombie
+    # this fix closes). So on contention we simply SKIP this heartbeat entirely:
+    # a missed touch is harmless (guard.sh retries on the very next iteration,
+    # and the grace window is 900s), whereas an unlocked touch could recreate a
+    # lease a concurrent release just deleted. Only the fully lock-atomic path
+    # above ever writes.
+    log "state: leases.lock busy — skipping this lease heartbeat (best effort; next guard iteration retries)."
+  fi
+  echo "LEASE_TOUCHED=${run_dir}"
+}
+
 lease_release() {
   local run_dir="${1:-}"
   [ -n "$run_dir" ] || die "usage: state.sh lease-release <RUN_DIR>"
@@ -487,6 +578,11 @@ lease_list() {
     run_dir="$(sed -n 's/.*"run_dir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)"
     [ -n "$run_dir" ] && echo "LEASE=${run_dir}"
   done
+  # bugsweep-re9 retry 1 (MAJOR 2): explicit success — otherwise the function's
+  # exit status is that of the final loop iteration's `[ -n "$run_dir" ] && echo`,
+  # so an empty/zombie lease file (no run_dir) as the last entry would make
+  # lease-list exit 1 despite having listed successfully.
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -496,7 +592,8 @@ case "$cmd" in
   prime)           prime "${2:-}" ;;
   catalog-version) catalog_version; echo ;;
   lease-acquire)   lease_acquire "${2:-}" ;;
+  lease-touch)     lease_touch "${2:-}" ;;
   lease-release)   lease_release "${2:-}" ;;
   lease-list)      lease_list ;;
-  *)               die "usage: state.sh <persist|prime|catalog-version|lease-acquire|lease-release|lease-list> [RUN_DIR]" ;;
+  *)               die "usage: state.sh <persist|prime|catalog-version|lease-acquire|lease-touch|lease-release|lease-list> [RUN_DIR]" ;;
 esac

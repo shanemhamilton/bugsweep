@@ -215,10 +215,23 @@ printf '{"event":"preflight","ts":"%s","branch":"%s","orig_branch":"%s","stash":
 # preflight exits right after PREFLIGHT_OK, so its pid is dead moments after
 # the lease is written. Callers that know a better owner (e.g. an orchestrator
 # session) pass BUGSWEEP_LEASE_PID=$$ explicitly and it is honored verbatim.
-# Even when the recorded pid is itself short-lived, the lease-reclaim grace
-# window (BUGSWEEP_LEASE_GRACE_SECONDS, see state.sh) prevents premature
-# reclaim of an in-flight run; finalize's lease-release is the deterministic
-# happy-path teardown.
+#
+# bugsweep-re9: the recorded pid is IN FACT dead almost immediately in every
+# agent-driven flow — each Bash tool call is its own fresh shell, so even a
+# caller that dutifully passes BUGSWEEP_LEASE_PID=$$ is naming a process that
+# exits the instant that tool call returns, long before the run itself
+# finishes. The lease-reclaim grace window (BUGSWEEP_LEASE_GRACE_SECONDS, see
+# state.sh) only prevents premature reclaim WITHIN that window (default
+# 900s) — it does NOT, by itself, prevent reclaim of a run that legitimately
+# takes longer than that, since a dead pid plus an aged lease file is exactly
+# the condition state.sh reclaims on. What actually keeps a long-running run's
+# lease alive past the grace window is the HEARTBEAT: guard.sh calls `state.sh
+# lease-touch` on every iteration (and state.sh's own `persist` does the same),
+# refreshing the lease file's mtime for as long as the run keeps making
+# progress. A run that stops calling guard.sh (crashed, abandoned, or genuinely
+# hung) stops refreshing its lease and is reclaimed once the grace window
+# elapses from its LAST heartbeat — not from lease-acquire time. finalize's
+# lease-release remains the deterministic happy-path teardown.
 BUGSWEEP_LEASE_PID="${BUGSWEEP_LEASE_PID:-$PPID}" bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-acquire "$run_dir" >/dev/null 2>&1 || true
 
 # --- Prime coverage-first scope from prior runs (best-effort, never fatal) -----
