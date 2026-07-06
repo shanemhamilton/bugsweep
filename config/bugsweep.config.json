@@ -47,5 +47,9 @@
     "build": "",
     "typecheck": "",
     "lint": ""
+  },
+  "verify": {
+    "_comment": "flaky_reruns: how many times run_checks.sh verify reruns a newly-failing 'test' check. It is classified flaky (and excluded from the revert) ONLY on a strict majority of rerun passes; a tie or a majority of rerun failures still reverts. Reruns share the working tree/environment, so this is not full isolation — see scripts/run_checks.sh header for the accurate safety claim, the state-pollution caveat, and the baseline-flaky limitation.",
+    "flaky_reruns": 3
   }
 }

@@ -40,7 +40,21 @@ rest. If a rule can't be honored, STOP and report — never work around it.
 4. **Preserve the user's work.** Preflight stashes uncommitted changes; finalize restores
    them. Their starting branch and working tree end exactly as they began.
 5. **One bug, one commit, auto-revert on regression.** Re-run checks after each fix; if a
-   fix introduces ANY new failure, revert it and quarantine the bug.
+   fix introduces a new failure that survives the flaky check below, revert it and
+   quarantine the bug. A newly-failing test is reran `.verify.flaky_reruns` (default 3)
+   times before that decision: only a **strict majority of rerun passes** reclassifies it
+   as FLAKY and excludes it from the revert; a tie or a majority of rerun failures still
+   reverts. **Precise, non-overclaimed safety:** the reruns share the initial run's
+   working tree/environment (no per-rerun isolation), so this distinguishes "failed the
+   majority of reruns" from "passed the majority" — NOT truly "deterministic" from
+   "flaky." A monotonic **state-pollution** bug (a broken fix whose first run fails but
+   leaves a marker/cache that makes later runs pass) can be misclassified as flaky; the
+   majority vote raises the bar but does not eliminate this. Therefore **any fix that
+   lands with a flaky classification is loudly surfaced** (flaky.jsonl + ledger +
+   run-summary + the `FLAKY=`/`FLAKY_TEST=` lines) and must be reviewed — it is never
+   silent. Full per-rerun isolation is a documented **future enhancement** (deferred to a
+   follow-up bead). See `scripts/run_checks.sh` for the full mechanics and its baseline-flaky
+   limitation.
 6. **Fix only confirmed bugs** — findings must pass the full adversarial review first.
 7. **Minimal surgical fixes only.** No refactoring, renaming, reformatting, or unrelated
    changes.
@@ -236,7 +250,12 @@ disabled config is a clean no-op.
    `bash scripts/run_checks.sh verify "<RUN_DIR>"`. If OK / no new failures → commit
    (`git add -A && git commit -m "fix(bugsweep): <BUG-ID> <desc>"`). If `REGRESSION` →
    revert and quarantine. Never leave a red checkpoint. In `--approve`, ask before each
-   commit.
+   commit. `verify` already reran the newly-failing test and applied the majority-flaky
+   rule (see rule 5) before printing `REGRESSION`/`OK`, so `REGRESSION` means the failure
+   survived the reruns. When `verify` prints `FLAKY=<n>`/`FLAKY_TEST=<id>` alongside `OK`,
+   the fix is being COMMITTED with a flaky-classified test — record it and flag it for
+   human review (per rule 5 this classification is shared-environment and can mask a
+   state-pollution bug); do not treat a flaky-annotated `OK` as silently clean.
 5. **Record + checkpoint** — Append the iteration result to `ledger.jsonl` (the Referee
    writes `{"event":"iteration","confirmed":<n>,"new_bugs":<n_new>}`), mark the batch
    covered (`batch_covered`), then run:
