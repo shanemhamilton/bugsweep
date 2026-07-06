@@ -36,6 +36,12 @@
     "large_repo_file_threshold": 800,
     "large_repo_first_pass_batches": 40
   },
+  "analyzers": {
+    "_comment": "Optional pre-hunt step (scripts/analyzers.sh): runs off-the-shelf static analyzers (semgrep, gosec, bandit, ...) to seed the Hunter with candidate locations and give the Referee a corroboration signal. Defaults to disabled — a reproducibility default: bugsweep's own findings are the audited, adversarially-reviewed output; auto-running third-party tools changes run behavior based on what happens to be installed on the machine, which would make two runs of the identical repo diverge. Opt in explicitly once you've reviewed what's installed.",
+    "enabled": false,
+    "timeout_seconds": 300,
+    "max_hits": 200
+  },
   "commands": {
     "test": "",
     "build": "",

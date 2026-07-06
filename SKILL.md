@@ -204,6 +204,13 @@ bash scripts/guard.sh "<RUN_DIR>"
 ```
 If it prints `STOP <reason>`, go to Step 5. Otherwise run one iteration:
 
+**Optional pre-hunt analyzer seeding (bugsweep-042).** Before the first HUNT, if
+`.analyzers.enabled` is `true` (default `false` — see `config/bugsweep.config.json`), run
+`bash scripts/analyzers.sh "<RUN_DIR>"`. This best-effort step runs whichever off-the-shelf
+static analyzers are installed (semgrep, gosec, bandit, ...) and writes `<RUN_DIR>/analyzer-hits.json`
+for the Hunter to read as candidate seeds. It never fails the run — an absent tool or a
+disabled config is a clean no-op.
+
 1. **HUNT** — Dispatch a hunter (use a subagent / Task tool for context isolation if
    available) following `prompts/hunt.md` on the next uncovered batch. The hunter loads
    `repo-context.md` and `antipatterns.md` and runs BOTH the local lens (this batch) and

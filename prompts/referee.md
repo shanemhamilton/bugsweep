@@ -68,6 +68,26 @@ found bug into repo-wide variant analysis.
 Skip variant synthesis for one-off bugs with no transferable shape (e.g. a single typo'd
 constant). Detect-only runs still synthesize variants — the corpus grows every run.
 
+## Corroboration from static analyzers (bugsweep-042)
+
+If `<RUN_DIR>/analyzer-hits.json` is present (written by the optional pre-hunt step,
+`scripts/analyzers.sh`), check whether a finding's file/line matches one of its normalized hits.
+When it does, record `corroborated_by:<tool>` (e.g. `corroborated_by:semgrep`) as supporting
+evidence in the verdict rationale.
+
+This is a one-directional signal:
+- Corroboration **raises** confidence in a finding you would otherwise rule CONFIRMED — it is
+  additional independent evidence, useful when a finding is borderline.
+- The **absence** of a corroborating hit must **NOT lower** confidence or count against a finding.
+  Most real bugs — especially architectural ones spanning multiple hops — have no off-the-shelf
+  detector for their exact shape; absence of a hit means nothing beyond "no generic tool happened
+  to pattern-match this," never "this is less likely to be a real bug."
+- An analyzer hit **alone never confirms a finding**. It is a hint from an untrusted, generic tool
+  that never read this repo's context, trust boundaries, or call chains — the full
+  Hunter -> Skeptic -> Referee gauntlet still applies to every finding regardless of corroboration.
+  This is bugsweep-042's core safety property: static-analyzer seeding accelerates *where* the
+  Hunter looks, and *what* the Referee weighs, but never substitutes for independent verification.
+
 ## Record a sanitizer when you clear a path (WU3)
 
 If, while adjudicating, you verify that a specific function genuinely neutralizes a sink class
