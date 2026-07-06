@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://bugsweep/schemas/run-summary.schema.json",
   "title": "bugsweep run-summary",
-  "description": "Deterministic, script-emitted reduction of a bugsweep run's ledger.jsonl + recon.json. This is the machine-readable contract a headless scheduler (nightshift) can branch on without parsing model prose. schema_version bumps on any breaking field change.",
+  "description": "Deterministic, script-emitted reduction of a bugsweep run's ledger.jsonl + recon.json. This is the machine-readable contract a headless scheduler (nightshift) can branch on without parsing model prose. Versioning rule: schema_version bumps ONLY on a breaking change (a required field removed/renamed, or an existing field's meaning/type changed) — adding a new OPTIONAL field, such as root_cause_clusters/follow_up/flaky (bugsweep-xdw), is backward compatible and does NOT bump schema_version.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -91,6 +91,56 @@
           "line": {"type": ["integer", "null"]},
           "fixed": {"type": "boolean"},
           "rationale": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "root_cause_clusters": {
+      "type": "array",
+      "description": "OPTIONAL (bugsweep-xdw). Confirmed/fixed findings sharing a category (or category::variant) cluster together; a singleton (size 1) is not a cluster and is excluded. Ordered size descending, then cluster name ascending.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cluster", "size", "representative", "files"],
+        "properties": {
+          "cluster": {"type": "string"},
+          "size": {"type": "integer", "minimum": 2},
+          "representative": {"type": ["string", "null"]},
+          "files": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "follow_up": {
+      "type": "array",
+      "description": "OPTIONAL (bugsweep-xdw). The 'where to look next' handoff, derived from recon.json's uncovered batches, prior-coverage.json's high-risk/stale files, and this run's quarantined findings. Ordered uncovered_batch -> high_risk_file -> stale_file -> quarantined, capped at FOLLOW_UP_CAP entries (see bench/scorer/run_summary.py).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["uncovered_batch", "stale_file", "high_risk_file", "quarantined"]
+          },
+          "ref": {"type": "string"},
+          "detail": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "flaky": {
+      "type": "array",
+      "description": "OPTIONAL (bugsweep-xdw). One entry per flaky_test ledger event emitted by the test-runner instrumentation; empty when no such events exist.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["test", "file", "reruns", "failures"],
+        "properties": {
+          "test": {"type": ["string", "null"]},
+          "file": {"type": ["string", "null"]},
+          "reruns": {"type": ["integer", "null"]},
+          "failures": {"type": ["integer", "null"]}
         }
       }
     }

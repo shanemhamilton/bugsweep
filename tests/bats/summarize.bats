@@ -9,6 +9,7 @@
 
 FINALIZE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/finalize.sh"
 SUMMARIZE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/summarize.sh"
+AGGREGATE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/aggregate-summaries.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -426,4 +427,123 @@ expected = 'back\\slash"quote'  # one literal backslash, one literal double-quot
 assert d["mode"] == expected, (d["mode"], expected)
 assert d["status"] == "partial", d["status"]
 PY
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-xdw: root_cause_clusters / follow_up / flaky end-to-end via
+# finalize.sh on a fixture run dir with a recon.json that has an uncovered
+# batch, a prior-coverage.json with a stale file + high-risk file, and a
+# ledger with two same-category fixes (a cluster) plus a quarantine and a
+# flaky_test event.
+# ---------------------------------------------------------------------------
+
+@test "finalize.sh: run-summary.json contains root_cause_clusters/follow_up/flaky (bugsweep-xdw)" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  cat > "${RUN_DIR}/recon.json" <<'JSON'
+{
+  "files_in_scope": 10,
+  "batch_count": 2,
+  "batches": [
+    {"id": 1, "tier": "critical", "files": ["a.py"]},
+    {"id": 2, "tier": "high", "files": ["b.py"]}
+  ],
+  "architectural_targets": [],
+  "covered": [1]
+}
+JSON
+  cat > "${RUN_DIR}/prior-coverage.json" <<'JSON'
+{
+  "schema": 1,
+  "catalog_version": "1",
+  "prior_runs": 2,
+  "files_audited_current_catalog": [],
+  "files_audited_current_catalog_count": 0,
+  "files_audited_stale_catalog": ["stale.py"],
+  "files_audited_stale_catalog_count": 1,
+  "high_risk_files": [{"file": "risky.py", "score": 3.5}]
+}
+JSON
+  {
+    printf '{"event":"fix_committed","file":"a.py","bug_id":"BUG-1","severity":"high","category":"sql-injection","line":1,"rationale":"r1"}\n'
+    printf '{"event":"fix_committed","file":"b.py","bug_id":"BUG-2","severity":"high","category":"sql-injection","line":2,"rationale":"r2"}\n'
+    printf '{"event":"quarantine","file":"legacy.py","bug_id":"BUG-3","severity":"medium","category":"logic","line":3,"rationale":"r3"}\n'
+    printf '{"event":"flaky_test","test":"test_flaky_thing","file":"tests/test_x.py","reruns":3,"failures":1}\n'
+  } >> "${RUN_DIR}/ledger.jsonl"
+
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  local summary="${RUN_DIR}/run-summary.json"
+  [ -f "$summary" ]
+
+  python3 -c "
+import json
+d = json.load(open('${summary}'))
+
+clusters = d['root_cause_clusters']
+assert len(clusters) == 1, clusters
+assert clusters[0]['cluster'] == 'sql-injection', clusters[0]
+assert clusters[0]['size'] == 2, clusters[0]
+assert sorted(clusters[0]['files']) == ['a.py', 'b.py'], clusters[0]
+
+follow_up = d['follow_up']
+kinds = {(f['kind'], f['ref']) for f in follow_up}
+assert ('uncovered_batch', '2') in kinds, follow_up
+assert ('high_risk_file', 'risky.py') in kinds, follow_up
+assert ('stale_file', 'stale.py') in kinds, follow_up
+assert ('quarantined', 'BUG-3') in kinds, follow_up
+
+flaky = d['flaky']
+assert flaky == [{'test': 'test_flaky_thing', 'file': 'tests/test_x.py', 'reruns': 3, 'failures': 1}], flaky
+"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-xdw: scripts/aggregate-summaries.sh — session aggregate. The
+# zero-run case must be distinguishable from a clean all-complete session
+# (adversarial review BLOCKER 1), and a real cross-run singleton must fold into
+# a session cluster (BLOCKER 2).
+# ---------------------------------------------------------------------------
+
+@test "aggregate-summaries.sh: zero-run aggregate is not a clean success (bugsweep-xdw)" {
+  run bash "$AGGREGATE_SH" "${BATS_TMP}/session.json"
+  [ "$status" -eq 0 ]
+
+  local out="${BATS_TMP}/session.json"
+  [ -f "$out" ]
+  echo "$output" | grep -q "SESSION_SUMMARY=${out}"
+
+  python3 -c "
+import json
+d = json.load(open('${out}'))
+assert d['run_count'] == 0, d['run_count']
+assert d['worst_status'] == 'no_runs', d['worst_status']
+assert d['worst_status'] != 'complete'
+"
+}
+
+@test "aggregate-summaries.sh: folds cross-run singleton findings into a session cluster (bugsweep-xdw)" {
+  local a="${BATS_TMP}/a.json" b="${BATS_TMP}/b.json" out="${BATS_TMP}/session.json"
+  cat > "$a" <<'JSON'
+{"schema_version":1,"mode":"fix","status":"complete","stop_reason":null,"coverage":{"covered":1,"total":1},"counts":{"critical":0,"high":1,"medium":0,"low":0,"architectural":0},"fixed":["X1"],"quarantined":[],"confirmed_unfixed":[],"findings":[{"bug_id":"X1","severity":"high","category":"xss","file":"a.py","line":1,"fixed":true,"rationale":"r"}],"root_cause_clusters":[],"follow_up":[],"flaky":[]}
+JSON
+  cat > "$b" <<'JSON'
+{"schema_version":1,"mode":"fix","status":"stalled","stop_reason":"x","coverage":{"covered":0,"total":5},"counts":{"critical":0,"high":1,"medium":0,"low":0,"architectural":0},"fixed":["X2"],"quarantined":[],"confirmed_unfixed":[],"findings":[{"bug_id":"X2","severity":"high","category":"xss","file":"b.py","line":1,"fixed":true,"rationale":"r"}],"root_cause_clusters":[],"follow_up":[],"flaky":[]}
+JSON
+
+  run bash "$AGGREGATE_SH" "$out" "$a" "$b"
+  [ "$status" -eq 0 ]
+  [ -f "$out" ]
+
+  python3 -c "
+import json
+d = json.load(open('${out}'))
+assert d['run_count'] == 2, d['run_count']
+assert d['worst_status'] == 'partial', d['worst_status']  # complete + stalled -> partial
+clusters = d['root_cause_clusters']
+assert len(clusters) == 1, clusters
+assert clusters[0]['cluster'] == 'xss', clusters[0]
+assert clusters[0]['size'] == 2, clusters[0]
+assert sorted(clusters[0]['files']) == ['a.py', 'b.py'], clusters[0]
+"
 }

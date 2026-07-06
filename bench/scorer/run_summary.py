@@ -44,6 +44,47 @@ This mirrors what ``scripts/finalize.sh``'s ``_emit_stub_report`` can already
 detect (it decides whether to call the stub-writer at all) — the caller passes
 that same boolean through as ``report_is_stub`` so status derivation never
 duplicates or drifts from the stub-detection logic already in bash.
+
+``root_cause_clusters[]``, ``follow_up[]``, ``flaky[]`` (bugsweep-xdw)
+-----------------------------------------------------------------------
+Additive, OPTIONAL fields (schema_version stays 1 — see the schema's
+description for the versioning rule: only breaking/removed/renamed fields
+bump schema_version; new optional fields never do).
+
+* ``root_cause_clusters[]`` — groups this run's FINDING_EVENTS findings (the
+  same events counted in ``findings``/``counts`` above) by the finding's
+  ``category``. A cluster of size 1 is not a cluster — it is excluded (a
+  singleton finding is not evidence of a broader pattern; it stays visible
+  only in ``findings``). Ordering is deterministic: size descending, then
+  cluster name ascending; ``representative`` is the lexicographically smallest
+  bug_id so the result is member-order-independent. (The cluster key is
+  category-only: no component emits a ``variant``/``sink_class`` field into
+  the fix_committed/quarantine/confirmed events this reducer reads, so a
+  category::variant key would be unreachable dead code — a future bead adds it
+  back alongside a real emitter.)
+* ``follow_up[]`` — the "where to look next" handoff for the next session,
+  built from three sources (never invented, absent -> that source
+  contributes nothing):
+    1. ``uncovered_batch`` — ``recon.json``'s ``batches[]`` whose ``id`` is
+       NOT in ``covered``; ``detail`` is the batch's ``tier`` if present.
+    2. ``high_risk_file`` / ``stale_file`` — read from ``prior-coverage.json``
+       (schema: ``scripts/state.sh``'s ``prime`` writer): ``high_risk_files``
+       (``[{file, score}]``) and ``files_audited_stale_catalog`` (``[file,
+       ...]``) respectively. ``prior-coverage.json`` is optional input (a
+       fresh repo's first run has none) — missing/malformed -> those two
+       kinds simply contribute zero entries, never an error.
+    3. ``quarantined`` — this run's quarantined findings (bug_id + file).
+  Deterministic order: uncovered_batch (batch id ascending) -> high_risk_file
+  (score descending) -> stale_file (alphabetical) -> quarantined
+  (alphabetical by bug_id). Capped at ``FOLLOW_UP_CAP`` entries total (applied
+  after ordering, so the cap always drops the lowest-priority tail) — a large
+  stale-file backlog must never make run-summary.json unbounded.
+* ``flaky[]`` — one entry per ``{"event": "flaky_test", "test", "file",
+  "reruns", "failures"}`` ledger event (emitted by a sibling work unit's test
+  runner instrumentation). Same tolerant-field contract as FINDING_EVENTS:
+  any of ``test``/``file``/``reruns``/``failures`` may be absent and is
+  emitted as ``null``, never invented. Empty array when no such events exist
+  (e.g. the emitter hasn't landed yet, or no flakiness was observed).
 """
 
 from __future__ import annotations
@@ -78,6 +119,21 @@ _STOP_REASON_PARTIAL = (
     "report.md was never written but some hunt batches were covered — the run "
     "made partial progress before stopping (e.g. during the architectural hunt)."
 )
+
+#: Minimum cluster size for ``root_cause_clusters[]`` — a singleton finding is
+#: not evidence of a broader pattern (see module docstring).
+_MIN_CLUSTER_SIZE = 2
+
+#: Maximum number of entries in ``follow_up[]`` (applied after deterministic
+#: ordering, so the cap always drops the lowest-priority tail: quarantined
+#: findings and low-score stale files are dropped before uncovered batches or
+#: high-risk files). Chosen to keep run-summary.json bounded even against a
+#: large stale-file backlog from prior-coverage.json.
+FOLLOW_UP_CAP = 50
+
+#: Fields tolerated on a ``flaky_test`` ledger event; absent -> null, never
+#: invented (same tolerance contract as _FINDING_FIELDS).
+_FLAKY_FIELDS = ("test", "file", "reruns", "failures")
 
 
 def _iter_ledger_events(ledger_path: Path) -> list[dict[str, Any]]:
@@ -136,6 +192,13 @@ def _finding_from_event(event: dict[str, Any], *, fixed: bool) -> dict[str, Any]
     finding: dict[str, Any] = {field: event.get(field) for field in _FINDING_FIELDS}
     line = finding.get("line")
     finding["line"] = line if isinstance(line, int) else None
+    # bug_id is a schema type:string identifier (e.g. "BUG-1"), but nothing
+    # upstream forces the ledger to write it as a string — coerce a present
+    # non-string (e.g. an integer) so findings[], the fixed/quarantined/
+    # confirmed_unfixed id-lists, and every downstream consumer stay schema-
+    # valid (review MAJOR 3). Absent stays None, never invented.
+    bug_id = finding.get("bug_id")
+    finding["bug_id"] = str(bug_id) if bug_id is not None else None
     finding["fixed"] = fixed
     return finding
 
@@ -144,14 +207,210 @@ def _empty_counts() -> dict[str, int]:
     return {"critical": 0, "high": 0, "medium": 0, "low": 0, "architectural": 0}
 
 
+def _cluster_key(event: dict[str, Any]) -> str | None:
+    """Return the ``root_cause_clusters`` grouping key for a FINDING_EVENTS
+    ledger line, or ``None`` when the event carries no category (never
+    invented — an uncategorized finding cannot be clustered). The key is the
+    bare ``category``: no component emits a ``variant``/``sink_class`` field
+    into the events reduce_run reads, so a category::variant key would be
+    unreachable (see module docstring)."""
+    category = event.get("category")
+    if not category or not isinstance(category, str):
+        return None
+    return category
+
+
+def build_clusters(members_by_key: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Turn a ``cluster_key -> [member dicts]`` grouping into the ordered
+    ``root_cause_clusters[]`` shape, dropping clusters below _MIN_CLUSTER_SIZE.
+
+    Shared by ``_build_root_cause_clusters`` (per-run, members are ledger
+    events) and ``session_summary._merge_clusters`` (per-session, members are
+    findings) so the size-threshold, representative (lowest bug_id — order
+    invariant), file-union, and ordering (size desc, then cluster name asc)
+    rules live in exactly one place. ``size`` is the count of contributing
+    members; ``representative`` is the lexicographically smallest bug_id so the
+    result is independent of member/input order."""
+    clusters: list[dict[str, Any]] = []
+    for key, members in members_by_key.items():
+        if len(members) < _MIN_CLUSTER_SIZE:
+            continue
+        bug_ids = sorted(str(m["bug_id"]) for m in members if m.get("bug_id"))
+        files = sorted({m["file"] for m in members if m.get("file")})
+        clusters.append(
+            {
+                "cluster": key,
+                "size": len(members),
+                "representative": bug_ids[0] if bug_ids else None,
+                "files": files,
+            }
+        )
+    clusters.sort(key=lambda c: (-c["size"], c["cluster"]))
+    return clusters
+
+
+def _build_root_cause_clusters(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group this run's FINDING_EVENTS lines by ``_cluster_key``, then reduce
+    via ``build_clusters`` (size < _MIN_CLUSTER_SIZE excluded; deterministic
+    order)."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        if event.get("event") not in FINDING_EVENTS:
+            continue
+        key = _cluster_key(event)
+        if key is None:
+            continue
+        groups.setdefault(key, []).append(event)
+    return build_clusters(groups)
+
+
+def _read_prior_coverage(prior_coverage_path: Path | None) -> dict[str, Any]:
+    """Return the parsed ``prior-coverage.json`` dict, or ``{}`` on any
+    absence/parse failure (never raises — mirrors ``_read_recon_coverage``'s
+    tolerance; schema: ``scripts/state.sh``'s ``prime`` writer)."""
+    if prior_coverage_path is None or not prior_coverage_path.is_file():
+        return {}
+    try:
+        data = json.loads(prior_coverage_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _uncovered_batch_entries(recon_path: Path) -> list[dict[str, Any]]:
+    """``uncovered_batch`` follow_up entries: recon.json's ``batches[]`` whose
+    ``id`` is not in ``covered``, ordered by batch id ascending."""
+    if not recon_path.is_file():
+        return []
+    try:
+        data = json.loads(recon_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    batches = data.get("batches") or []
+    if not isinstance(batches, list):
+        return []
+    covered_ids = set(data.get("covered") or [])
+
+    entries = []
+    for batch in batches:
+        if not isinstance(batch, dict):
+            continue
+        batch_id = batch.get("id")
+        if batch_id is None or batch_id in covered_ids:
+            continue
+        entries.append((batch_id, batch.get("tier")))
+
+    # Integer ids sort numerically ascending; any non-int id (string batch id)
+    # sorts after all ints, then lexicographically by str(id) — so every
+    # ordering is well-defined and input-order-independent (review MAJOR 4).
+    entries.sort(key=lambda pair: (0, pair[0]) if isinstance(pair[0], int) else (1, str(pair[0])))
+    return [
+        {"kind": "uncovered_batch", "ref": str(batch_id), "detail": tier}
+        for batch_id, tier in entries
+    ]
+
+
+def _high_risk_file_entries(prior_coverage: dict[str, Any]) -> list[dict[str, Any]]:
+    """``high_risk_file`` follow_up entries, ordered by score descending."""
+    high_risk = prior_coverage.get("high_risk_files") or []
+    if not isinstance(high_risk, list):
+        return []
+    rows = []
+    for item in high_risk:
+        if not isinstance(item, dict):
+            continue
+        file_ = item.get("file")
+        if not file_:
+            continue
+        score = item.get("score")
+        rows.append((file_, score))
+    # Primary: score descending. Secondary: file ascending — so files tied on
+    # score have a stable order regardless of prior-coverage.json's list order
+    # (review MAJOR 4).
+    rows.sort(
+        key=lambda pair: (-(pair[1] if isinstance(pair[1], (int, float)) else 0), pair[0])
+    )
+    return [
+        {
+            "kind": "high_risk_file",
+            "ref": file_,
+            "detail": str(score) if score is not None else None,
+        }
+        for file_, score in rows
+    ]
+
+
+def _stale_file_entries(prior_coverage: dict[str, Any]) -> list[dict[str, Any]]:
+    """``stale_file`` follow_up entries, ordered alphabetically."""
+    stale = prior_coverage.get("files_audited_stale_catalog") or []
+    if not isinstance(stale, list):
+        return []
+    files = sorted({f for f in stale if isinstance(f, str)})
+    return [{"kind": "stale_file", "ref": f, "detail": None} for f in files]
+
+
+def _quarantined_entries(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``quarantined`` follow_up entries, ordered alphabetically by bug_id.
+
+    ``ref`` is str()-coerced: nothing upstream forces bug_id to be a string, so
+    an integer bug_id must not leak through as a non-string ref (which would
+    fail the schema's ``ref: type=string``; review MAJOR 3)."""
+    rows = []
+    for event in events:
+        if event.get("event") != "quarantine":
+            continue
+        bug_id = event.get("bug_id")
+        if not bug_id:
+            continue
+        rows.append((str(bug_id), event.get("file")))
+    rows.sort(key=lambda pair: pair[0])
+    return [{"kind": "quarantined", "ref": bug_id, "detail": file_} for bug_id, file_ in rows]
+
+
+def _build_follow_up(
+    *,
+    events: list[dict[str, Any]],
+    recon_path: Path,
+    prior_coverage_path: Path | None,
+) -> list[dict[str, Any]]:
+    """Assemble the ``follow_up[]`` handoff in deterministic priority order
+    (see module docstring), then apply FOLLOW_UP_CAP."""
+    prior_coverage = _read_prior_coverage(prior_coverage_path)
+    follow_up = (
+        _uncovered_batch_entries(recon_path)
+        + _high_risk_file_entries(prior_coverage)
+        + _stale_file_entries(prior_coverage)
+        + _quarantined_entries(events)
+    )
+    return follow_up[:FOLLOW_UP_CAP]
+
+
+def _build_flaky(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One entry per ``flaky_test`` ledger event, tolerant of absent fields."""
+    return [
+        {field: event.get(field) for field in _FLAKY_FIELDS}
+        for event in events
+        if event.get("event") == "flaky_test"
+    ]
+
+
 def reduce_run(
     *,
     ledger_path: Path,
     recon_path: Path,
     report_is_stub: bool,
     mode: str | None,
+    prior_coverage_path: Path | None = None,
 ) -> dict[str, Any]:
     """Reduce one run's on-disk state into a schema-valid run-summary dict.
+
+    ``prior_coverage_path`` is optional (default ``None``) for backward
+    compatibility with existing callers; when omitted, ``follow_up[]`` simply
+    has no ``high_risk_file``/``stale_file`` entries (see
+    ``_build_follow_up``).
 
     Pure function: no subprocess, no network. Never raises on missing or
     malformed input files — this is the backstop that must produce a valid
@@ -200,6 +459,11 @@ def reduce_run(
         "quarantined": quarantined,
         "confirmed_unfixed": confirmed_unfixed,
         "findings": findings,
+        "root_cause_clusters": _build_root_cause_clusters(events),
+        "follow_up": _build_follow_up(
+            events=events, recon_path=recon_path, prior_coverage_path=prior_coverage_path
+        ),
+        "flaky": _build_flaky(events),
     }
 
 
@@ -230,4 +494,7 @@ def reduce_run_degraded(
         "quarantined": [],
         "confirmed_unfixed": [],
         "findings": [],
+        "root_cause_clusters": [],
+        "follow_up": [],
+        "flaky": [],
     }

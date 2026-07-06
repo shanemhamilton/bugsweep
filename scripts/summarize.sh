@@ -7,13 +7,17 @@
 #
 # Tiered-degradation pattern (see common.sh's cfg_get / catalog_class_version):
 #   Tier 1: python3 available -> bench/scorer/run_summary.py does the real
-#           reduction (severities, categories, per-finding detail).
+#           reduction (severities, categories, per-finding detail, plus the
+#           bugsweep-xdw additions: root_cause_clusters/follow_up/flaky —
+#           follow_up also reads <RUN_DIR>/prior-coverage.json, written by
+#           preflight.sh via scripts/state.sh's `prime`, when present).
 #   Tier 2: python3 unavailable, or the Tier 1 reduction fails for any reason
 #           -> emit a minimal schema-valid run-summary.json from grep-able
 #           ledger/recon values only, with "degraded": true and empty
-#           findings. The nightshift contract is "run-summary.json ALWAYS
-#           exists after finalize" — this tier is what keeps that true on a
-#           bare machine or after an unexpected reduction failure.
+#           findings/root_cause_clusters/follow_up/flaky. The nightshift
+#           contract is "run-summary.json ALWAYS exists after finalize" —
+#           this tier is what keeps that true on a bare machine or after an
+#           unexpected reduction failure.
 #
 # Usage: summarize.sh <RUN_DIR> <REPORT_IS_STUB: true|false> [MODE]
 # Prints: RUN_SUMMARY=<path to written run-summary.json>
@@ -91,7 +95,10 @@ _write_degraded_summary() {
   "fixed": [],
   "quarantined": [],
   "confirmed_unfixed": [],
-  "findings": []
+  "findings": [],
+  "root_cause_clusters": [],
+  "follow_up": [],
+  "flaky": []
 }
 JSON
 }

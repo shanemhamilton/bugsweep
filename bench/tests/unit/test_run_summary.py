@@ -527,3 +527,692 @@ def test_reduce_run_degraded_complete_status_when_report_not_stub() -> None:
     assert summary["status"] == "complete"
     assert summary["degraded"] is True
     _validate_against_schema(summary)
+
+
+def test_reduce_run_degraded_new_fields_present_and_empty() -> None:
+    """Degraded output must stay schema-valid: the new optional fields are
+    present as empty containers, never omitted or guessed (bugsweep-xdw)."""
+    summary = reduce_run_degraded(
+        covered=1,
+        total=2,
+        report_is_stub=True,
+        mode="detect-only",
+    )
+
+    assert summary["root_cause_clusters"] == []
+    assert summary["follow_up"] == []
+    assert summary["flaky"] == []
+    _validate_against_schema(summary)
+
+
+# ---------------------------------------------------------------------------
+# root_cause_clusters[] (bugsweep-xdw): confirmed/fixed findings sharing a
+# category cluster together; singletons (size 1) are excluded — a lone finding
+# is not evidence of a broader pattern, so it stays in `findings` only. The
+# cluster key is the finding's `category` only. (The spec envisioned a
+# category::variant key "where the ledger events carry it", but no component
+# emits a `variant`/`sink_class` field into the fix_committed/quarantine/
+# confirmed events reduce_run reads — state.sh, the sole writer, emits neither
+# — so a variant branch would be unreachable dead code. A future bead adds it
+# back alongside a real emitter.) Deterministic order: size desc, then name.
+# ---------------------------------------------------------------------------
+
+
+def _fix(bug_id, file, severity="high", category="security", line=1, **extra):
+    e = {
+        "event": "fix_committed",
+        "bug_id": bug_id,
+        "file": file,
+        "severity": severity,
+        "category": category,
+        "line": line,
+        "rationale": f"rationale for {bug_id}",
+    }
+    e.update(extra)
+    return e
+
+
+def test_root_cause_clusters_group_by_category_size_two_or_more(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            _fix("BUG-1", "a.py", category="sql-injection"),
+            _fix("BUG-2", "b.py", category="sql-injection"),
+            _fix("BUG-3", "c.py", category="xss"),  # singleton — excluded
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    clusters = summary["root_cause_clusters"]
+    assert len(clusters) == 1
+    cluster = clusters[0]
+    assert cluster["cluster"] == "sql-injection"
+    assert cluster["size"] == 2
+    assert cluster["representative"] in ("BUG-1", "BUG-2")
+    assert sorted(cluster["files"]) == ["a.py", "b.py"]
+    _validate_against_schema(summary)
+
+
+def test_root_cause_clusters_singleton_excluded(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [_fix("BUG-1", "a.py", category="logic")])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["root_cause_clusters"] == []
+    _validate_against_schema(summary)
+
+
+def test_root_cause_clusters_deterministic_order_size_desc_then_name(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            _fix("BUG-1", "a.py", category="zzz-small"),
+            _fix("BUG-2", "b.py", category="zzz-small"),
+            _fix("BUG-3", "c.py", category="aaa-big"),
+            _fix("BUG-4", "d.py", category="aaa-big"),
+            _fix("BUG-5", "e.py", category="aaa-big"),
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    clusters = summary["root_cause_clusters"]
+    assert [c["cluster"] for c in clusters] == ["aaa-big", "zzz-small"]
+    assert clusters[0]["size"] == 3
+    assert clusters[1]["size"] == 2
+    _validate_against_schema(summary)
+
+
+def test_root_cause_clusters_variant_field_is_ignored_key_is_category_only(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for the removed dead variant branch (adversarial review
+    MAJOR 5): even if a ledger event carries a stray `variant`/`sink_class`
+    field, the cluster key must be the bare `category` — the key is never
+    `category::variant`. Two `injection` findings cluster as one `injection`
+    cluster regardless of their variant fields."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            _fix("BUG-1", "a.py", category="injection", variant="sql"),
+            _fix("BUG-2", "b.py", category="injection", variant="command"),
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    clusters = summary["root_cause_clusters"]
+    assert len(clusters) == 1
+    assert clusters[0]["cluster"] == "injection"
+    assert clusters[0]["size"] == 2
+    _validate_against_schema(summary)
+
+
+def test_root_cause_clusters_ignore_findings_without_category(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "fix_committed", "file": "a.py"},  # no bug_id/category
+            {"event": "fix_committed", "file": "b.py"},
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["root_cause_clusters"] == []
+    _validate_against_schema(summary)
+
+
+# ---------------------------------------------------------------------------
+# follow_up[] (bugsweep-xdw): the "where to look next" handoff, derived from
+# prior-coverage.json (schema: scripts/state.sh's `prime` writer) plus
+# recon.json batches NOT in `covered`, plus quarantined findings. Deterministic
+# order: uncovered_batch (batch id asc) -> high_risk_file (score desc) ->
+# stale_file (alpha) -> quarantined (bug_id alpha). Capped at FOLLOW_UP_CAP
+# (documented on the constant) so a huge stale-file backlog can't blow up
+# run-summary.json.
+# ---------------------------------------------------------------------------
+
+
+def _write_prior_coverage(path: Path, *, stale=None, high_risk=None) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "catalog_version": "1",
+                "prior_runs": 3,
+                "files_audited_current_catalog": [],
+                "files_audited_current_catalog_count": 0,
+                "files_audited_stale_catalog": stale or [],
+                "files_audited_stale_catalog_count": len(stale or []),
+                "high_risk_files": high_risk or [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_recon_with_batches(path: Path, *, batches, covered) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "files_in_scope": 10,
+                "batch_count": len(batches),
+                "batches": batches,
+                "architectural_targets": [],
+                "covered": covered,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_follow_up_includes_uncovered_batches(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon_with_batches(
+        recon,
+        batches=[
+            {"id": 1, "tier": "critical", "files": ["a.py"]},
+            {"id": 2, "tier": "high", "files": ["b.py"]},
+        ],
+        covered=[1],
+    )
+    prior = tmp_path / "prior-coverage.json"
+    _write_prior_coverage(prior)
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode="detect-only",
+        prior_coverage_path=prior,
+    )
+
+    follow_up = summary["follow_up"]
+    assert {"kind": "uncovered_batch", "ref": "2", "detail": "high"} in follow_up
+    assert not any(f["ref"] == "1" for f in follow_up if f["kind"] == "uncovered_batch")
+    _validate_against_schema(summary)
+
+
+def test_follow_up_includes_stale_and_high_risk_files(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon_with_batches(recon, batches=[], covered=[])
+    prior = tmp_path / "prior-coverage.json"
+    _write_prior_coverage(
+        prior,
+        stale=["stale_a.py", "stale_b.py"],
+        high_risk=[{"file": "risky.py", "score": 4.2}],
+    )
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode=None,
+        prior_coverage_path=prior,
+    )
+
+    follow_up = summary["follow_up"]
+    kinds = {(f["kind"], f["ref"]) for f in follow_up}
+    assert ("high_risk_file", "risky.py") in kinds
+    assert ("stale_file", "stale_a.py") in kinds
+    assert ("stale_file", "stale_b.py") in kinds
+    high_risk_entry = next(f for f in follow_up if f["kind"] == "high_risk_file")
+    assert high_risk_entry["detail"] == "4.2"
+    _validate_against_schema(summary)
+
+
+def test_follow_up_includes_quarantined_findings(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "quarantine",
+                "file": "legacy.py",
+                "bug_id": "BUG-Q1",
+                "severity": "medium",
+                "category": "logic",
+            }
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    follow_up = summary["follow_up"]
+    assert {"kind": "quarantined", "ref": "BUG-Q1", "detail": "legacy.py"} in follow_up
+    _validate_against_schema(summary)
+
+
+def test_follow_up_deterministic_order(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "quarantine",
+                "file": "z.py",
+                "bug_id": "BUG-Z",
+                "severity": "low",
+                "category": "logic",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon_with_batches(
+        recon,
+        batches=[
+            {"id": 5, "tier": "normal", "files": ["e.py"]},
+            {"id": 2, "tier": "critical", "files": ["b.py"]},
+        ],
+        covered=[],
+    )
+    prior = tmp_path / "prior-coverage.json"
+    _write_prior_coverage(
+        prior,
+        stale=["m.py"],
+        high_risk=[{"file": "risky.py", "score": 9.0}],
+    )
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode=None,
+        prior_coverage_path=prior,
+    )
+
+    kinds_in_order = [f["kind"] for f in summary["follow_up"]]
+    # uncovered_batch entries first (batch id asc: 2 before 5), then
+    # high_risk_file, then stale_file, then quarantined.
+    assert kinds_in_order == [
+        "uncovered_batch",
+        "uncovered_batch",
+        "high_risk_file",
+        "stale_file",
+        "quarantined",
+    ]
+    batch_refs = [f["ref"] for f in summary["follow_up"] if f["kind"] == "uncovered_batch"]
+    assert batch_refs == ["2", "5"]
+    _validate_against_schema(summary)
+
+
+def test_follow_up_missing_prior_coverage_file_still_includes_recon_and_quarantine(
+    tmp_path: Path,
+) -> None:
+    """No prior-coverage.json (e.g. first run on a repo) must never raise —
+    follow_up degrades to whatever recon.json/ledger provide."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "quarantine",
+                "file": "q.py",
+                "bug_id": "BUG-Q",
+                "severity": "low",
+                "category": "logic",
+            }
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon_with_batches(
+        recon, batches=[{"id": 1, "tier": "critical", "files": ["a.py"]}], covered=[]
+    )
+    missing_prior = tmp_path / "does-not-exist.json"
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode=None,
+        prior_coverage_path=missing_prior,
+    )
+
+    kinds = {f["kind"] for f in summary["follow_up"]}
+    assert kinds == {"uncovered_batch", "quarantined"}
+    _validate_against_schema(summary)
+
+
+def test_follow_up_malformed_prior_coverage_does_not_raise(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+    prior = tmp_path / "prior-coverage.json"
+    prior.write_text("{not valid json", encoding="utf-8")
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=False,
+        mode="fix",
+        prior_coverage_path=prior,
+    )
+
+    assert summary["follow_up"] == []
+    _validate_against_schema(summary)
+
+
+def test_follow_up_is_capped(tmp_path: Path) -> None:
+    """A huge stale-file backlog must be capped, not dumped wholesale into
+    run-summary.json — see FOLLOW_UP_CAP in bench/scorer/run_summary.py."""
+    from bench.scorer.run_summary import FOLLOW_UP_CAP
+
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon_with_batches(recon, batches=[], covered=[])
+    prior = tmp_path / "prior-coverage.json"
+    _write_prior_coverage(prior, stale=[f"stale_{i}.py" for i in range(FOLLOW_UP_CAP + 20)])
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode=None,
+        prior_coverage_path=prior,
+    )
+
+    assert len(summary["follow_up"]) == FOLLOW_UP_CAP
+    _validate_against_schema(summary)
+
+
+def test_follow_up_default_prior_coverage_path_is_none(tmp_path: Path) -> None:
+    """reduce_run must remain callable without prior_coverage_path (backward
+    compatible with the mu3 call sites until scripts/summarize.sh is updated to
+    pass it)."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["follow_up"] == []
+    _validate_against_schema(summary)
+
+
+# ---------------------------------------------------------------------------
+# flaky[] (bugsweep-xdw): surfaced 1:1 from
+# {"event":"flaky_test","test":...,"file":...,"reruns":N,"failures":M} ledger
+# events emitted by a sibling work unit's emitter. Empty when absent.
+# ---------------------------------------------------------------------------
+
+
+def test_flaky_populated_from_ledger_events(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "flaky_test",
+                "test": "test_foo",
+                "file": "tests/test_foo.py",
+                "reruns": 3,
+                "failures": 1,
+            }
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["flaky"] == [
+        {"test": "test_foo", "file": "tests/test_foo.py", "reruns": 3, "failures": 1}
+    ]
+    _validate_against_schema(summary)
+
+
+def test_flaky_empty_when_absent(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["flaky"] == []
+    _validate_against_schema(summary)
+
+
+def test_follow_up_recon_batches_not_a_list_falls_back_to_empty(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    recon.write_text(json.dumps({"batches": "not-a-list", "covered": []}), encoding="utf-8")
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=True, mode=None)
+
+    assert not any(f["kind"] == "uncovered_batch" for f in summary["follow_up"])
+    _validate_against_schema(summary)
+
+
+def test_follow_up_recon_batches_entries_not_dicts_are_skipped(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    recon.write_text(
+        json.dumps({"batches": ["not-a-dict", {"id": 1, "tier": "critical"}], "covered": []}),
+        encoding="utf-8",
+    )
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=True, mode=None)
+
+    refs = [f["ref"] for f in summary["follow_up"] if f["kind"] == "uncovered_batch"]
+    assert refs == ["1"]
+    _validate_against_schema(summary)
+
+
+def test_follow_up_high_risk_files_not_a_list_falls_back_to_empty(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=0, covered=[])
+    prior = tmp_path / "prior-coverage.json"
+    prior.write_text(json.dumps({"high_risk_files": "nope"}), encoding="utf-8")
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode=None,
+        prior_coverage_path=prior,
+    )
+
+    assert not any(f["kind"] == "high_risk_file" for f in summary["follow_up"])
+    _validate_against_schema(summary)
+
+
+def test_follow_up_high_risk_files_entries_skip_non_dicts_and_missing_file(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=0, covered=[])
+    prior = tmp_path / "prior-coverage.json"
+    prior.write_text(
+        json.dumps(
+            {
+                "high_risk_files": [
+                    "not-a-dict",
+                    {"score": 1.0},  # no file
+                    {"file": "keep.py"},  # no score -> None detail
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode=None,
+        prior_coverage_path=prior,
+    )
+
+    high_risk = [f for f in summary["follow_up"] if f["kind"] == "high_risk_file"]
+    assert len(high_risk) == 1
+    assert high_risk[0]["ref"] == "keep.py"
+    assert high_risk[0]["detail"] is None
+    _validate_against_schema(summary)
+
+
+def test_follow_up_stale_files_not_a_list_falls_back_to_empty(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=0, covered=[])
+    prior = tmp_path / "prior-coverage.json"
+    prior.write_text(json.dumps({"files_audited_stale_catalog": "nope"}), encoding="utf-8")
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode=None,
+        prior_coverage_path=prior,
+    )
+
+    assert not any(f["kind"] == "stale_file" for f in summary["follow_up"])
+    _validate_against_schema(summary)
+
+
+def test_follow_up_quarantined_skips_missing_bug_id(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [{"event": "quarantine", "file": "no-id.py"}],  # no bug_id
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert not any(f["kind"] == "quarantined" for f in summary["follow_up"])
+    _validate_against_schema(summary)
+
+
+def test_follow_up_quarantined_ref_coerced_to_string_for_int_bug_id(
+    tmp_path: Path,
+) -> None:
+    """Adversarial review MAJOR 3: nothing upstream forces bug_id to be a
+    string, so an integer bug_id must be str()-coerced into follow_up[].ref —
+    otherwise reduce_run's own output fails jsonschema.validate against the
+    schema this commit ships (ref is declared type:string)."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [{"event": "quarantine", "file": "x.py", "bug_id": 123, "severity": "low"}],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    quarantined = [f for f in summary["follow_up"] if f["kind"] == "quarantined"]
+    assert quarantined == [{"kind": "quarantined", "ref": "123", "detail": "x.py"}]
+    _validate_against_schema(summary)
+
+
+def test_follow_up_high_risk_files_tied_scores_ordered_by_ref(tmp_path: Path) -> None:
+    """Adversarial review MAJOR 4: two high-risk files with the SAME score must
+    have a stable sub-order (alphabetical by file) regardless of the order they
+    appear in prior-coverage.json."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=0, covered=[])
+
+    prior_forward = tmp_path / "prior-forward.json"
+    _write_prior_coverage(
+        prior_forward,
+        high_risk=[{"file": "aaa.py", "score": 5.0}, {"file": "bbb.py", "score": 5.0}],
+    )
+    prior_reversed = tmp_path / "prior-reversed.json"
+    _write_prior_coverage(
+        prior_reversed,
+        high_risk=[{"file": "bbb.py", "score": 5.0}, {"file": "aaa.py", "score": 5.0}],
+    )
+
+    s_forward = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode=None,
+        prior_coverage_path=prior_forward,
+    )
+    s_reversed = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode=None,
+        prior_coverage_path=prior_reversed,
+    )
+
+    refs_forward = [f["ref"] for f in s_forward["follow_up"] if f["kind"] == "high_risk_file"]
+    refs_reversed = [f["ref"] for f in s_reversed["follow_up"] if f["kind"] == "high_risk_file"]
+    assert refs_forward == ["aaa.py", "bbb.py"]
+    assert refs_forward == refs_reversed  # input order must not affect output
+    _validate_against_schema(s_forward)
+
+
+def test_follow_up_string_batch_ids_sort_deterministically(tmp_path: Path) -> None:
+    """Adversarial review MAJOR 4: non-integer batch ids must sort by str(id),
+    not collapse to sort-key 0 (which left them in input order)."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon_with_batches(
+        recon,
+        batches=[
+            {"id": "zebra", "tier": "normal", "files": ["z.py"]},
+            {"id": "alpha", "tier": "critical", "files": ["a.py"]},
+        ],
+        covered=[],
+    )
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=True, mode=None)
+
+    refs = [f["ref"] for f in summary["follow_up"] if f["kind"] == "uncovered_batch"]
+    assert refs == ["alpha", "zebra"]  # sorted by str(id), not input order
+    _validate_against_schema(summary)
+
+
+def test_flaky_tolerant_of_missing_fields(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "flaky_test", "test": "test_bar"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["flaky"] == [
+        {"test": "test_bar", "file": None, "reruns": None, "failures": None}
+    ]
+    _validate_against_schema(summary)

@@ -34,6 +34,11 @@ def main() -> int:
         recon_path=run_dir / "recon.json",
         report_is_stub=report_is_stub,
         mode=mode,
+        # bugsweep-xdw: preflight.sh writes prior-coverage.json into the run
+        # dir (see scripts/state.sh's `prime`); reduce_run tolerates it being
+        # absent (e.g. a first run on a repo has none) — see run_summary.py's
+        # _read_prior_coverage.
+        prior_coverage_path=run_dir / "prior-coverage.json",
     )
 
     out_path = sys.argv[1]

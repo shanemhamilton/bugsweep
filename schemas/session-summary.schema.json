@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/schemas/session-summary.schema.json",
+  "title": "bugsweep session-summary",
+  "description": "Deterministic aggregate of N bugsweep run-summary.json objects (bench.scorer.session_summary.merge_summaries), produced by scripts/aggregate-summaries.sh. Gives a headless scheduler one session-level view (totals, cross-run clusters, deduped follow-up, worst-status roll-up) instead of re-deriving it from N separate files. schema_version bumps only on a breaking change (see run-summary.schema.json's versioning rule, which this mirrors).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "totals",
+    "root_cause_clusters",
+    "follow_up",
+    "runs",
+    "run_count",
+    "worst_status"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "degraded": {
+      "type": "boolean",
+      "description": "True only when the no-python aggregation path (scripts/aggregate-summaries.sh) emitted a minimal valid aggregate instead of the full merge."
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["critical", "high", "medium", "low", "architectural"],
+      "properties": {
+        "critical": {"type": "integer", "minimum": 0},
+        "high": {"type": "integer", "minimum": 0},
+        "medium": {"type": "integer", "minimum": 0},
+        "low": {"type": "integer", "minimum": 0},
+        "architectural": {"type": "integer", "minimum": 0}
+      }
+    },
+    "root_cause_clusters": {
+      "type": "array",
+      "description": "Cross-run clusters re-derived from every run's findings[], grouped by category with the size>=2 threshold applied at the session level (so a category that was a singleton per-run but reaches 2 across runs surfaces here). Size is the count of contributing findings, files is their union, representative is the lexicographically smallest bug_id. Ordered size descending, then cluster name ascending.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cluster", "size", "representative", "files"],
+        "properties": {
+          "cluster": {"type": "string"},
+          "size": {"type": "integer", "minimum": 2},
+          "representative": {"type": ["string", "null"]},
+          "files": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "follow_up": {
+      "type": "array",
+      "description": "Concatenation of every run's follow_up[], deduped by (kind, ref) keeping the first occurrence.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["uncovered_batch", "stale_file", "high_risk_file", "quarantined"]
+          },
+          "ref": {"type": "string"},
+          "detail": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "description": "Per-run status, in the order the run-summary.json files were passed in.",
+      "items": {
+        "type": "string",
+        "enum": ["complete", "partial", "stalled"]
+      }
+    },
+    "run_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of runs merged. run_count == 0 (with worst_status 'no_runs') means a scheduler matched no run-summary.json files — distinct from a genuine all-complete session."
+    },
+    "worst_status": {
+      "type": "string",
+      "description": "Roll-up of runs[]: 'no_runs' if there were no runs at all (a non-success sentinel a scheduler must not read as clean); 'complete' if every run completed; 'stalled' if every run stalled; 'partial' otherwise (mixed outcomes).",
+      "enum": ["no_runs", "complete", "partial", "stalled"]
+    }
+  }
+}
