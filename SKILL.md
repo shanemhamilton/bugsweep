@@ -133,6 +133,21 @@ work, creates and checks out `bugsweep/<timestamp>`, and prints a `RUN_DIR` (und
 `.bugsweep/`) plus the branch name. If it exits non-zero, STOP and show the user the error
 verbatim. Capture `RUN_DIR`; all artifacts live there.
 
+Preflight also persists `BUGSWEEP_DEADLINE_EPOCH` in `<RUN_DIR>/state.env`, derived from
+`caps.max_runtime_minutes`. At every expensive phase boundary, call `guard.sh` and always
+finalize on a `STOP` result; in particular, context-build must run `guard.sh` after each
+batch and before handing off to the architectural hunt. This is the nightshift no-silence
+contract: a deadline stop must route through `finalize.sh`, which emits `report.md` and
+`run-summary.json` even when the model never reached the normal report step.
+Always finalize on deadline; never continue modeling after `guard.sh` returns `STOP`.
+
+```bash
+guard_out="$(bash scripts/guard.sh "$RUN_DIR")"
+case "$guard_out" in
+  STOP*) bash scripts/finalize.sh "$RUN_DIR"; exit 0 ;;
+esac
+```
+
 **Concurrent runs (`--worktree`).** When several bugsweep runs must share one repository
 (e.g. an orchestrator dispatching parallel subagents), add `--worktree`: preflight cuts each
 run its own linked worktree under `.bugsweep/worktrees/` on a collision-free
@@ -205,6 +220,11 @@ ALWAYS in scope — bugsweep finds latent bugs in old, unchanged code, it is not
 scanner — so this step never drops a file from the plan. The repo is never permanently
 "done" while a frontier remains. See `references/context-and-continuity.md`.
 
+After context-build completes, run `bash scripts/guard.sh "<RUN_DIR>"`; if it prints
+`STOP`, call `bash scripts/finalize.sh "<RUN_DIR>"` immediately and stop. Do the same after
+research, before the iteration-1 architectural hunt, and between large batches so a run
+that reaches the wall-clock deadline still has a partial, auditable output.
+
 ### Step 3 — Research anti-patterns for this stack (once)
 Follow `prompts/research.md`. Detect the languages/frameworks, load the matching catalogs
 from `references/antipatterns/` (always include `generic.md`), optionally augment with
@@ -234,6 +254,8 @@ disabled config is a clean no-op.
    pick the highest-risk ones and note the rest for later iterations). This bounded hunt is
    what surfaces large cross-file bugs without stalling on huge repos. Hunters never fix
    anything.
+   Before each architectural target group or coverage batch, run `guard.sh`; if it prints
+   `STOP runtime_cap_reached(...remaining_sec=0...)`, call `finalize.sh` immediately.
 2. **CHALLENGE (Skeptic)** — Dispatch a *separate* adversary following
    `prompts/challenge.md`. It actively tries to disprove each candidate, calibrated to
    punish dismissing real bugs twice as hard as missing a false-positive catch. Verdicts:

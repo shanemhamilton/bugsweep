@@ -136,6 +136,12 @@ elif [ ! -f "$exclude_file" ]; then
 fi
 
 start_epoch="$(date +%s)"
+max_runtime_minutes="$(cfg_get '.caps.max_runtime_minutes' '120')"
+case "$max_runtime_minutes" in
+  ''|*[!0-9]*) max_runtime_minutes=120 ;;
+esac
+[ "$max_runtime_minutes" -gt 0 ] || max_runtime_minutes=120
+deadline_epoch=$(( start_epoch + (max_runtime_minutes * 60) ))
 
 # --- Run directory ---------------------------------------------------------
 # Anchored to the MAIN repo root (not CWD, and not the linked worktree's own
@@ -173,7 +179,7 @@ else
   stash_ref="none"
   if [ "$dirty" = "yes" ]; then
     if git stash push -u -m "bugsweep-autostash-${ts}" >/dev/null 2>&1; then
-      stash_ref="$(git rev-parse stash@{0} 2>/dev/null || echo unknown)"
+      stash_ref="$(git rev-parse 'stash@{0}' 2>/dev/null || echo unknown)"
       log "Stashed your uncommitted work (will be restored at finalize)."
     else
       die "Failed to stash your uncommitted changes. Aborting without making any changes."
@@ -198,6 +204,8 @@ BUGSWEEP_ORIG_BRANCH=${orig_branch}
 BUGSWEEP_ORIG_HEAD=${orig_head}
 BUGSWEEP_STASH_REF=${stash_ref}
 BUGSWEEP_START_EPOCH=${start_epoch}
+BUGSWEEP_DEADLINE_EPOCH=${deadline_epoch}
+BUGSWEEP_MAX_RUNTIME_MINUTES=${max_runtime_minutes}
 BUGSWEEP_MODE=${bs_mode}
 BUGSWEEP_WORKTREE=${worktree_path}
 EOF
