@@ -9,6 +9,7 @@
 #
 # Usage:
 #   bash bugsweep-cleanup.sh [specific-bugsweep-branch]
+#   bash bugsweep-cleanup.sh --reap-worktrees
 #
 # Settings (override via environment variables):
 #   BUGSWEEP_TARGET           branch to merge fixes into (default: current branch)
@@ -16,8 +17,14 @@
 #   BUGSWEEP_TEST_CMD         optional re-verify before merge, e.g. "npm test"
 #   BUGSWEEP_RETENTION_DAYS   retained for compatibility; unmerged branches are preserved
 #   BUGSWEEP_ALLOW_PROTECTED  set to 1 to allow merging into main/master/etc.
+#
+# --reap-worktrees is the non-merge safety reaper used by preflight/finalize:
+# it removes only bugsweep-managed linked worktrees under .bugsweep/worktrees,
+# skips live leased siblings, commits dirty worktree content to its own branch
+# before removal, prunes only contained branch refs, and never touches remotes.
 
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 POLICY="${BUGSWEEP_POLICY:-merge}"
 TEST_CMD="${BUGSWEEP_TEST_CMD:-}"
@@ -30,6 +37,14 @@ EXIT_STATUS=0
 BRANCH_DELETED_LINES=""
 BRANCH_PRESERVED_LINES=""
 WORKTREE_REMOVED_LINES=""
+WORKTREE_PRESERVED_LINES=""
+REAP_WORKTREES="no"
+
+if [ "${1:-}" = "--reap-worktrees" ]; then
+  REAP_WORKTREES="yes"
+  shift
+  SWEEP_ARG="${1:-}"
+fi
 
 log(){ echo "cleanup: $*"; }
 
@@ -57,6 +72,30 @@ record_worktree_removed(){
 $1"
   else
     WORKTREE_REMOVED_LINES="$1"
+  fi
+}
+
+record_worktree_preserved(){
+  if [ -n "$WORKTREE_PRESERVED_LINES" ]; then
+    WORKTREE_PRESERVED_LINES="${WORKTREE_PRESERVED_LINES}
+$1"
+  else
+    WORKTREE_PRESERVED_LINES="$1"
+  fi
+}
+
+count_list() {
+  local values="$1"
+  [ -n "$values" ] || { echo 0; return 0; }
+  printf '%s\n' "$values" | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+canonical_path() {
+  local path="$1"
+  if [ -d "$path" ]; then
+    ( cd "$path" && pwd -P )
+  else
+    printf '%s\n' "$path"
   fi
 }
 
@@ -113,6 +152,34 @@ branch_contained_in_target() {
   git merge-base --is-ancestor "$1" "$2" >/dev/null 2>&1
 }
 
+lease_file_count() {
+  local leases="${BUGSWEEP_REPO_ROOT}/.bugsweep/state/leases"
+  [ -d "$leases" ] || { echo 0; return 0; }
+  find "$leases" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' '
+}
+
+run_dir_for_worktree() {
+  local worktree="$1" state_file run_dir value
+  worktree="$(canonical_path "$worktree")"
+  for state_file in "${BUGSWEEP_REPO_ROOT}/.bugsweep"/run-*/state.env; do
+    [ -f "$state_file" ] || continue
+    value="$(sed -n 's/^BUGSWEEP_WORKTREE=//p' "$state_file" | head -1)"
+    [ -n "$value" ] && value="$(canonical_path "$value")"
+    if [ "$value" = "$worktree" ]; then
+      run_dir="$(dirname "$state_file")"
+      printf '%s\n' "$run_dir"
+      return 0
+    fi
+  done
+  return 1
+}
+
+run_dir_is_live() {
+  local run_dir="$1" live_file="$2"
+  [ -n "$run_dir" ] || return 1
+  grep -qxF "$run_dir" "$live_file" 2>/dev/null
+}
+
 worktree_for_branch() {
   local branch="$1" line path=""
   while IFS= read -r line; do
@@ -135,6 +202,108 @@ worktree_is_clean() {
   git -C "$path" diff --cached --quiet || return 1
   untracked="$(git -C "$path" ls-files --others --exclude-standard)"
   [ -z "$untracked" ]
+}
+
+ensure_worktree_clean_or_committed() {
+  local path="$1" branch="$2"
+  if worktree_is_clean "$path"; then
+    return 0
+  fi
+
+  log "$branch has dirty worktree content; committing it before removal"
+  if git -C "$path" add -A >/dev/null 2>&1 \
+    && git -C "$path" commit -m "chore(bugsweep): preserve dirty worktree before cleanup" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  log "could not commit dirty content in $path — preserving worktree"
+  return 1
+}
+
+reap_one_worktree() {
+  local path="$1" branch="$2" live_file="$3" run_dir="" canonical_root canonical_worktree
+
+  canonical_root="$(canonical_path "$BUGSWEEP_WORKTREES_DIR")"
+  canonical_worktree="$(canonical_path "$path")"
+  case "$canonical_worktree" in
+    "${canonical_root}"/*) : ;;
+    *) return 0 ;;
+  esac
+
+  path="$canonical_worktree"
+  run_dir="$(run_dir_for_worktree "$path" || true)"
+  if run_dir_is_live "$run_dir" "$live_file"; then
+    log "preserving live leased worktree $path ($branch)"
+    record_worktree_preserved "$path"
+    return 0
+  fi
+
+  if ! ensure_worktree_clean_or_committed "$path" "$branch"; then
+    record_worktree_preserved "$path"
+    record_preserved "$branch"
+    return 0
+  fi
+
+  if git worktree remove "$path" >/dev/null 2>&1; then
+    log "removed bugsweep worktree $path"
+    record_worktree_removed "$path"
+  else
+    log "git worktree remove failed for $path — preserving"
+    record_worktree_preserved "$path"
+    record_preserved "$branch"
+    return 0
+  fi
+
+  if branch_exists "$branch" && branch_contained_in_target "$branch" "$TARGET_BRANCH"; then
+    if git branch -d "$branch" >/dev/null 2>&1; then
+      log "deleted contained branch $branch"
+      record_deleted "$branch"
+    else
+      log "could not delete contained branch $branch — preserving ref"
+      record_preserved "$branch"
+    fi
+  elif branch_exists "$branch"; then
+    log "preserving unmerged branch ref $branch after worktree removal"
+    record_preserved "$branch"
+  fi
+}
+
+reap_worktrees() {
+  local live_file leases_before leases_after leases_released line current_path current_branch
+  live_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-live-leases.XXXXXX")"
+  : > "$live_file"
+
+  leases_before="$(lease_file_count)"
+  bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-list 2>/dev/null \
+    | sed -n 's/^LEASE=//p' > "$live_file" || true
+  leases_after="$(lease_file_count)"
+  leases_released=$(( leases_before - leases_after ))
+  [ "$leases_released" -ge 0 ] || leases_released=0
+
+  current_path=""
+  current_branch=""
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *) current_path="${line#worktree }"; current_branch="" ;;
+      branch\ refs/heads/bugsweep/*)
+        current_branch="${line#branch refs/heads/}"
+        reap_one_worktree "$current_path" "$current_branch" "$live_file"
+        ;;
+    esac
+  done < <(git worktree list --porcelain)
+
+  git worktree prune >/dev/null 2>&1 || true
+  rm -f "$live_file" 2>/dev/null || true
+
+  echo "REAP_RESULT=ok"
+  echo "WORKTREES_REMOVED=$(count_list "$WORKTREE_REMOVED_LINES")"
+  echo "WORKTREES_PRESERVED=$(count_list "$WORKTREE_PRESERVED_LINES")"
+  echo "BRANCHES_PRUNED=$(count_list "$BRANCH_DELETED_LINES")"
+  echo "LEASES_RELEASED=${leases_released}"
+  emit_list "WORKTREE_REMOVED" "$WORKTREE_REMOVED_LINES"
+  emit_list "WORKTREE_PRESERVED" "$WORKTREE_PRESERVED_LINES"
+  emit_list "BRANCH_PRUNED" "$BRANCH_DELETED_LINES"
+  emit_list "BRANCH_PRESERVED" "$BRANCH_PRESERVED_LINES"
 }
 
 delete_contained_branch() {
@@ -227,6 +396,11 @@ discard_branch() {
   record_preserved "$branch"
   return 1
 }
+
+if [ "$REAP_WORKTREES" = "yes" ]; then
+  reap_worktrees
+  exit 0
+fi
 
 # Never operate on a dirty tree — don't risk entangling uncommitted work.
 if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then

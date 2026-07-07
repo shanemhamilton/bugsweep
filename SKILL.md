@@ -156,6 +156,10 @@ index. In this mode `STASH=none` means "nothing to restore" (no stash is ever ta
 "the tree was clean". Do all hunt/fix work inside the printed `WORKTREE=` path. Callers
 should pass `BUGSWEEP_LEASE_PID=$$` so the run's lease tracks the shell that actually owns
 the run (liveness for stale-lease reclaim); `finalize.sh` releases the lease.
+Preflight and finalize also run `bugsweep-cleanup.sh --reap-worktrees` best-effort: stale
+bugsweep-managed worktrees are removed, live leased sibling runs are preserved, dirty
+worktrees are committed to their own branch before removal, and branch refs are deleted
+only after merge-base containment proof.
 
 **Stale-branch check (do this right after preflight succeeds).** Unlanded fix branches
 from prior runs are the #1 failure mode: because each run forks from current main, any fix

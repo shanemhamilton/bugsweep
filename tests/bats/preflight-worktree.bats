@@ -269,6 +269,7 @@ teardown() {
   [ -n "$run_dir" ]
   [ -n "$wt" ]
 
+  printf 'fix\n' > "${wt}/fix.txt"
   cd "$wt"
   run bash "$FINALIZE_SH" "$run_dir"
   [ "$status" -eq 0 ]
@@ -281,6 +282,10 @@ teardown() {
 
   # The user's checkout is untouched.
   [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "$ORIG_BRANCH" ]
+  [ ! -d "$wt" ]
+
+  # The isolated worktree is gone, but the review branch remains available.
+  git -C "$REPO" branch --list 'bugsweep/*' | grep -q .
 
   # Handoff carries the manual-cleanup breadcrumb.
   python3 - "${run_dir}/post-finalize-handoff.json" "$wt" <<'PY'

@@ -295,6 +295,15 @@ else
   fi
 fi
 
+if [ -n "${BUGSWEEP_WORKTREE:-}" ] && [ -f "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" ]; then
+  if cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null; then
+    bash "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" --reap-worktrees \
+      || log "WARNING: worktree reaper failed; ${BUGSWEEP_WORKTREE} may still need manual cleanup."
+  else
+    log "WARNING: could not enter repo root for worktree reaper; ${BUGSWEEP_WORKTREE} may still need manual cleanup."
+  fi
+fi
+
 printf '{"event":"finalize","branch":"%s","orig_branch":"%s"}\n' \
   "$BUGSWEEP_BRANCH" "$BUGSWEEP_ORIG_BRANCH" >> "${run_dir}/ledger.jsonl" 2>/dev/null || true
 

@@ -135,6 +135,11 @@ elif [ ! -f "$exclude_file" ]; then
   printf '.bugsweep/\n' > "$exclude_file"
 fi
 
+if [ "$bs_worktree" = "yes" ] && [ -f "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" ]; then
+  bash "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" --reap-worktrees >/dev/null 2>&1 \
+    || log "worktree reaper skipped or failed before preflight (non-fatal)."
+fi
+
 start_epoch="$(date +%s)"
 max_runtime_minutes="$(cfg_get '.caps.max_runtime_minutes' '120')"
 case "$max_runtime_minutes" in
