@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-08
+
+The overnight-orchestrator milestone: bugsweep grows from a single-run bug hunter into a
+fleet a headless scheduler can drive unattended and tear down cleanly. The trust contract is
+unchanged — the core run still never touches remotes, and you are still the only merge gate.
+
+### Added
+
+- **Deterministic, schema-valid `run-summary.json` (bugsweep-mu3).** `finalize.sh` always
+  writes `<RUN_DIR>/run-summary.json` (reduced by `scripts/summarize.sh` against
+  `schemas/run-summary.schema.json`) so a scheduler can branch on JSON — status, coverage,
+  severity counts, and fixed/quarantined/confirmed-unfixed findings — instead of parsing
+  model prose. If the full reduction can't run, a minimal schema-valid summary with
+  `"degraded": true` is emitted instead; the summary always exists after finalize.
+- **Run-summary enrichment + cross-run aggregation (bugsweep-xdw).** Adds
+  `root_cause_clusters`, a `follow_up` "where to look next" frontier, and
+  `scripts/aggregate-summaries.sh` to fold findings across runs (all backward-compatible
+  optional fields).
+- **Worktree isolation for concurrent runs (bugsweep-p74).** `preflight.sh --worktree`
+  checks the run out into an isolated linked git worktree so multiple sibling subagents can
+  hunt one repo at once without colliding — and without ever touching the user's checkout.
+- **Incremental, checkpointed context-build with a deterministic batch plan (bugsweep-e1r).**
+- **Optional static-analyzer seeding (bugsweep-042), off by default.** `scripts/analyzers.sh`
+  runs installed off-the-shelf analyzers (semgrep, gosec, bandit, …) pre-hunt as one more
+  corroboration signal for the Referee — never a replacement for adversarial review.
+- **Serialized, re-verifying multi-branch merge (bugsweep-5e8).** `scripts/integrate.sh`
+  lands an ordered list of already-verified fix branches into a target one at a time,
+  re-running the quality gate after each merge and stopping cleanly on the first failure.
+- **A deadline that always finalizes (bugsweep-5ft).** The runtime cap is a hard checkpoint
+  the loop honors every iteration; hitting it routes straight to `finalize.sh` so a run that
+  runs out of time still restores the branch and writes its report, summary, and handoff.
+- **GitHub Pages marketing page (`docs/index.html`) + README "Overnight orchestrator"
+  section** documenting the above.
+
+### Changed
+
+- **Flaky-aware revert (bugsweep-ml7).** Trust-contract rule 5's regression check now reruns
+  a newly-failing test `.verify.flaky_reruns` times (default 3); only a strict majority of
+  passing reruns reclassifies it FLAKY and skips the revert. The reruns share the run's
+  tree/environment (not full isolation), so any fix that lands flaky is surfaced loudly in
+  `flaky.jsonl`, the ledger, and the summary — never silently.
+- **Concurrency hardening (bugsweep-re9).** Lease heartbeat plus single-winner stale-lock
+  adoption so concurrent runs never double-claim or serialize on a dead lock.
+
+### Fixed
+
+- **Crash-safe teardown (bugsweep-8d0).** The optional worktree/branch reaper reclaims only
+  on positive evidence a run is dead or done (a `.finalized` sentinel or an expired lease);
+  anything dirty, unmerged, or ambiguous is preserved and reported, never guessed away.
+  Closes seven data-loss paths found in adversarial re-review (lease-before-add, pinned
+  target resolution, vanished-dir, gitignored-content, and live-sibling reap).
+
 ## [0.3.1] - 2026-06-03
 
 ### Added
@@ -117,7 +169,8 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.1.0...v0.2.0
