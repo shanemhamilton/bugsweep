@@ -150,7 +150,26 @@ For each non-deferred batch, in `recon.json`'s order:
    the file immediately, before moving to the next batch. After this step, a run that dies
    has both an accurate `repo-context.md` prefix AND a `recon.json` that correctly reports
    how far modeling got — never a stale `covered: []` next to a half-written context file.
-4. **Move to the next `deferred: false` batch** in `recon.json`'s order (which already
+4. **Deadline checkpoint (bugsweep-5ft) — mandatory, every batch.** Before starting another
+   batch, check the wall-clock deadline:
+   ```bash
+   guard_out="$(bash scripts/guard.sh "$RUN_DIR")"
+   case "$guard_out" in
+     STOP*) bash scripts/finalize.sh "$RUN_DIR"; exit 0 ;;
+   esac
+   ```
+   Any `STOP*` result — not only `runtime_cap_reached`, treat every `STOP*` prefix the same
+   way — means this run's budget is exhausted: call `finalize.sh` immediately and stop. Do
+   **not** start another batch. This composes with the budget stop rule above (step
+   "This run's scope = the non-deferred batches only"): that rule bounds the run by batch
+   *count* when `large_repo_mode` is true; this checkpoint bounds it by wall-clock time
+   regardless of `large_repo_mode`. A `STOP` from either one ends the run the same way —
+   through `finalize.sh` — so a run can stop early on time even mid-way through its
+   non-deferred batches, exactly as a run that finishes all non-deferred batches stops by
+   running out of batches. Since `recon.json` and `repo-context.md` are already mutually
+   consistent on disk after step 3 above, `finalize.sh` always has a truthful, resumable
+   state to report from, no matter which of these two stop rules fires first.
+5. **Move to the next `deferred: false` batch** in `recon.json`'s order (which already
    reflects the coverage-first reprioritization above). Stop when there are none left —
    even if `deferred: true` batches remain (they are picked up on a later run).
 

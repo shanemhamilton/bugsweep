@@ -22,6 +22,17 @@ case "$max_minutes" in
 esac
 [ "$max_minutes" -gt 0 ] || max_minutes=120
 
+# bugsweep-5ft review MINOR 6: the STOP message must display the max-runtime value
+# that actually produced THIS run's frozen deadline_epoch below — BUGSWEEP_MAX_RUNTIME_MINUTES,
+# written once by preflight.sh into state.env at run start — not a freshly re-read config
+# value. If caps.max_runtime_minutes is edited mid-run, $max_minutes above would drift from
+# the persisted deadline and mislabel the STOP reason. Fall back to the fresh read only for
+# run dirs that predate this field or have a malformed value.
+display_max_minutes="${BUGSWEEP_MAX_RUNTIME_MINUTES:-}"
+case "$display_max_minutes" in
+  ''|*[!0-9]*) display_max_minutes="$max_minutes" ;;
+esac
+
 ledger="${run_dir}/ledger.jsonl"
 iters="$(count_event "$ledger" iteration)"
 fixes="$(count_event "$ledger" fix_committed)"
@@ -50,7 +61,7 @@ while IFS= read -r line; do
 done < "$ledger"
 
 if [ "$iters" -ge "$max_iter" ]; then echo "STOP iteration_cap_reached(${iters}/${max_iter})"; exit 0; fi
-if [ "$now" -ge "$deadline_epoch" ]; then echo "STOP runtime_cap_reached(${elapsed_min}m/${max_minutes}m,remaining_sec=${remaining_sec},deadline_epoch=${deadline_epoch})"; exit 0; fi
+if [ "$now" -ge "$deadline_epoch" ]; then echo "STOP runtime_cap_reached(${elapsed_min}m/${display_max_minutes}m,remaining_sec=${remaining_sec},deadline_epoch=${deadline_epoch})"; exit 0; fi
 if [ "$fixes" -ge "$max_fixes" ]; then echo "STOP fix_cap_reached(${fixes}/${max_fixes})"; exit 0; fi
 if [ "$streak" -ge "$no_progress_stop" ]; then echo "STOP converged_no_new_bugs(streak=${streak})"; exit 0; fi
 

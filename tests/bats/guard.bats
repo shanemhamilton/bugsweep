@@ -4,6 +4,17 @@
 # deterministic checkpoint the SKILL consults at phase boundaries; once the
 # persisted wall-clock deadline has passed, the run must route to finalize so
 # nightshift still gets report.md + run-summary.json instead of silence.
+#
+# Also covers the bugsweep-5ft review's sanitization-branch gaps (MAJOR 5):
+# preflight.sh's caps.max_runtime_minutes fallback (missing/0/negative/non-numeric/
+# null config value -> default) and guard.sh's malformed BUGSWEEP_DEADLINE_EPOCH
+# fallback (empty/garbage/negative state.env value -> recomputed default deadline).
+# The model-facing per-batch checkpoint that BLOCKER 1 of that review added to
+# prompts/context-build.md is covered separately by the grep-level prompt-contract
+# tests in bench/tests/unit/test_context_build_prompt.py (same pattern as
+# bench/tests/unit/test_skill_report_format.py) — this file only ever drove the
+# STOP->finalize handoff manually (pre-existing mu3/e1r plumbing), it never
+# exercised the model-facing prompt text itself.
 
 GUARD_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/guard.sh"
 FINALIZE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/finalize.sh"
@@ -114,7 +125,12 @@ teardown() {
   echo "$output" | grep -q 'deadline_epoch='
 }
 
-@test "context-build deadline checkpoint can finalize to stub report and run-summary" {
+@test "guard.sh STOP + finalize.sh: generic deadline stop emits stub report.md and run-summary.json (STOP->finalize handoff contract)" {
+  # bugsweep-5ft review MAJOR 4: this test drives guard.sh + finalize.sh directly
+  # (pre-existing mu3/e1r plumbing) — it proves the generic STOP->finalize artifact
+  # contract, not that prompts/context-build.md's per-batch loop actually calls
+  # guard.sh. That model-facing contract is asserted separately by the grep-level
+  # prompt-contract tests in bench/tests/unit/test_context_build_prompt.py.
   local now guard_out
   now="$(date +%s)"
   _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH" "$((now - 300))" "$((now - 1))"
@@ -139,6 +155,137 @@ PY
 
 @test "SKILL.md documents deadline checkpoints and finalize-on-deadline contract" {
   grep -q 'BUGSWEEP_DEADLINE_EPOCH' "$SKILL_MD"
-  grep -qi 'always.*finalize' "$SKILL_MD"
-  grep -qi 'context-build.*guard.sh' "$SKILL_MD"
+  grep -qi 'finalize on any' "$SKILL_MD"
+  grep -q 'STOP\*' "$SKILL_MD"
+}
+
+@test "SKILL.md states the per-batch checkpoint is canonical (bugsweep-5ft review BLOCKER 2)" {
+  # The two passages that used to disagree on WHEN context-build checks the
+  # deadline (preflight intro vs. Step 2) must now both point at ONE canonical
+  # rule: the per-batch checkpoint inside the modeling loop.
+  grep -qi 'canonical checkpoint' "$SKILL_MD"
+  grep -q 'Per-batch deadline checkpoint' "$SKILL_MD"
+  # The old standalone "after context-build completes ... between large
+  # batches" instruction (vague, no snippet, disconnected from the batch loop
+  # it was supposed to guard) must be gone as its own sentence.
+  ! grep -q 'After context-build completes, run' "$SKILL_MD"
+}
+
+@test "SKILL.md states the no-silence contract honestly (bugsweep-5ft review BLOCKER 3)" {
+  # Must not claim a hard-kill-surviving trap; must state the guarantee is
+  # voluntary phase-boundary checks, and must give the orchestrator/harness
+  # wall-clock guidance (outer timeout above the inner caps.max_runtime_minutes).
+  grep -qi 'VOLUNTARY' "$SKILL_MD"
+  grep -qi 'SIGKILL' "$SKILL_MD"
+  grep -qi 'Operational corollary' "$SKILL_MD"
+  grep -q 'caps.max_runtime_minutes' "$SKILL_MD"
+}
+
+# ---------------------------------------------------------------------------
+# MAJOR 5 (bugsweep-5ft review): preflight.sh's caps.max_runtime_minutes
+# sanitization branches. Code (scripts/preflight.sh):
+#   max_runtime_minutes="$(cfg_get '.caps.max_runtime_minutes' '120')"
+#   case "$max_runtime_minutes" in ''|*[!0-9]*) max_runtime_minutes=120 ;; esac
+#   [ "$max_runtime_minutes" -gt 0 ] || max_runtime_minutes=120
+# Every bad-input case below must still resolve to the coded default: 120.
+# ---------------------------------------------------------------------------
+
+_assert_preflight_max_runtime_default() {
+  local config_json="$1"
+  mkdir -p "${REPO}/config"
+  printf '%s' "$config_json" > "${REPO}/config/bugsweep.config.json"
+
+  _PREFLIGHT_TEST_CONFIG_OVERRIDE="${REPO}/config/bugsweep.config.json" \
+    run bash "$PREFLIGHT_SH"
+  [ "$status" -eq 0 ]
+
+  local run_dir
+  run_dir="$(echo "$output" | sed -n 's/^RUN_DIR=//p')"
+  [ -n "$run_dir" ]
+  # shellcheck disable=SC1090
+  . "${run_dir}/state.env"
+  [ "$BUGSWEEP_MAX_RUNTIME_MINUTES" -eq 120 ]
+  [ "$BUGSWEEP_DEADLINE_EPOCH" -eq $(( BUGSWEEP_START_EPOCH + 120 * 60 )) ]
+}
+
+@test "preflight.sh: _PREFLIGHT_TEST_CONFIG_OVERRIDE actually redirects cfg_get (sanity check)" {
+  # Proves the override hook is load-bearing: a VALID, non-default value must
+  # come through untouched, so the "falls back to 120" tests below are known
+  # to be exercising the override (and therefore the real sanitization code),
+  # not silently reading the worktree's own config/bugsweep.config.json
+  # (which also happens to be 120 and would make a broken override invisible).
+  mkdir -p "${REPO}/config"
+  printf '{"caps": {"max_runtime_minutes": 45}}' > "${REPO}/config/bugsweep.config.json"
+
+  _PREFLIGHT_TEST_CONFIG_OVERRIDE="${REPO}/config/bugsweep.config.json" \
+    run bash "$PREFLIGHT_SH"
+  [ "$status" -eq 0 ]
+
+  local run_dir
+  run_dir="$(echo "$output" | sed -n 's/^RUN_DIR=//p')"
+  [ -n "$run_dir" ]
+  # shellcheck disable=SC1090
+  . "${run_dir}/state.env"
+  [ "$BUGSWEEP_MAX_RUNTIME_MINUTES" -eq 45 ]
+  [ "$BUGSWEEP_DEADLINE_EPOCH" -eq $(( BUGSWEEP_START_EPOCH + 45 * 60 )) ]
+}
+
+@test "preflight.sh: missing caps.max_runtime_minutes key falls back to the 120m default" {
+  _assert_preflight_max_runtime_default '{"caps": {}}'
+}
+
+@test "preflight.sh: caps.max_runtime_minutes=0 falls back to the 120m default (the -gt 0 guard)" {
+  _assert_preflight_max_runtime_default '{"caps": {"max_runtime_minutes": 0}}'
+}
+
+@test "preflight.sh: caps.max_runtime_minutes=-5 falls back to the 120m default (the non-digit case guard)" {
+  _assert_preflight_max_runtime_default '{"caps": {"max_runtime_minutes": -5}}'
+}
+
+@test 'preflight.sh: caps.max_runtime_minutes="abc" falls back to the 120m default' {
+  _assert_preflight_max_runtime_default '{"caps": {"max_runtime_minutes": "abc"}}'
+}
+
+@test "preflight.sh: caps.max_runtime_minutes=null falls back to the 120m default" {
+  _assert_preflight_max_runtime_default '{"caps": {"max_runtime_minutes": null}}'
+}
+
+# ---------------------------------------------------------------------------
+# MAJOR 5 (bugsweep-5ft review): guard.sh's malformed BUGSWEEP_DEADLINE_EPOCH
+# sanitization branch. Code (scripts/guard.sh):
+#   deadline_epoch="${BUGSWEEP_DEADLINE_EPOCH:-}"
+#   case "$deadline_epoch" in
+#     ''|*[!0-9]*) deadline_epoch=$(( BUGSWEEP_START_EPOCH + (max_minutes * 60) )) ;;
+#   esac
+# A malformed persisted deadline must not crash the guard; it must recompute
+# from BUGSWEEP_START_EPOCH + the configured max-runtime default (120m in this
+# repo's config/bugsweep.config.json — see the assertion below) and the run
+# must still behave (CONTINUE/STOP correctly, not error out).
+# ---------------------------------------------------------------------------
+
+_assert_guard_recomputes_deadline() {
+  local bad_deadline="$1"
+  local now start
+  now="$(date +%s)"
+  start=$((now - 60))
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH" "$start" "$bad_deadline"
+
+  run bash "$GUARD_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+  # Still functions: a fresh 60s-old start plus a recomputed ~120m deadline
+  # has not expired yet, so the run must CONTINUE, not error or false-STOP.
+  echo "$output" | grep -q '^CONTINUE '
+  echo "$output" | grep -q "deadline_epoch=$((start + 120 * 60))"
+}
+
+@test "guard.sh: empty BUGSWEEP_DEADLINE_EPOCH recomputes the default deadline and still behaves" {
+  _assert_guard_recomputes_deadline ""
+}
+
+@test "guard.sh: garbage BUGSWEEP_DEADLINE_EPOCH recomputes the default deadline and still behaves" {
+  _assert_guard_recomputes_deadline "not-a-number"
+}
+
+@test "guard.sh: negative BUGSWEEP_DEADLINE_EPOCH recomputes the default deadline and still behaves" {
+  _assert_guard_recomputes_deadline "-500"
 }

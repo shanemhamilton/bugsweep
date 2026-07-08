@@ -39,6 +39,22 @@
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+# TEST-ONLY config redirection. common.sh unconditionally sets BUGSWEEP_CONFIG
+# to "${BUGSWEEP_ROOT}/config/bugsweep.config.json" (a plain assignment, not
+# `:=`), so the test harness cannot point this script at a temp config via the
+# public BUGSWEEP_CONFIG. This underscore-prefixed, _TEST_-marked hook lets
+# tests/bats/guard.bats exercise the caps.max_runtime_minutes sanitization
+# branches (bugsweep-5ft review MAJOR 5) WITHOUT introducing any production-path
+# config-redirection env var (no unprefixed override exists — the production
+# path always trusts common.sh's single BUGSWEEP_CONFIG, exactly like every
+# other cfg_get-using script in the repo; see scripts/analyzers.sh for the same
+# pattern). A stray CI export of this internal name is the caller's own doing,
+# not a supported knob.
+if [ -n "${_PREFLIGHT_TEST_CONFIG_OVERRIDE:-}" ]; then
+  # shellcheck disable=SC2034  # consumed by common.sh's cfg_get, sourced above
+  BUGSWEEP_CONFIG="$_PREFLIGHT_TEST_CONFIG_OVERRIDE"
+fi
+
 # Parse optional --mode and --worktree flags (e.g. --mode autonomous --worktree)
 bs_mode="detect"
 bs_worktree="no"

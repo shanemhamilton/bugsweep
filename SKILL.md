@@ -135,11 +135,14 @@ verbatim. Capture `RUN_DIR`; all artifacts live there.
 
 Preflight also persists `BUGSWEEP_DEADLINE_EPOCH` in `<RUN_DIR>/state.env`, derived from
 `caps.max_runtime_minutes`. At every expensive phase boundary, call `guard.sh` and always
-finalize on a `STOP` result; in particular, context-build must run `guard.sh` after each
-batch and before handing off to the architectural hunt. This is the nightshift no-silence
-contract: a deadline stop must route through `finalize.sh`, which emits `report.md` and
-`run-summary.json` even when the model never reached the normal report step.
-Always finalize on deadline; never continue modeling after `guard.sh` returns `STOP`.
+finalize on any `STOP*` result. Context-build's canonical checkpoint runs after **every**
+batch, inside its own modeling loop (see Step 2 below and `prompts/context-build.md`'s
+per-batch loop) — not once at the end and not "between large batches"; the hunt loop (Step
+4) checks it at the start of every iteration and before each architectural target group or
+coverage batch. Treat every `STOP*` prefix identically (`runtime_cap_reached`,
+`iteration_cap_reached`, `fix_cap_reached`, `converged_no_new_bugs`, ...) — never continue
+modeling/hunting after `guard.sh` prints `STOP*`, and always route the stop through
+`finalize.sh`:
 
 ```bash
 guard_out="$(bash scripts/guard.sh "$RUN_DIR")"
@@ -147,6 +150,25 @@ case "$guard_out" in
   STOP*) bash scripts/finalize.sh "$RUN_DIR"; exit 0 ;;
 esac
 ```
+
+**The nightshift no-silence contract, stated honestly.** The guarantee that a wall-clock
+deadline never produces silence comes from these VOLUNTARY, phase-boundary `guard.sh`
+checks — the model checking in and choosing to finalize BEFORE its time budget runs out —
+not from any mechanism that survives a hard process kill. No bash-level trap can catch an
+interrupted phase here, because the expensive work between checkpoints is the *model's own
+reasoning*, not a wrapped bash process; a `SIGKILL` of the agent (or an external harness
+timeout) bypasses every checkpoint below it, the same way it bypasses any other in-process
+cleanup. What this actually guarantees: as long as the model keeps following the
+per-batch/per-iteration checkpoint discipline, it self-finalizes — emitting `report.md` +
+`run-summary.json` — before its own internal deadline expires, instead of running the clock
+to an external kill with nothing on disk.
+
+**Operational corollary.** Because the guarantee depends on the model reaching its own
+checkpoints before an external kill, whatever launches bugsweep as a subagent (an
+orchestrator, a nightshift scheduler, a CI job) should set its own per-subagent wall-clock
+limit *above* `caps.max_runtime_minutes`. `BUGSWEEP_DEADLINE_EPOCH` is the **inner** budget,
+sized so bugsweep finishes and self-finalizes before any **outer** harness timeout fires —
+it is not meant to race that outer timeout.
 
 **Concurrent runs (`--worktree`).** When several bugsweep runs must share one repository
 (e.g. an orchestrator dispatching parallel subagents), add `--worktree`: preflight cuts each
@@ -197,6 +219,26 @@ chains, import graph, key data flows, and `architectural_targets`. This distille
 what lets the hunt find **large** cross-file bugs, and it is small enough to survive a
 context reset. Append a `context_built` event.
 
+**Per-batch deadline checkpoint (canonical — bugsweep-5ft).** Immediately after that
+per-batch append-and-persist step, `prompts/context-build.md`'s loop runs the same
+`guard.sh`/`finalize.sh` checkpoint used everywhere else in this SKILL:
+```bash
+guard_out="$(bash scripts/guard.sh "$RUN_DIR")"
+case "$guard_out" in
+  STOP*) bash scripts/finalize.sh "$RUN_DIR"; exit 0 ;;
+esac
+```
+Any `STOP*` result ends the run through `finalize.sh` immediately — do not start another
+batch. This is the **only** deadline checkpoint context-build performs: there is no separate
+"after context-build completes" check to reconcile with it, because the last batch's
+checkpoint already covers that point, and there is no "between large batches" check either
+— "between batches" **is** "after every batch." The identical `guard.sh`/`STOP*`/
+`finalize.sh` pattern recurs at every later phase boundary: at the start of every hunt
+iteration including iteration 1 (Step 4's loop-start check, which runs right after
+research), and before each architectural target group or coverage batch inside the loop
+(Step 4) — so a run that reaches the wall-clock deadline at any phase still produces a
+partial, auditable output.
+
 **Large-repo budget flag.** `scripts/recon-plan.sh` computes `large_repo_mode` and
 `budget_batches` itself, from `batch_count` against a file-count threshold (`cfg_get
 '.context.large_repo_file_threshold'`, default 800; first-pass cap `cfg_get
@@ -222,12 +264,9 @@ ago), high-risk, and all sink-bearing files in the critical tier; put
 already-audited-and-fresh files in a final cheap re-confirmation tier. The whole repo is
 ALWAYS in scope — bugsweep finds latent bugs in old, unchanged code, it is not a diff
 scanner — so this step never drops a file from the plan. The repo is never permanently
-"done" while a frontier remains. See `references/context-and-continuity.md`.
-
-After context-build completes, run `bash scripts/guard.sh "<RUN_DIR>"`; if it prints
-`STOP`, call `bash scripts/finalize.sh "<RUN_DIR>"` immediately and stop. Do the same after
-research, before the iteration-1 architectural hunt, and between large batches so a run
-that reaches the wall-clock deadline still has a partial, auditable output.
+"done" while a frontier remains. See `references/context-and-continuity.md`. (The per-batch
+deadline checkpoint that guards this whole modeling phase is described above, right after
+the batch loop it belongs to.)
 
 ### Step 3 — Research anti-patterns for this stack (once)
 Follow `prompts/research.md`. Detect the languages/frameworks, load the matching catalogs
@@ -259,7 +298,11 @@ disabled config is a clean no-op.
    what surfaces large cross-file bugs without stalling on huge repos. Hunters never fix
    anything.
    Before each architectural target group or coverage batch, run `guard.sh`; if it prints
-   `STOP runtime_cap_reached(...remaining_sec=0...)`, call `finalize.sh` immediately.
+   ANY `STOP*` result — e.g. `STOP runtime_cap_reached(...remaining_sec=0...)`, but just as
+   much `STOP iteration_cap_reached(...)`, `STOP fix_cap_reached(...)`, or
+   `STOP converged_no_new_bugs(...)` — call `finalize.sh` immediately. The runtime-cap
+   example is illustrative, not the only trigger: every `STOP*` prefix means stop and
+   finalize.
 2. **CHALLENGE (Skeptic)** — Dispatch a *separate* adversary following
    `prompts/challenge.md`. It actively tries to disprove each candidate, calibrated to
    punish dismissing real bugs twice as hard as missing a false-positive catch. Verdicts:
