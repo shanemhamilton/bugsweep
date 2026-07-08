@@ -75,6 +75,21 @@ phase="${1:-}"; run_dir="${2:-}"
 [ -n "$phase" ] && [ -n "$run_dir" ] || die "usage: run_checks.sh <baseline|verify> <RUN_DIR>"
 [ -d "$run_dir" ] || die "run dir not found: $run_dir"
 
+# bugsweep-7hw: read state.env (if present) so BUGSWEEP_WORKTREE is available
+# below -- the same idiom scripts/guard.sh and scripts/finalize.sh already use
+# to source "${run_dir}/state.env" (neither of those two files is modified by
+# this change; this is a THIRD, independent read site). Guarded by an `if`
+# (not their bare unconditional `. "${run_dir}/state.env"`) because
+# run_checks.sh, unlike those two, is also exercised directly against a
+# run_dir that legitimately has no state.env yet -- every pre-existing
+# run_checks.sh bats test constructs a bare run_dir with no preflight run at
+# all. A malformed/unreadable state.env degrades to "no isolation signal"
+# (via the `|| true`) rather than aborting the whole verify.
+if [ -f "${run_dir}/state.env" ]; then
+  # shellcheck disable=SC1091
+  . "${run_dir}/state.env" 2>/dev/null || true
+fi
+
 # --- Resolve check commands: config overrides win, else auto-detect -----------
 cmd_test="$(cfg_get '.commands.test' '')"
 cmd_build="$(cfg_get '.commands.build' '')"
@@ -159,6 +174,176 @@ json_str_or_null() {
   fi
 }
 
+# --- Isolated-rerun safety scope (bugsweep-7hw) --------------------------------
+# Follow-up to bugsweep-ml7's documented shared-environment residual (see the
+# module header above): reruns share the working tree/environment with the
+# initial run, so a MONOTONIC state-pollution failure (a broken fix's first
+# run fails but leaves a marker/cache that makes every subsequent run pass)
+# can be misclassified FLAKY. Where isolation is FEASIBLE and UNAMBIGUOUS -- a
+# `preflight.sh --worktree` run, whose linked worktree is bugsweep-controlled
+# and disposable -- each rerun is now given a clean slate: tracked-file
+# mutations and newly-created untracked files are reset before every rerun.
+#
+# ISOLATION-ACTIVATION SIGNAL (the ONLY thing that turns this on): state.env's
+# BUGSWEEP_WORKTREE, written by preflight.sh -- empty string in the default/
+# in-place mode (preflight.sh: `worktree_path=""`, then persisted verbatim as
+# `BUGSWEEP_WORKTREE=${worktree_path}`), the linked worktree's absolute path
+# in `--worktree` mode. If BUGSWEEP_WORKTREE is unset/empty, OR the path it
+# names does not exist, OR it is not itself a distinct LINKED git worktree
+# (see _bsw_isolated_worktree), isolation NEVER activates and behavior is
+# byte-identical to the pre-bugsweep-7hw script -- the documented shared-
+# environment residual persists honestly rather than risking a reset against
+# ambiguous state (safety contract: "if there is ANY doubt, do NOT reset").
+#
+# SCOPE: every reset operation below is explicitly targeted at the confirmed
+# worktree directory via `git -C "<worktree>"` / literal "<worktree>/<path>"
+# prefixes -- never the current process's cwd, and never any path outside
+# that one confirmed directory. Only bugsweep-DISPOSABLE state is ever
+# touched: (a) tracked files are restored to a snapshot taken via
+# `git stash create` BEFORE the verify pass's very first "test" check
+# invocation -- that snapshot already contains any uncommitted fix under test
+# (prompts/fix.md's flow applies the fix, THEN calls `run_checks.sh verify`,
+# THEN commits -- see SKILL.md Step 4), so restoring to it can never discard
+# the fix, only undo mutations the TEST ITSELF made since that snapshot;
+# (b) untracked files are removed ONLY if they are NOT present in a
+# `git ls-files -z --others --exclude-standard` snapshot taken at that same
+# moment -- a file that predates this verify pass is never a removal
+# candidate, full stop. No `git clean -fdx` is ever invoked. No `reset --hard`
+# or force flag is ever used on the worktree's branch or any ref.
+#
+# NUL-SAFETY (bugsweep-7hw adversarial review, CONFIRMED BLOCKER): WITHOUT
+# `-z`, `git ls-files --others` C-QUOTES any path containing a newline,
+# backslash, or double-quote -- it prints the literal `"evil\nname"` (quotes +
+# backslash-n), NOT the raw bytes. A newline-delimited compare/remove would
+# then target a path that does not exist on disk, the `rm` would no-op, and the
+# REAL polluting file would survive every reset -- reopening the exact
+# monotonic-state-pollution hole this bead closes (a broken fix whose first-run
+# marker has a newline in its name would be misclassified FLAKY and LAND).
+# Every untracked listing below therefore uses `git ls-files -z` (NUL-delimited,
+# raw byte-accurate names, unaffected by core.quotePath) and is split/compared
+# on NUL via `read -r -d ''`, so real names -- newlines, spaces, leading
+# dashes, unicode, and all -- are matched and removed exactly. `rm -rf --` plus
+# the "${wt}/"* prefix guard keep a leading-dash name from being read as an
+# option and keep every removal strictly inside the confirmed worktree.
+
+# _bsw_isolated_worktree: prints the confirmed worktree path and returns 0
+# only when the activation signal is unambiguous; returns 1 (prints nothing)
+# on any doubt whatsoever, which every call site below treats as "do not
+# isolate" (fall back to the pre-existing shared-environment behavior).
+_bsw_isolated_worktree() {
+  local wt="${BUGSWEEP_WORKTREE:-}" gd cdir
+  [ -n "$wt" ] || return 1
+  [ -d "$wt" ] || return 1
+  # Never the main repo root itself (BUGSWEEP_REPO_ROOT, from common.sh) --
+  # this can only legitimately be equal if state.env were somehow corrupted
+  # or forged; refuse rather than guess.
+  if [ -n "${BUGSWEEP_REPO_ROOT:-}" ] && [ "$wt" = "$BUGSWEEP_REPO_ROOT" ]; then
+    return 1
+  fi
+  git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  gd="$(_bsw_abs_git_path "$wt" --git-dir)" || return 1
+  cdir="$(_bsw_abs_git_path "$wt" --git-common-dir)" || return 1
+  [ -n "$gd" ] && [ -n "$cdir" ] || return 1
+  # A LINKED worktree's git-dir (.git/worktrees/<id>) always differs from the
+  # shared git-common-dir (the main .git); the MAIN worktree's are identical.
+  # Equal here means $wt is not actually a linked worktree -- refuse.
+  [ "$gd" != "$cdir" ] || return 1
+  printf '%s' "$wt"
+}
+
+# Resolve a `git rev-parse --git-dir`/`--git-common-dir` style output to an
+# absolute path, mirroring common.sh's own relative-path resolution for the
+# identical case (see common.sh's BUGSWEEP_GIT_COMMON_DIR derivation) --
+# duplicated here (not sourced from common.sh) because common.sh's version is
+# hardwired to `git rev-parse` from the CALLING process's own cwd, not an
+# arbitrary "-C <dir>" target.
+_bsw_abs_git_path() {
+  local repo="$1" kind="$2" d
+  d="$(git -C "$repo" rev-parse "$kind" 2>/dev/null)" || return 1
+  [ -n "$d" ] || return 1
+  case "$d" in
+    /*) printf '%s' "$d" ;;
+    *) (cd "${repo}/${d}" 2>/dev/null && pwd) || return 1 ;;
+  esac
+}
+
+# Snapshot the CURRENT tracked working-tree+index state as a dangling commit
+# object, without touching the working tree itself (`git stash create` is
+# read-only w.r.t. the working tree/index -- unlike `git stash push`). Called
+# once, before the verify pass's first "test" check runs, so it already
+# includes any uncommitted fix under test. An empty result means the tracked
+# state already equals HEAD (nothing uncommitted) -- HEAD is then the correct,
+# equivalent snapshot.
+_bsw_snapshot_tracked() {
+  local wt="$1" sha
+  sha="$(git -C "$wt" stash create 2>/dev/null)" || return 1
+  if [ -z "$sha" ]; then
+    sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null)" || return 1
+  fi
+  printf '%s' "$sha"
+}
+
+# Capture the worktree's CURRENT untracked set as a NUL-delimited snapshot
+# file (bugsweep-7hw). `-z` is load-bearing: it emits raw byte-accurate paths
+# (no C-quoting of newline/backslash/quote names, and unaffected by
+# core.quotePath's unicode escaping), so the membership + removal logic below
+# operate on the true on-disk names. Returns non-zero if the snapshot cannot
+# be written (e.g. the target path is unwritable) so the caller can fail SAFE
+# (disable isolation) rather than let an unguarded redirect abort the whole
+# script under `set -euo pipefail`.
+_bsw_snapshot_untracked() {
+  local wt="$1" out="$2"
+  git -C "$wt" ls-files -z --others --exclude-standard > "$out" 2>/dev/null || return 1
+  return 0
+}
+
+# NUL-delimited membership test: is $1 present as a NUL-terminated record in
+# the snapshot file $2? Used to tell a NEW untracked file (created during this
+# run) apart from one that predates it -- byte-accurately, so a name with an
+# embedded newline is compared as one whole record, not split into lines.
+_bsw_nul_member() {
+  local needle="$1" file="$2" rec
+  [ -f "$file" ] || return 1
+  while IFS= read -r -d '' rec; do
+    [ "$rec" = "$needle" ] && return 0
+  done < "$file"
+  return 1
+}
+
+# Reset the isolated worktree's DISPOSABLE state back to the pre-run
+# snapshot: (a) tracked files -> $tracked_sha (every git invocation is
+# `-C "$wt"`, never touching anything outside it); (b) untracked files ->
+# remove only entries NOT present in $pre_untracked_file, and only ever under
+# "$wt/...". Best-effort: every command is guarded so a failure here degrades
+# to "this one rerun stays a bit less isolated" rather than aborting
+# run_checks.sh.
+_bsw_isolate_reset() {
+  local wt="$1" scratch_dir="$2" tracked_sha="$3" pre_untracked_file="$4"
+  local cur_untracked_file="${scratch_dir}/isolate-cur-untracked.txt"
+  local entry target
+
+  if [ -n "$tracked_sha" ]; then
+    git -C "$wt" checkout -q "$tracked_sha" -- . >/dev/null 2>&1 || true
+  fi
+
+  # NUL-delimited current listing (see _bsw_snapshot_untracked). If it can't be
+  # written, skip untracked cleanup for this reset (tracked restore already
+  # ran) rather than aborting -- best-effort, fail-safe under set -e.
+  _bsw_snapshot_untracked "$wt" "$cur_untracked_file" || return 0
+
+  # Split on NUL, not newlines, so a name containing a newline is one record.
+  while IFS= read -r -d '' entry; do
+    [ -n "$entry" ] || continue
+    _bsw_nul_member "$entry" "$pre_untracked_file" && continue
+    target="${wt}/${entry}"
+    case "$target" in
+      "${wt}/"*) rm -rf -- "$target" 2>/dev/null || true ;;
+    esac
+  done < "$cur_untracked_file" || true
+
+  return 0
+}
+
 # --- Run each available check, capture pass/fail ------------------------------
 results_file="${run_dir}/checks-${phase}.json"
 overall=0
@@ -190,6 +375,37 @@ run_one() {
     if [ "$name" = "test" ]; then test_check_failed=1; else other_check_failed=$((other_check_failed + 1)); fi
   fi
 }
+
+# Resolve isolation ONCE, before the verify pass's very first "test" check
+# invocation runs (bugsweep-7hw). This ordering is load-bearing: a state-
+# pollution marker created BY that first run must be ABSENT from the
+# snapshot, or resetting to the snapshot before each rerun would never
+# actually remove it (see the design comment above _bsw_isolated_worktree).
+# Gated on phase=="verify" -- baseline never reaches the rerun logic below, so
+# there is nothing for the snapshot to serve there.
+iso_worktree=""
+iso_tracked_sha=""
+iso_pre_untracked_file=""
+if [ "$phase" = "verify" ] && [ -n "$cmd_test" ]; then
+  if candidate_wt="$(_bsw_isolated_worktree)"; then
+    candidate_pre_untracked="${run_dir}/isolate-pre-untracked.txt"
+    # Both snapshots must succeed to activate isolation. If EITHER the tracked
+    # `stash create` snapshot OR the NUL-delimited untracked snapshot fails
+    # (e.g. an unwritable snapshot path), fail SAFE: leave iso_worktree empty
+    # so no reset is ever attempted and behavior reverts to the documented
+    # shared-environment path -- never an uncaught `set -euo pipefail` abort
+    # (adversarial review MINOR).
+    if candidate_sha="$(_bsw_snapshot_tracked "$candidate_wt")" \
+       && _bsw_snapshot_untracked "$candidate_wt" "$candidate_pre_untracked"; then
+      iso_worktree="$candidate_wt"
+      iso_tracked_sha="$candidate_sha"
+      iso_pre_untracked_file="$candidate_pre_untracked"
+      log "isolated-rerun scope active: ${iso_worktree} (bugsweep-7hw)."
+    else
+      log "isolated-rerun snapshot failed; falling back to shared-environment rerun behavior (fail-safe, bugsweep-7hw)."
+    fi
+  fi
+fi
 
 run_one "test" "$cmd_test"
 run_one "typecheck" "$cmd_typecheck"
@@ -278,6 +494,14 @@ if [ "$test_check_failed" -eq 1 ] && [ "$base_test_failed" -eq 0 ] && [ -n "$cmd
         rerun_infra_ok=0
         break
       fi
+      # bugsweep-7hw: give this rerun a clean slate when isolation is active
+      # (see the design comment above _bsw_isolated_worktree) -- this is what
+      # turns a monotonic state-pollution false-pass into a correctly-
+      # classified REGRESSION. A no-op whenever iso_worktree is empty (the
+      # documented fail-safe: any doubt about isolation -> no reset).
+      if [ -n "$iso_worktree" ]; then
+        _bsw_isolate_reset "$iso_worktree" "$run_dir" "$iso_tracked_sha" "$iso_pre_untracked_file"
+      fi
       reruns=$((reruns + 1))
       if ( eval "$cmd_test" ) >"$rerun_log" 2>&1; then
         rerun_passes=$((rerun_passes + 1))
@@ -286,6 +510,16 @@ if [ "$test_check_failed" -eq 1 ] && [ "$base_test_failed" -eq 0 ] && [ -n "$cmd
       fi
       i=$((i + 1))
     done
+
+    # bugsweep-7hw: leave the isolated worktree clean of test-induced
+    # pollution regardless of the classification outcome below, so a
+    # subsequent `git add -A && git commit` (SKILL.md Step 4) never picks up
+    # rerun debris, and so tracked/untracked state the test mutated is fully
+    # restored even after the LAST rerun. Best-effort/no-op when isolation
+    # was never active.
+    if [ -n "$iso_worktree" ]; then
+      _bsw_isolate_reset "$iso_worktree" "$run_dir" "$iso_tracked_sha" "$iso_pre_untracked_file"
+    fi
 
     if [ "$rerun_infra_ok" -eq 1 ] && [ "$rerun_passes" -gt "$rerun_fails" ]; then
       # STRICT majority of reruns passed -> FLAKY. Exclude ONLY this check's
