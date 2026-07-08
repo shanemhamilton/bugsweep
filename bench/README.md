@@ -278,3 +278,29 @@ supersedes the judge's). The published number is the human-adjudicated one.
 `bench/lib/cost.sh sum <arm-dir>` aggregates the per-run `usage.json` records
 (`{tokens, wall_clock_seconds, cost_usd}`) into a per-arm total, so cost per arm
 and per detected bug can be reported alongside the leaderboard.
+
+### Precision track
+
+Detection rate measures only whether the single injected ground-truth bug was
+found. But bugsweep also surfaces *other* real bugs on the same clone, and a
+skill that finds many genuine bugs without flooding false positives should get
+credit for it. The **precision track** samples the non-ground-truth confirmed
+findings, judges whether they are real, and renders a `Precision track` block on
+the leaderboard (`arm | case-runs | total confirmed | sampled | real |
+precision`).
+
+It is an **offline post-pass**, run after a scored run — deliberately *not* wired
+into `run.sh`, so the default pipeline does not pay the extra judge-API cost:
+
+```bash
+python3 -m bench.scorer.precision_score <results-dir>
+```
+
+This samples up to `DEFAULT_PRECISION_SAMPLE` (5) non-GT findings per case-run
+(`bench/scorer/precision.py`), judges each with the same cross-model judge the
+detection pass uses (`BENCH_JUDGE_BACKEND` / `BENCH_JUDGE_MODEL`, wrapping all
+attacker-controlled finding text in an `<UNTRUSTED_DATA>` region), writes
+`<results-dir>/precision_track.jsonl`, and re-renders `<results-dir>/leaderboard.md`
+with the precision block included. Precision is a per-run indicator over a small
+sample, not a powered rate — read it alongside the same inconclusive caveats as
+the detection numbers.
