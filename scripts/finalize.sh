@@ -43,7 +43,7 @@ _emit_stub_report() {
     if command -v jq >/dev/null 2>&1; then
       covered="$(jq -r '.covered | length'         "${run_dir}/recon.json" 2>/dev/null || printf '0')"
       total="$(  jq -r '.batch_count // (.batches | length)' "${run_dir}/recon.json" 2>/dev/null || printf '0')"
-    elif command -v python3 >/dev/null 2>&1; then
+    elif have_python; then
       covered="$(python3 -c \
         'import json,sys; d=json.load(open(sys.argv[1])); print(len(d.get("covered",[])))' \
         "${run_dir}/recon.json" 2>/dev/null || printf '0')"
@@ -138,7 +138,7 @@ _write_run_summary_and_machine_block() {
     else
       {
         printf '\n## Findings (machine-readable)\n```json\n'
-        if command -v python3 >/dev/null 2>&1; then
+        if have_python; then
           python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d.get("findings",[]), indent=2))' \
             "$_bugsweep_run_summary_path" 2>/dev/null || printf '[]'
         else
@@ -151,6 +151,22 @@ _write_run_summary_and_machine_block() {
 }
 _write_run_summary_and_machine_block
 
+# Minimal JSON string escaper for the no-python heredoc fallback below
+# (bash-3.2 + POSIX tools only, no external helper is importable without
+# sourcing another script's side effects — see scripts/summarize.sh's
+# _json_escape / scripts/recon-plan.sh's _json_escape_deg / scripts/run_checks.sh's
+# json_str_or_null for the same established repo-wide pattern). Every value
+# interpolated into that heredoc MUST be piped through this: the DEFAULT
+# BUGSWEEP_QUALITY_GATE_COMMAND embeds literal double quotes
+# (`verify "${run_dir}"`), and interpolating it raw breaks the emitted JSON
+# (bugsweep-yvq). Strip control chars first (JSON forbids raw control chars
+# in strings and this path never needs them), THEN escape backslash BEFORE
+# double-quote — reversing that order would re-escape the backslashes the
+# quote escaping just introduced.
+_json_escape() {
+  printf '%s' "${1:-}" | tr -d '\000-\037' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
 _write_post_finalize_handoff() {
   local handoff="${run_dir}/post-finalize-handoff.json"
   local report="${run_dir}/report.md"
@@ -158,7 +174,7 @@ _write_post_finalize_handoff() {
   local push_policy="${BUGSWEEP_PUSH_POLICY:-Push the target branch only after merge, quality gate, smoke checks, and remote read-back succeed; never force-push.}"
   local cleanup_policy="${BUGSWEEP_CLEANUP_POLICY:-Use scripts/bugsweep-cleanup.sh after approval; delete the bugsweep branch only after merge-base containment proof, removing only clean linked worktrees and never using --force.}"
 
-  if command -v python3 >/dev/null 2>&1; then
+  if have_python; then
     RUN_DIR="$run_dir" \
     ORIGINAL_BRANCH="$BUGSWEEP_ORIG_BRANCH" \
     PRESERVED_BRANCH="$BUGSWEEP_BRANCH" \
@@ -239,23 +255,36 @@ with open(handoff_path, "w", encoding="utf-8") as f:
 PY
   else
     # Minimal fallback for bare machines. The normal path above records commits too.
+    # Every field below is JSON-escaped (bugsweep-yvq) — the default
+    # quality_gate value alone embeds literal double quotes, and this heredoc
+    # uses an unquoted delimiter, so bash interpolates every ${...} verbatim.
+    local esc_run_dir esc_orig_branch esc_branch esc_report esc_worktree \
+      esc_quality_gate esc_push_policy esc_cleanup_policy
+    esc_run_dir="$(_json_escape "$run_dir")"
+    esc_orig_branch="$(_json_escape "$BUGSWEEP_ORIG_BRANCH")"
+    esc_branch="$(_json_escape "$BUGSWEEP_BRANCH")"
+    esc_report="$(_json_escape "$report")"
+    esc_worktree="$(_json_escape "${BUGSWEEP_WORKTREE:-}")"
+    esc_quality_gate="$(_json_escape "$quality_gate")"
+    esc_push_policy="$(_json_escape "$push_policy")"
+    esc_cleanup_policy="$(_json_escape "$cleanup_policy")"
     cat > "$handoff" <<JSON
 {
-  "run_dir": "${run_dir}",
-  "original_branch": "${BUGSWEEP_ORIG_BRANCH}",
-  "preserved_branch": "${BUGSWEEP_BRANCH}",
-  "report_path": "${report}",
-  "worktree_path": "${BUGSWEEP_WORKTREE:-}",
+  "run_dir": "${esc_run_dir}",
+  "original_branch": "${esc_orig_branch}",
+  "preserved_branch": "${esc_branch}",
+  "report_path": "${esc_report}",
+  "worktree_path": "${esc_worktree}",
   "fix_commits": [],
   "focused_tests": [],
-  "quality_gate_command": "${quality_gate}",
+  "quality_gate_command": "${esc_quality_gate}",
   "smoke_test_commands": [],
-  "push_policy": "${push_policy}",
-  "cleanup_policy": "${cleanup_policy}",
-  "safe_to_delete_branch_after": "git merge-base --is-ancestor ${BUGSWEEP_BRANCH} <target-branch> succeeds; linked worktree must be clean before removal.",
+  "push_policy": "${esc_push_policy}",
+  "cleanup_policy": "${esc_cleanup_policy}",
+  "safe_to_delete_branch_after": "git merge-base --is-ancestor ${esc_branch} <target-branch> succeeds; linked worktree must be clean before removal.",
   "final_readback_commands": [
     "git status --short --branch",
-    "git merge-base --is-ancestor ${BUGSWEEP_BRANCH} <target-branch> && echo BRANCH_CONTAINED=${BUGSWEEP_BRANCH}",
+    "git merge-base --is-ancestor ${esc_branch} <target-branch> && echo BRANCH_CONTAINED=${esc_branch}",
     "git branch --list 'bugsweep/*'",
     "git ls-remote --heads origin <target-branch>"
   ]

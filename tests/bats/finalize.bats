@@ -191,3 +191,45 @@ assert data["preserved_branch"].startswith("bugsweep/")
 assert data["fix_commits"]
 PY
 }
+
+@test "finalize: no-python heredoc fallback emits valid JSON with the default quality-gate command (bugsweep-yvq)" {
+  # Regression test for bugsweep-yvq: the DEFAULT BUGSWEEP_QUALITY_GATE_COMMAND
+  # embeds literal double quotes (`verify "<run_dir>"`). On the no-python
+  # fallback path (bare machines without python3), those quotes used to be
+  # interpolated raw into the heredoc, breaking post-finalize-handoff.json's
+  # JSON. Force the no-python path deterministically via BUGSWEEP_NO_PYTHON
+  # (the same hook state.sh/common.sh's have_python() already honors) rather
+  # than mangling PATH, and validate with jq — NOT python3 — since the whole
+  # point is that this file must parse on a machine with no python3 at all.
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  # BUGSWEEP_QUALITY_GATE_COMMAND is deliberately left UNSET so finalize.sh
+  # falls back to its default, quote-embedding value.
+  unset BUGSWEEP_QUALITY_GATE_COMMAND || true
+
+  BUGSWEEP_NO_PYTHON=1 run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  local handoff="${RUN_DIR}/post-finalize-handoff.json"
+  [ -f "$handoff" ]
+
+  # The default command's embedded quotes must actually be present (sanity
+  # check that this test exercises the buggy value, not an empty string).
+  grep -q 'run_checks.sh verify' "$handoff"
+
+  run jq -e . "$handoff"
+  [ "$status" -eq 0 ]
+
+  # Every required field must be present and non-null.
+  run jq -e '
+    (.run_dir | type == "string" and length > 0)
+    and (.original_branch | type == "string" and length > 0)
+    and (.preserved_branch | type == "string" and startswith("bugsweep/"))
+    and (.report_path | type == "string")
+    and (.quality_gate_command | type == "string" and contains("run_checks.sh verify"))
+    and (.push_policy | type == "string")
+    and (.cleanup_policy | type == "string")
+    and (.safe_to_delete_branch_after | type == "string")
+    and (.final_readback_commands | type == "array")
+  ' "$handoff"
+  [ "$status" -eq 0 ]
+}
