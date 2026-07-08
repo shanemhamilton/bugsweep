@@ -219,16 +219,59 @@ Manual review still works the same way: keep what you like with a cherry-pick or
 discard explicitly if you decide the branch is not worth keeping. Your original branch and
 uncommitted work are exactly as you left them.
 
-### Repeatable, unattended runs
+## Overnight orchestrator
 
 Running bugsweep on a schedule makes it dig deeper over time on its own — coverage-first
-cross-run state means each run prioritizes the files it hasn't audited yet. The only thing
-that accumulates is one `bugsweep/<timestamp>` branch per run, because bugsweep never merges
-or deletes (you're the merge gate). To keep scheduled runs ending clean, the optional
-companion script `scripts/bugsweep-cleanup.sh` automates that gate *after* finalize and
-after approval: it merges the verified fix branch into a branch you choose, deletes only
-branches proven contained in that target, and preserves dirty worktrees or unmerged
-branches — using only plain git, outside the core hunt/fix loop. See
+cross-run state means each run prioritizes the files it hasn't audited yet. On top of that,
+a set of shipped capabilities turn a single run into something a headless scheduler or a
+fleet of concurrent runs can drive without a human watching:
+
+- **A machine contract, not prose.** `finalize.sh` always writes
+  `<RUN_DIR>/run-summary.json`, reduced from the run's ledger by `scripts/summarize.sh`
+  against [`schemas/run-summary.schema.json`](schemas/run-summary.schema.json): `status`
+  (`complete` / `partial` / `stalled`), severity `counts`, `fixed` / `quarantined` /
+  `confirmed_unfixed`, and per-finding detail — so a scheduler can branch on JSON instead of
+  parsing model output. If the full reduction can't run (no `python3`, or it fails for any
+  reason), a minimal schema-valid summary with `"degraded": true` is emitted instead.
+  Either way, `run-summary.json` exists after every finalize.
+- **Worktree isolation for concurrency.** `preflight.sh --worktree` checks the run out into
+  an isolated linked git worktree instead of the user's tree, so a fleet of sibling
+  subagents can hunt the same repo at the same time without colliding on one branch, index,
+  or stash — and without ever touching the user's checkout (no stash is taken, so there's
+  nothing to restore).
+- **A deadline that always finalizes.** The runtime cap is a hard checkpoint the loop
+  checks every iteration (`guard.sh`); hitting it routes straight to `finalize.sh`, so a run
+  that runs out of time still restores the original branch and writes its report, summary,
+  and handoff instead of dying mid-fix.
+- **Crash-safe teardown.** The optional reaper (`bugsweep-cleanup.sh --reap-worktrees`,
+  also called by preflight/finalize themselves) reclaims a worktree or branch only on
+  positive evidence its run is dead or done — a `.finalized` sentinel, or an expired lease.
+  Anything ambiguous, dirty, or unmerged is preserved and reported, never guessed away.
+- **Landing more than one fix branch safely.** `scripts/integrate.sh` merges an ordered
+  list of already-verified branches into a target one at a time, re-running the quality
+  gate after *each* merge — a fix that was green in isolation can go red once a sibling's
+  fix lands. The first conflict or failure stops cleanly, leaves the target at its last
+  good state, and preserves every remaining branch for the orchestrator to reorder or defer.
+- **Flaky-aware revert, honestly caveated.** Trust-contract rule 5's regression check
+  reruns a newly-failing test up to `.verify.flaky_reruns` (default `3`) times; only a
+  strict majority of passing reruns reclassifies it FLAKY and skips the revert. The reruns
+  share the run's tree and environment rather than running in full isolation, so this tells
+  you "failed vs. passed the majority," not a provably deterministic-vs-flaky distinction —
+  and any fix that lands with a flaky classification is written to `flaky.jsonl` and
+  surfaced loudly in the ledger and summary, never silently.
+- **Optional analyzer corroboration — off by default.** Set `analyzers.enabled: true` in
+  `config/bugsweep.config.json` and `scripts/analyzers.sh` runs whatever off-the-shelf
+  static analyzers you have installed (semgrep, gosec, bandit, ...) before the hunt,
+  feeding their hits in as one more corroboration signal for the Referee — never a
+  replacement for adversarial review.
+
+The only thing that still accumulates across runs is one `bugsweep/<timestamp>` branch (or
+worktree) per run, because none of the above lets bugsweep merge or delete on its own — you
+are still the merge gate. The optional companion script `scripts/bugsweep-cleanup.sh`
+automates that gate *after* finalize and after approval: it merges a verified fix branch
+into a branch you choose, deletes only branches proven contained in that target, and
+preserves dirty worktrees or unmerged branches — using only plain git, outside the core
+hunt/fix loop. See
 [`references/autonomous-maintenance.md`](references/autonomous-maintenance.md) for the
 copy-paste prompt, settings, and scheduling notes.
 
@@ -249,7 +292,7 @@ replacing them — and it can fix what it finds, not just flag it.
 
 **What languages and frameworks does it support?**
 Any language Claude Code or Codex can read. It ships curated anti-pattern catalogs for
-common stacks (JavaScript/TypeScript, Python, Go, Rust, Swift/iOS, and more) and detects
+common stacks (JavaScript/TypeScript, Python, Go, Swift/iOS, Kotlin, and React) and detects
 your stack automatically to prime the hunt.
 
 **Is it safe to run on a production codebase?**

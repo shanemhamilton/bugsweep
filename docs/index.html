@@ -1,0 +1,872 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bugsweep — the bug hunt that runs all night</title>
+<meta name="description" content="bugsweep is an autonomous, adversarial AI bug-hunting skill for Claude Code and Codex. It builds a whole-repo architecture model, hunts real security, logic, and data-integrity bugs through a Hunter→Skeptic→Referee gauntlet, and fixes them on a throwaway branch — safe enough to leave running overnight. The worst case is a branch you delete." />
+<meta property="og:title" content="bugsweep — the bug hunt that runs all night" />
+<meta property="og:description" content="An autonomous, adversarial bug-hunting fleet for Claude Code and Codex. A 9-rule trust contract, a Hunter→Skeptic→Referee gauntlet, and an overnight orchestrator built for unattended runs. The worst case is a branch you delete." />
+<meta property="og:type" content="website" />
+<meta name="theme-color" content="#0B1020" />
+<style>
+  :root{
+    --night:#0B1020;
+    --panel:#141B33;
+    --panel-2:#0F1528;
+    --haze:#232C4D;
+    --ink:#EAE6D9;
+    --muted:#9AA3C2;
+    --brass:#E7B24C;
+    --brass-dim:#B98A31;
+    --safe:#57C1A6;
+    --crit:#E8705B;
+    --high:#E7B24C;
+
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+
+    --measure:65ch;
+    --maxw:1080px;
+    --gut:clamp(20px,5vw,64px);
+    --radius:14px;
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;
+    background:var(--night);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:clamp(16px,1.05vw + 12px,18px);
+    line-height:1.65;
+    letter-spacing:.002em;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  a{color:var(--brass);text-decoration:none}
+  a:hover{text-decoration:underline;text-underline-offset:3px}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:4px}
+  img,canvas{max-width:100%}
+  code{font-family:var(--mono)}
+
+  .skip-link{
+    position:absolute;left:1rem;top:-3.5rem;z-index:50;
+    background:var(--brass);color:#241a06;font-family:var(--mono);font-size:.82rem;
+    padding:.7em 1em;border-radius:8px;transition:top .15s ease;
+  }
+  .skip-link:focus{top:1rem}
+
+  .wrap{max-width:var(--maxw);margin-inline:auto;padding-inline:var(--gut)}
+  .prose{max-width:var(--measure)}
+
+  h1,h2,h3{font-family:var(--serif);font-weight:600;text-wrap:balance;line-height:1.1;margin:0}
+  h2{font-size:clamp(1.9rem,3.6vw,2.9rem);letter-spacing:-.01em}
+  h3{font-size:1.3rem;letter-spacing:-.005em}
+  p{margin:0}
+
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:.72rem;
+    letter-spacing:.22em;
+    text-transform:uppercase;
+    color:var(--brass);
+    display:inline-flex;align-items:center;gap:.6em;
+  }
+  .eyebrow::before{content:"";width:26px;height:1px;background:linear-gradient(90deg,var(--brass),transparent)}
+
+  section{padding-block:clamp(64px,9vw,120px)}
+  .rule{height:1px;background:linear-gradient(90deg,transparent,var(--haze) 15%,var(--haze) 85%,transparent);border:0;margin:0}
+
+  code.kbd{font-family:var(--mono);color:var(--brass);background:rgba(231,178,76,.08);padding:.1em .4em;border-radius:5px;font-size:.92em}
+
+  /* ---------- HERO ---------- */
+  .hero{position:relative;min-height:min(92vh,860px);display:flex;align-items:flex-end;overflow:hidden;padding-block:0}
+  #sweep{position:absolute;inset:0;width:100%;height:100%;display:block;z-index:0}
+  .hero-scrim{position:absolute;inset:0;z-index:1;pointer-events:none;
+    background:
+      radial-gradient(120% 90% at 12% 100%, rgba(11,16,32,.82), transparent 60%),
+      linear-gradient(180deg, rgba(11,16,32,.55) 0%, rgba(11,16,32,0) 26%, rgba(11,16,32,.15) 62%, rgba(11,16,32,.92) 100%);
+  }
+  .hero-inner{position:relative;z-index:2;width:100%;padding-block:clamp(40px,7vw,86px)}
+  .hero h1{
+    font-size:clamp(2.7rem,7.4vw,5.6rem);
+    letter-spacing:-.02em;
+    margin-top:.5rem;
+    max-width:17ch;
+  }
+  .hero h1 em{font-style:italic;color:var(--brass)}
+  .hero-sub{margin-top:1.4rem;max-width:56ch;color:var(--ink);font-size:clamp(1.05rem,1.4vw,1.28rem);line-height:1.55}
+  .hero-sub b{color:#fff;font-weight:600}
+
+  .cta-row{margin-top:2.2rem;display:flex;flex-wrap:wrap;gap:14px 16px;align-items:center}
+  .btn{
+    display:inline-flex;align-items:center;gap:.55em;
+    font-family:var(--sans);font-weight:600;font-size:.98rem;
+    padding:.82em 1.25em;border-radius:10px;border:1px solid transparent;cursor:pointer;
+    transition:transform .12s ease, box-shadow .2s ease, background .2s ease;
+  }
+  .btn:hover{text-decoration:none;transform:translateY(-1px)}
+  .btn-primary{background:var(--brass);color:#241a06;box-shadow:0 8px 30px -10px rgba(231,178,76,.55)}
+  .btn-primary:hover{background:#f1bf5e;box-shadow:0 12px 38px -12px rgba(231,178,76,.7)}
+  .btn-ghost{border-color:var(--haze);color:var(--ink);background:rgba(255,255,255,.02)}
+  .btn-ghost:hover{border-color:var(--brass);color:#fff}
+  .btn svg{width:1.05em;height:1.05em;flex:none}
+
+  .badges{margin-top:1.9rem;display:flex;flex-wrap:wrap;gap:8px 10px}
+  .badge{
+    font-family:var(--mono);font-size:.72rem;letter-spacing:.04em;
+    color:var(--muted);border:1px solid var(--haze);border-radius:999px;
+    padding:.34em .8em;background:rgba(255,255,255,.015);
+    display:inline-flex;align-items:center;gap:.5em;
+  }
+  .dot{width:6px;height:6px;border-radius:50%;flex:none}
+  .dot.safe{background:var(--safe)} .dot.brass{background:var(--brass)} .dot.crit{background:var(--crit)}
+
+  /* ---------- GUARANTEE / TRUST CONTRACT ---------- */
+  .guarantee{background:
+      linear-gradient(180deg,var(--panel-2),transparent 40%),
+      var(--night);
+  }
+  .stamp{
+    position:relative;
+    border:1px solid var(--haze);
+    border-radius:var(--radius);
+    background:
+      radial-gradient(140% 120% at 100% 0%, rgba(231,178,76,.06), transparent 55%),
+      var(--panel);
+    padding:clamp(26px,4vw,46px);
+    overflow:hidden;
+  }
+  .stamp::after{
+    content:"NO REMOTES · NO FORCE · NO DELETE";
+    position:absolute;right:-42px;top:26px;transform:rotate(35deg);
+    font-family:var(--mono);font-size:.66rem;letter-spacing:.24em;
+    color:rgba(231,178,76,.34);border-block:1px solid rgba(231,178,76,.28);
+    padding:.4em 3.4em;
+  }
+  .stamp .kicker{font-family:var(--mono);font-size:.74rem;letter-spacing:.2em;text-transform:uppercase;color:var(--safe)}
+  .stamp h2{margin-top:.8rem;font-size:clamp(1.7rem,3.4vw,2.7rem)}
+  .stamp h2 u{text-decoration-color:var(--brass);text-decoration-thickness:2px;text-underline-offset:5px}
+  .stamp p{margin-top:1.1rem;color:var(--muted);max-width:64ch}
+  .stamp p b{color:var(--ink)}
+
+  .trust-grid{
+    margin-top:2.2rem;display:grid;grid-template-columns:repeat(2,1fr);gap:1px;
+    background:var(--haze);border:1px solid var(--haze);border-radius:10px;overflow:hidden;
+  }
+  .trust-item{background:var(--panel);padding:1.05rem 1.2rem;display:flex;gap:.9rem;align-items:baseline}
+  .trust-num{font-family:var(--mono);font-size:.78rem;color:var(--brass);flex:none;width:1.6em}
+  .trust-item p{margin-top:0;color:var(--muted);font-size:.92rem;line-height:1.5}
+  .trust-item p b{color:var(--ink)}
+
+  /* ---------- GENERIC SECTION HEADER ---------- */
+  .sec-head{max-width:62ch}
+  .sec-head h2{margin-top:.9rem}
+  .sec-head .lede{margin-top:1.1rem;color:var(--muted);font-size:1.08rem}
+  .sec-head .lede b{color:var(--ink)}
+
+  /* ---------- TRIBUNAL ---------- */
+  .tribunal{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:clamp(34px,5vw,56px)}
+  .role{
+    border:1px solid var(--haze);border-radius:var(--radius);background:var(--panel);
+    padding:1.5rem 1.4rem 1.6rem;position:relative;overflow:hidden;
+    transition:transform .18s ease,border-color .2s ease,background .2s ease;
+  }
+  .role:hover{transform:translateY(-3px);border-color:var(--brass);background:linear-gradient(180deg,rgba(231,178,76,.05),var(--panel))}
+  .role .seal{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--haze);margin-bottom:1.1rem}
+  .role .seal svg{width:20px;height:20px}
+  .role .step{position:absolute;top:1.1rem;right:1.2rem;font-family:var(--mono);font-size:.72rem;color:var(--muted);letter-spacing:.1em}
+  .role h3{font-family:var(--serif)}
+  .role .job{margin-top:.2rem;font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;color:var(--brass);text-transform:uppercase}
+  .role p{margin-top:.9rem;color:var(--muted);font-size:.95rem;line-height:1.55}
+  .flow-note{margin-top:1.5rem;font-family:var(--mono);font-size:.8rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:.5em;align-items:center}
+  .flow-note b{color:var(--ink);font-weight:600}
+  .arrow{color:var(--brass)}
+
+  /* ---------- NIGHTSHIFT / CAPABILITY CARDS ---------- */
+  .night-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-top:clamp(30px,4vw,48px)}
+  .ncard{border:1px solid var(--haze);border-radius:var(--radius);background:var(--panel);padding:1.4rem 1.3rem}
+  .ncard .ic{width:30px;height:30px;color:var(--brass);margin-bottom:.9rem}
+  .ncard h3{font-size:1.05rem}
+  .ncard p{margin-top:.6rem;color:var(--muted);font-size:.9rem;line-height:1.55}
+
+  /* ---------- READOUT / TERMINAL ---------- */
+  .readout-grid{display:grid;grid-template-columns:1.05fr 1fr;gap:clamp(28px,4vw,52px);align-items:center;margin-top:clamp(30px,4vw,48px)}
+  .term{
+    border:1px solid var(--haze);border-radius:var(--radius);background:var(--panel-2);
+    font-family:var(--mono);font-size:.82rem;line-height:1.7;overflow:hidden;
+    box-shadow:0 30px 70px -40px rgba(0,0,0,.9);
+  }
+  .term-bar{display:flex;align-items:center;gap:.5em;padding:.7em 1em;border-bottom:1px solid var(--haze);background:rgba(255,255,255,.02)}
+  .term-bar .tdot{width:10px;height:10px;border-radius:50%;background:var(--haze)}
+  .term-bar .ttitle{margin-left:.6em;font-size:.72rem;color:var(--muted);letter-spacing:.06em}
+  .term-body{padding:1.1em 1.2em;overflow-x:auto}
+  .term-body pre{margin:0;white-space:pre;color:var(--ink)}
+  .c-muted{color:var(--muted)} .c-brass{color:var(--brass)} .c-safe{color:var(--safe)} .c-crit{color:var(--crit)} .c-hi{color:var(--high)}
+  .story h3{margin-bottom:.7rem}
+  .story p{color:var(--muted);margin-top:.9rem}
+  .story p b{color:var(--ink)}
+  .story .tag{display:inline-block;margin-top:1.3rem;font-family:var(--mono);font-size:.74rem;letter-spacing:.05em;color:var(--safe);border:1px solid rgba(87,193,166,.35);border-radius:999px;padding:.35em .9em}
+
+  /* ---------- DEEPENS ---------- */
+  .deepen{background:linear-gradient(180deg,transparent,var(--panel-2))}
+  .deepen-grid{display:grid;grid-template-columns:1fr 1fr;gap:clamp(28px,4vw,52px);align-items:center;margin-top:clamp(30px,4vw,48px)}
+  .map{border:1px solid var(--haze);border-radius:var(--radius);background:var(--panel-2);padding:14px}
+  .map svg{display:block;width:100%;height:auto}
+  .nights{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px;background:var(--haze);border:1px solid var(--haze);border-radius:12px;overflow:hidden}
+  .nights li{background:var(--panel);padding:1.05rem 1.2rem;display:flex;gap:1rem;align-items:baseline}
+  .nights .when{font-family:var(--mono);font-size:.74rem;color:var(--brass);letter-spacing:.06em;flex:none;width:5.4em}
+  .nights .what{color:var(--muted);font-size:.95rem}
+  .nights .what b{color:var(--ink)}
+
+  /* ---------- BENCH / METHOD ---------- */
+  .method{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px;background:var(--haze);border:1px solid var(--haze);border-radius:12px;overflow:hidden}
+  .method li{background:var(--panel);padding:.95rem 1.15rem;display:flex;gap:.9rem;align-items:baseline}
+  .method .m-ic{font-family:var(--mono);color:var(--brass);flex:none;font-size:.8rem}
+  .method .m-what{color:var(--muted);font-size:.92rem;line-height:1.5}
+  .method .m-what b{color:var(--ink)}
+
+  .callout{
+    margin-top:clamp(30px,4vw,48px);border:1px solid rgba(231,178,76,.32);border-radius:var(--radius);
+    background:linear-gradient(180deg,rgba(231,178,76,.06),transparent);padding:1.4rem 1.5rem;
+  }
+  .callout .cl-kicker{font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--brass)}
+  .callout p{margin-top:.7rem;color:var(--ink);font-size:.98rem;line-height:1.6}
+  .callout p b{color:var(--brass)}
+
+  .bench-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-top:clamp(28px,4vw,40px)}
+  .bcard{border:1px solid var(--haze);border-radius:var(--radius);background:var(--panel);padding:1.3rem 1.3rem 1.4rem;display:flex;flex-direction:column;gap:.8rem}
+  .bcard .case-badge{
+    align-self:flex-start;font-family:var(--mono);font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--muted);border:1px solid var(--haze);border-radius:999px;padding:.3em .75em;
+  }
+  .bcard h3{font-size:1.02rem}
+  .bcard .runner{font-family:var(--mono);font-size:.72rem;color:var(--muted)}
+  .bcard .result{color:var(--ink);font-size:.92rem;line-height:1.55}
+  .bcard .result b{color:var(--brass)}
+  .bcard .caveat{font-family:var(--mono);font-size:.7rem;color:var(--muted);border-top:1px solid var(--haze);padding-top:.7rem;line-height:1.5}
+  .bcard .src{font-family:var(--mono);font-size:.68rem;color:var(--muted);opacity:.8}
+
+  /* ---------- INSTALL ---------- */
+  .install{text-align:center}
+  .install h2{max-width:18ch;margin-inline:auto}
+  .install p{margin-top:1rem;color:var(--muted);max-width:52ch;margin-inline:auto}
+  .cmd{
+    margin:2rem auto 0;max-width:720px;display:flex;align-items:center;gap:1rem;
+    border:1px solid var(--haze);border-radius:12px;background:var(--panel-2);
+    padding:1rem 1.1rem;font-family:var(--mono);font-size:.86rem;text-align:left;overflow-x:auto;
+  }
+  .cmd code{color:var(--ink);white-space:nowrap}
+  .cmd .prompt{color:var(--brass)}
+  .copy{margin-left:auto;flex:none;border:1px solid var(--haze);background:transparent;color:var(--muted);
+    font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;padding:.5em .8em;border-radius:7px;cursor:pointer;transition:.15s}
+  .copy:hover{color:var(--brass);border-color:var(--brass)}
+  .install .sub-cmds{margin-top:1.2rem;font-family:var(--mono);font-size:.8rem;color:var(--muted)}
+  .install .sub-cmds b{color:var(--ink)}
+  .install .fine-note{margin-top:1rem;font-family:var(--mono);font-size:.74rem;color:var(--muted)}
+
+  /* ---------- FOOTER ---------- */
+  footer{border-top:1px solid var(--haze);padding-block:2.4rem}
+  .foot{display:flex;flex-wrap:wrap;gap:1rem 2rem;align-items:center;justify-content:space-between}
+  .foot .brand{font-family:var(--serif);font-size:1.15rem;color:var(--ink)}
+  .foot .brand b{color:var(--brass)}
+  .foot nav{display:flex;flex-wrap:wrap;gap:1.2rem;font-size:.9rem}
+  .foot nav a{color:var(--muted)} .foot nav a:hover{color:var(--brass)}
+  .foot .fine{width:100%;color:var(--muted);font-size:.8rem;font-family:var(--mono);letter-spacing:.03em}
+
+  @media (max-width:820px){
+    .tribunal{grid-template-columns:1fr}
+    .readout-grid,.deepen-grid{grid-template-columns:1fr}
+    .trust-grid{grid-template-columns:1fr}
+    .stamp::after{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none !important;transition:none !important;scroll-behavior:auto !important}
+  }
+  .reveal{opacity:0;transform:translateY(18px)}
+  .reveal.in{opacity:1;transform:none;transition:opacity .7s ease,transform .7s ease}
+  @media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none}}
+</style>
+<noscript><style>.reveal{opacity:1 !important;transform:none !important}#sweep{display:none}</style></noscript>
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <canvas id="sweep" aria-hidden="true"></canvas>
+  <div class="hero-scrim"></div>
+  <div class="hero-inner">
+    <div class="wrap">
+      <span class="eyebrow">Night shift · autonomous, adversarial code review</span>
+      <h1>It hunts the bugs <em>while you sleep.</em></h1>
+      <p class="hero-sub">
+        <b>bugsweep</b> is an autonomous, adversarial bug-hunting fleet for Claude Code and
+        Codex. It models your whole repo, hunts real security, logic, and data-integrity bugs
+        through a Hunter → Skeptic → Referee gauntlet, and — only when you ask — fixes them on
+        a throwaway branch with auto-revert. <b>The worst case for any run is a branch you
+        delete. You are always the merge gate.</b>
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/shanemhamilton/bugsweep">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.87-.01-1.71-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.57 2.36 1.11 2.94.85.09-.67.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.9-1.33 2.74-1.05 2.74-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.79-4.57 5.05.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49A10.06 10.06 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z"/></svg>
+          View on GitHub
+        </a>
+        <a class="btn btn-ghost" href="#install">Install the skill</a>
+      </div>
+      <div class="badges">
+        <span class="badge"><span class="dot brass"></span>Claude Code &amp; Codex</span>
+        <span class="badge"><span class="dot safe"></span>Zero dependencies</span>
+        <span class="badge"><span class="dot safe"></span>No telemetry</span>
+        <span class="badge"><span class="dot safe"></span>MIT licensed</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ============ GUARANTEE / TRUST CONTRACT ============ -->
+<section class="guarantee" aria-labelledby="trust-h2">
+  <div class="wrap">
+    <div class="stamp reveal">
+      <span class="kicker">The one thing to understand</span>
+      <h2 id="trust-h2">The worst case is <u>a branch you delete.</u></h2>
+      <p>
+        During the hunt-and-fix loop, bugsweep never touches your real branch, never pushes,
+        never merges, and never deletes a file. It cuts a fresh <code class="kbd">bugsweep/&lt;timestamp&gt;</code>
+        branch, lands one commit per bug, and re-runs your checks after every fix —
+        <b>automatically reverting any fix that breaks something.</b> You are always the merge gate.
+      </p>
+      <p>
+        The irreversible git operations are done by short, auditable shell scripts you can
+        read in a few minutes — not left to the model's judgment. That's the whole trust
+        contract, and it's what makes it safe to leave running overnight: nine non-negotiable
+        rules, enforced by scripts, not prompts.
+      </p>
+
+      <div class="trust-grid">
+        <div class="trust-item"><span class="trust-num">01</span><p><b>Throwaway branch only.</b> <code class="kbd">bugsweep/&lt;timestamp&gt;</code> — never your branch.</p></div>
+        <div class="trust-item"><span class="trust-num">02</span><p><b>No remotes, ever, during the run.</b> No push, pull, fetch, PR, or merge. You are the only merge gate.</p></div>
+        <div class="trust-item"><span class="trust-num">03</span><p><b>No destructive operations.</b> No force, no <code class="kbd">reset --hard</code> on your content, no deletes, no rewritten history.</p></div>
+        <div class="trust-item"><span class="trust-num">04</span><p><b>Your work is preserved.</b> Preflight stashes, finalize restores — your branch and tree end exactly as they began.</p></div>
+        <div class="trust-item"><span class="trust-num">05</span><p><b>One bug, one commit, auto-revert.</b> Checks re-run after every fix; a regression gets reverted.</p></div>
+        <div class="trust-item"><span class="trust-num">06</span><p><b>Only confirmed bugs get fixed.</b> Every finding survives adversarial review first.</p></div>
+        <div class="trust-item"><span class="trust-num">07</span><p><b>Minimal, surgical fixes only.</b> No refactors, renames, or reformatting.</p></div>
+        <div class="trust-item"><span class="trust-num">08</span><p><b>Hard caps.</b> Iterations, runtime, and fix count are bounded — it stops when it converges.</p></div>
+        <div class="trust-item"><span class="trust-num">09</span><p><b>Everything is logged.</b> Every iteration lands in a run ledger — an overnight run is auditable.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ TRIBUNAL ============ -->
+<section aria-labelledby="tribunal-h2">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Why the false-positive rate stays low</span>
+      <h2 id="tribunal-h2">Every finding faces a tribunal.</h2>
+      <p class="lede">Most AI reviewers grade their own homework. bugsweep doesn't. A candidate bug has to survive
+        three independent roles before it's ever fixed or even reported — <b>the model never rubber-stamps its own guess.</b></p>
+    </div>
+
+    <div class="tribunal">
+      <article class="role reveal">
+        <span class="step">01</span>
+        <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></div>
+        <div class="job">Finds</div>
+        <h3>The Hunter</h3>
+        <p>Sweeps a batch of files against a whole-repo architecture model and a stack-specific
+          anti-pattern catalog, and raises candidate bugs with the exact evidence trail.</p>
+      </article>
+
+      <article class="role reveal">
+        <span class="step">02</span>
+        <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.4-3 8-7 10-4-2-7-5.6-7-10V6z"/><path d="m9 12 2 2 4-4"/></svg></div>
+        <div class="job">Disproves</div>
+        <h3>The Skeptic</h3>
+        <p>Actively tries to kill each candidate — alternate explanations, guarding code paths,
+          tests that already catch it — tuned to punish dismissing a real bug more than missing a false alarm.</p>
+      </article>
+
+      <article class="role reveal">
+        <span class="step">03</span>
+        <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7 3 13h4z"/><path d="M19 7l-2 6h4z"/><path d="M8 21h8"/></svg></div>
+        <div class="job">Decides</div>
+        <h3>The Referee</h3>
+        <p>A neutral arbiter reads the code independently and issues the final verdict. Only its
+          confirmed list is eligible to be fixed — and it seeds variant queries to hunt siblings next time.</p>
+      </article>
+    </div>
+
+    <p class="flow-note reveal">
+      <b>Hunter</b> <span class="arrow" aria-hidden="true">→</span> <b>Skeptic</b> <span class="arrow" aria-hidden="true">→</span> <b>Referee</b>
+      <span class="c-muted">— confirmed bugs go to the fix queue; everything else is dropped, not reported.</span>
+    </p>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ OVERNIGHT ORCHESTRATOR ============ -->
+<section aria-labelledby="orch-h2">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Built for a fleet, not one session</span>
+      <h2 id="orch-h2">The overnight orchestrator.</h2>
+      <p class="lede">A loop that runs unattended isn't enough — a scheduler needs to trust what it kicked off.
+        bugsweep ships the plumbing: a machine-readable result contract, isolation for running many hunts on one
+        repo at once, and teardown that never guesses.</p>
+    </div>
+
+    <div class="night-grid">
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6"/></svg>
+        <h3>A contract a scheduler can read</h3>
+        <p>Every run reduces its ledger into a schema-valid <code class="kbd">run-summary.json</code> —
+          status, coverage, severity counts, fixed/quarantined/confirmed-unfixed findings, and where to
+          look next. It always exists after finalize; if full reduction can't run, a minimal summary
+          ships instead, flagged <code class="kbd">degraded: true</code>.</p>
+      </div>
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/></svg>
+        <h3>Multiple subagents, one repo</h3>
+        <p>Preflight's <code class="kbd">--worktree</code> mode gives each run its own linked git
+          worktree, so a fleet of isolated subagents can hunt the same repository concurrently without
+          colliding. Your working branch, index, and files are never touched.</p>
+      </div>
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+        <h3>Always finalizes</h3>
+        <p>A deadline checkpoint runs at every phase boundary. When the clock runs out, the run
+          finalizes anyway — branch restored, summary written — instead of dying mid-hunt with
+          nothing on disk.</p>
+      </div>
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4.5 8-11V5l-8-3-8 3v6c0 6.5 8 11 8 11Z"/><path d="m9 12 2 2 4-4"/></svg>
+        <h3>Crash-safe teardown</h3>
+        <p>An optional reaper reclaims worktrees and branches only on positive evidence a run is
+          dead and done. Anything dirty, unmerged, or ambiguous is preserved — nothing unreviewed
+          gets deleted.</p>
+      </div>
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3v12a3 3 0 0 0 3 3h6"/><circle cx="6" cy="3" r="0" /><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M18 8v4a3 3 0 0 1-3 3"/></svg>
+        <h3>Merges are re-verified, one at a time</h3>
+        <p><code class="kbd">integrate.sh</code> lands multiple confirmed fix branches into a target
+          branch serially, re-running proof after each merge — outside the core loop, and always
+          gated by a human.</p>
+      </div>
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+        <h3>Reverts, but understands "flaky"</h3>
+        <p>A newly-failing test is rerun up to 3 times before a fix is reverted; only a strict
+          majority of passing reruns reclassifies it FLAKY. Reruns share the run's own tree, so
+          this isn't full isolation — any fix landing as flaky is always surfaced, never silent.</p>
+      </div>
+      <div class="ncard reveal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4"/><path d="M15 3h4a2 2 0 0 1 2 2v4"/><path d="M9 21H5a2 2 0 0 1-2-2v-4"/><path d="M15 21h4a2 2 0 0 0 2-2v-4"/><circle cx="12" cy="12" r="3"/></svg>
+        <h3>Analyzer corroboration, opt-in</h3>
+        <p>Turn on <code class="kbd">.analyzers.enabled</code> and installed static analyzers —
+          semgrep, gosec, bandit, and others already on your machine — seed the hunt as an
+          independent signal. Off by default.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ MOAT: WHOLE-REPO CONTEXT ============ -->
+<section aria-labelledby="moat-h2">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">The moat: whole-repo context</span>
+      <h2 id="moat-h2">It sees the bugs a single prompt can't.</h2>
+      <p class="lede">Before it hunts, bugsweep distills your architecture — trust boundaries, sensitive sinks,
+        and the call chains that reach them — and primes itself with a curated, stack-specific anti-pattern
+        catalog (JS/Node, TypeScript, React, Python, Go, Kotlin, Swift/iOS, and more). That's how it catches
+        <b>cross-file</b> bugs: a missing authorization check three hops from the sink, contract drift across a
+        module boundary, untrusted input that only turns dangerous two files downstream.</p>
+    </div>
+
+    <div class="readout-grid">
+      <div class="term reveal" role="img" aria-label="Schematic excerpt of run-summary.json, bugsweep's machine-readable result contract.">
+        <div class="term-bar">
+          <span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>
+          <span class="ttitle">run-summary.json — the machine-readable contract</span>
+        </div>
+        <div class="term-body">
+<pre><span class="c-muted">// schemas/run-summary.schema.json (shape, not sample data)</span>
+{
+  <span class="c-brass">"status"</span>: <span class="c-safe">"complete" | "partial" | "stalled"</span>,
+  <span class="c-brass">"coverage"</span>: { <span class="c-muted">audited, frontier, stale …</span> },
+  <span class="c-brass">"counts"</span>: { <span class="c-crit">critical</span>, <span class="c-hi">high</span>, <span class="c-muted">medium …</span> },
+  <span class="c-brass">"findings"</span>: [ <span class="c-muted">{ evidence trail per bug }</span> ],
+  <span class="c-brass">"fixed"</span> / <span class="c-brass">"quarantined"</span> / <span class="c-brass">"confirmed_unfixed"</span>: […],
+  <span class="c-brass">"root_cause_clusters"</span>: […],
+  <span class="c-brass">"follow_up"</span>: <span class="c-muted">"where to look next"</span>
+}
+
+<span class="c-safe">✔ always written by finalize.sh — degraded:true if the</span>
+<span class="c-safe">  full reducer can't run, never silently absent</span></pre>
+        </div>
+      </div>
+
+      <div class="story reveal">
+        <h3>No prose for a scheduler to parse</h3>
+        <p>A scheduler — cron, launchd, a CI job, a nightshift dispatcher — can branch on
+          <code class="kbd">run-summary.json</code> without an LLM in the loop.
+          <code class="kbd">schemas/run-summary.schema.json</code> is the contract;
+          <code class="kbd">scripts/summarize.sh</code> is what fills it in from the run ledger.</p>
+        <p>It ignores the noise on purpose, too. Style, formatting, naming, unused imports, dependency
+          versions — <b>that's a linter's job.</b> bugsweep spends its attention on bugs that actually
+          fault at runtime.</p>
+        <span class="tag">◆ a contract a fleet can trust, not a transcript to read at breakfast</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ DEEPENS EACH NIGHT ============ -->
+<section class="deepen" aria-labelledby="deepen-h2">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Coverage-first · not a diff scanner</span>
+      <h2 id="deepen-h2">It gets deeper every night.</h2>
+      <p class="lede">The whole repo is always in scope. <code class="kbd">.bugsweep/state/</code> persists an
+        audit log, a risk map, and the anti-pattern catalog version across runs, and each run reprioritizes
+        toward the never-audited, the stale, the content-changed, and the high-risk. <b>The repo is never
+        permanently "done" while a frontier remains.</b></p>
+    </div>
+
+    <div class="deepen-grid">
+      <div class="map reveal" aria-hidden="true">
+        <svg viewBox="0 0 400 260" role="presentation">
+          <defs>
+            <radialGradient id="g" cx="50%" cy="50%" r="60%">
+              <stop offset="0%" stop-color="#E7B24C" stop-opacity=".16"/>
+              <stop offset="100%" stop-color="#E7B24C" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect width="400" height="260" fill="#0F1528"/>
+          <g stroke="#232C4D" stroke-width="1">
+            <line x1="0" y1="65" x2="400" y2="65"/><line x1="0" y1="130" x2="400" y2="130"/><line x1="0" y1="195" x2="400" y2="195"/>
+            <line x1="100" y1="0" x2="100" y2="260"/><line x1="200" y1="0" x2="200" y2="260"/><line x1="300" y1="0" x2="300" y2="260"/>
+          </g>
+          <ellipse cx="150" cy="120" rx="140" ry="120" fill="url(#g)"/>
+          <g stroke="#2C3766" stroke-width="1">
+            <line x1="70" y1="70" x2="140" y2="110"/><line x1="140" y1="110" x2="220" y2="90"/>
+            <line x1="220" y1="90" x2="300" y2="150"/><line x1="140" y1="110" x2="120" y2="180"/>
+            <line x1="300" y1="150" x2="340" y2="210"/>
+          </g>
+          <g>
+            <circle cx="70" cy="70" r="4.5" fill="#57C1A6"/>
+            <circle cx="140" cy="110" r="5.5" fill="#57C1A6"/>
+            <circle cx="220" cy="90" r="4" fill="#57C1A6"/>
+            <circle cx="120" cy="180" r="5" fill="#E7B24C"/>
+            <circle cx="300" cy="150" r="6" fill="#E7B24C"/>
+            <circle cx="340" cy="210" r="4" fill="#9AA3C2"/>
+            <circle cx="60" cy="200" r="3.5" fill="#9AA3C2"/>
+            <circle cx="250" cy="200" r="3.5" fill="#9AA3C2"/>
+            <circle cx="360" cy="80" r="3.5" fill="#9AA3C2"/>
+          </g>
+        </svg>
+        <div style="display:flex;gap:1.1rem;flex-wrap:wrap;padding:.7rem .2rem 0;font-family:var(--mono);font-size:.72rem;color:var(--muted)">
+          <span><span class="dot safe" style="display:inline-block;margin-right:.4em"></span>audited &amp; fresh</span>
+          <span><span class="dot brass" style="display:inline-block;margin-right:.4em"></span>stale / high-risk</span>
+          <span><span class="dot" style="display:inline-block;margin-right:.4em;background:var(--muted)"></span>never seen</span>
+        </div>
+      </div>
+
+      <ul class="nights reveal">
+        <li><span class="when">Night 1</span><span class="what">Builds the architecture model, sweeps the highest-risk sinks, <b>lands the first fixes.</b></span></li>
+        <li><span class="when">Night 2</span><span class="what">Skips what's fresh, pushes the frontier into <b>never-audited</b> modules.</span></li>
+        <li><span class="when">Night 3</span><span class="what">Replays <b>variant queries</b> from earlier finds — hunts the whole repo for siblings of confirmed bugs.</span></li>
+        <li><span class="when">Ongoing</span><span class="what">Re-checks stale files as the anti-pattern catalog gains detector classes. Survives context resets — all progress lives on disk, aggregated across runs.</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ BENCHMARK ============ -->
+<section aria-labelledby="bench-h2">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Benchmark harness · pilot evidence</span>
+      <h2 id="bench-h2">A harness built to be hard to fool.</h2>
+      <p class="lede"><code class="kbd">bench/</code> runs bugsweep headless against throwaway clones of dated,
+        real CVE-class bugs pinned to a pre-fix commit, scores the output through an independent judge, and
+        refuses to round a small sample up into a rate.</p>
+    </div>
+
+    <ul class="method reveal">
+      <li><span class="m-ic">▸</span><span class="m-what"><b>Hardened container</b> — non-root UID 65534, <code class="kbd">--read-only</code> root + tmpfs, <code class="kbd">--cap-drop=ALL</code>, no-new-privileges, CPU/memory/PID caps.</span></li>
+      <li><span class="m-ic">▸</span><span class="m-what"><b>Pinned pre-fix commit</b> — each case clones a dated repo at a known-vulnerable SHA and fails closed if <code class="kbd">HEAD</code> drifts.</span></li>
+      <li><span class="m-ic">▸</span><span class="m-what"><b>One network path</b> — an nginx egress reverse proxy to a single hardcoded upstream (<code class="kbd">api.anthropic.com</code>) on an <code class="kbd">--internal</code> Docker network. Nothing else is reachable.</span></li>
+      <li><span class="m-ic">▸</span><span class="m-what"><b>Two-stage scoring</b> — a hard file-overlap gate, then a cross-model LLM judge (a different vendor's model grading Claude's findings), with optional human calibration.</span></li>
+      <li><span class="m-ic">▸</span><span class="m-what"><b>Reported with rigor</b> — detection rate with a 95% Wilson confidence interval, a paired delta against a no-skill <code class="kbd">claude -p</code> baseline, and a contamination split by disclosure date.</span></li>
+      <li><span class="m-ic">▸</span><span class="m-what"><b>Corpus</b> — a 9-case CVE-class corpus across Go, JavaScript, Python, and TypeScript.</span></li>
+    </ul>
+
+    <div class="callout reveal">
+      <div class="cl-kicker">Read this before the numbers below</div>
+      <p>Every leaderboard the harness has produced is labeled <b>inconclusive</b>. Reporting a rate requires
+        at least 6 completed post-cutoff cases; that floor has never been reached — most cases still error or
+        skip inside the locked-down container. <b>There is no aggregate detection rate here.</b> What follows
+        are directional, single-case (k=1) pilot results, not a statistically powered rate.</p>
+    </div>
+
+    <div class="bench-grid">
+      <div class="bcard reveal">
+        <span class="case-badge">k=1 · inconclusive</span>
+        <h3>js-cookie — prototype pollution</h3>
+        <span class="runner">runner: claude-opus-4-8</span>
+        <p class="result">bugsweep <b>detected</b> the real, post-cutoff bug. The no-skill baseline detected it too.</p>
+        <p class="caveat">Directional single-case result — not a powered detection rate.<br><span class="src">results/20260530T113232Z/</span></p>
+      </div>
+      <div class="bcard reveal">
+        <span class="case-badge">k=1 · inconclusive</span>
+        <h3>Nezha — SSRF</h3>
+        <span class="runner">runner: claude-opus-4-8</span>
+        <p class="result">bugsweep <b>detected</b> it. The no-skill <code class="kbd">claude -p</code> baseline did <b>not</b> — a +100pp paired delta on this one case.</p>
+        <p class="caveat">Directional single-case result — not a powered detection rate.<br><span class="src">results/20260530T113650Z/</span></p>
+      </div>
+      <div class="bcard reveal">
+        <span class="case-badge">k=1 · inconclusive</span>
+        <h3>js-cookie — precision</h3>
+        <span class="runner">runner: claude-opus-4-7</span>
+        <p class="result">6 confirmed findings; 5 were sampled for adjudication and <b>5/5</b> were judged real — 100% precision on that single case-run. Baseline completed 0 cases.</p>
+        <p class="caveat">Scoped to one run, not a general precision rate.<br><span class="src">results/20260529T201923Z/</span></p>
+      </div>
+    </div>
+
+    <p class="lede reveal" style="margin-top:2rem;font-size:.98rem">
+      These are directional single-case results (k=1), not a statistically powered detection rate: the harness
+      labels every pilot run <b style="color:var(--ink)">inconclusive</b> until at least 6 post-cutoff cases complete.
+    </p>
+  </div>
+</section>
+
+<hr class="rule" />
+
+<!-- ============ INSTALL ============ -->
+<section class="install" id="install" aria-labelledby="install-h2">
+  <div class="wrap">
+    <span class="eyebrow" style="justify-content:center">Get started</span>
+    <h2 id="install-h2" style="margin-top:.9rem">One command. No dependencies.</h2>
+    <p>Installs as a skill for Claude Code and Codex — auto-detects <code class="kbd">~/.claude</code> and
+      <code class="kbd">~/.codex</code>. Then just ask it to <em>find bugs</em>, or run
+      <code class="kbd">/bugsweep --autonomous</code> for the overnight hunt.</p>
+
+    <div class="cmd">
+      <span class="prompt">$</span>
+      <code id="installcmd">curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash</code>
+      <button class="copy" id="copybtn" type="button" aria-label="Copy install command">COPY</button>
+    </div>
+
+    <div class="sub-cmds">
+      <b>/bugsweep</b> detect-only &nbsp;·&nbsp; <b>--fix</b> confirm &amp; patch &nbsp;·&nbsp; <b>--approve</b> ask first &nbsp;·&nbsp; <b>--autonomous</b> loop all night
+    </div>
+    <p class="fine-note"><code class="kbd">--claude</code> / <code class="kbd">--codex</code> / <code class="kbd">--all</code> to target an install
+      &nbsp;·&nbsp; <code class="kbd">--version vX.Y.Z</code> to pin — see
+      <a href="https://github.com/shanemhamilton/bugsweep/releases">Releases</a> for tagged versions.</p>
+
+    <div class="cta-row" style="justify-content:center;margin-top:2rem">
+      <a class="btn btn-primary" href="https://github.com/shanemhamilton/bugsweep">Read the docs on GitHub</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div class="brand"><b>◆</b> bugsweep</div>
+    <nav>
+      <a href="https://github.com/shanemhamilton/bugsweep">GitHub</a>
+      <a href="https://github.com/shanemhamilton/bugsweep/releases">Releases</a>
+      <a href="https://github.com/shanemhamilton/bugsweep/blob/main/SECURITY.md">Security</a>
+      <a href="#install">Install</a>
+    </nav>
+    <div class="fine">An autonomous, adversarial bug-hunting skill · MIT licensed · the worst case is a branch you delete.</div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---- scroll reveals ---- */
+  var reveals = [].slice.call(document.querySelectorAll(".reveal"));
+  if ("IntersectionObserver" in window && !reduce){
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target);} });
+    },{threshold:.14});
+    reveals.forEach(function(el){ io.observe(el); });
+  } else { reveals.forEach(function(el){ el.classList.add("in"); }); }
+
+  /* ---- copy button ---- */
+  var btn = document.getElementById("copybtn");
+  if (btn){
+    btn.addEventListener("click", function(){
+      var txt = document.getElementById("installcmd").textContent;
+      var done = function(){ btn.textContent="COPIED"; setTimeout(function(){ btn.textContent="COPY"; },1600); };
+      if (navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(done, done); }
+      else { done(); }
+    });
+  }
+
+  /* ---- hero sweep canvas ---- */
+  var canvas = document.getElementById("sweep");
+  if (!canvas) return;
+  var ctx = canvas.getContext("2d");
+  var W=0, H=0, DPR=Math.min(window.devicePixelRatio||1, 2);
+  var glyphs=[], bugs=[], beamX=0, dir=1, running=true, raf=0;
+  var CHARS="{}[]()<>=;/*+-_.:$#01x".split("");
+  var SEV=["#E8705B","#E7B24C","#E7B24C","#9AA3C2"]; // weighted toward warn
+
+  function rand(a,b){ return a + Math.random()*(b-a); }
+
+  function build(){
+    var area = W*H;
+    var gn = Math.max(70, Math.min(240, Math.round(area/9000)));
+    glyphs = [];
+    for (var i=0;i<gn;i++){
+      glyphs.push({ x:Math.random()*W, y:Math.random()*H,
+        c:CHARS[(Math.random()*CHARS.length)|0], a:rand(.05,.16), s:rand(10,17) });
+    }
+    var bn = Math.max(6, Math.min(16, Math.round(W/130)));
+    bugs = [];
+    for (var j=0;j<bn;j++){
+      bugs.push({ x:rand(W*.06,W*.94), y:rand(H*.12,H*.9),
+        col:SEV[(Math.random()*SEV.length)|0], lit:0, confirmed:Math.random()<.34, ring:0 });
+    }
+  }
+
+  function resize(){
+    var r = canvas.getBoundingClientRect();
+    W = r.width; H = r.height;
+    canvas.width = Math.max(1, Math.round(W*DPR));
+    canvas.height = Math.max(1, Math.round(H*DPR));
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    build();
+    if (reduce){ beamX = W*0.5; drawFrame(); }
+  }
+
+  function drawFrame(){
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = "#0B1020";
+    ctx.fillRect(0,0,W,H);
+
+    var beamW = Math.max(120, W*0.13);
+
+    // faint code field
+    ctx.textBaseline = "middle";
+    for (var i=0;i<glyphs.length;i++){
+      var g = glyphs[i];
+      var d = Math.abs(g.x - beamX);
+      var near = d < beamW ? (1 - d/beamW) : 0;
+      var a = g.a + near*0.5;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = near>0.15 ? "#E7B24C" : "#7C87AD";
+      ctx.font = g.s + "px ui-monospace, Menlo, monospace";
+      ctx.fillText(g.c, g.x, g.y);
+    }
+    ctx.globalAlpha = 1;
+
+    // the beam
+    var grad = ctx.createLinearGradient(beamX-beamW,0,beamX+beamW,0);
+    grad.addColorStop(0,"rgba(231,178,76,0)");
+    grad.addColorStop(0.5,"rgba(231,178,76,0.10)");
+    grad.addColorStop(1,"rgba(231,178,76,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(beamX-beamW, 0, beamW*2, H);
+    // bright core
+    var core = ctx.createLinearGradient(beamX-2,0,beamX+2,0);
+    core.addColorStop(0,"rgba(231,178,76,0)");
+    core.addColorStop(0.5,"rgba(244,214,150,0.55)");
+    core.addColorStop(1,"rgba(231,178,76,0)");
+    ctx.fillStyle = core;
+    ctx.fillRect(beamX-2, 0, 4, H);
+
+    // bugs
+    for (var b=0;b<bugs.length;b++){
+      var bg = bugs[b];
+      var dd = Math.abs(bg.x - beamX);
+      if (dd < beamW*0.5){ bg.lit = 1; if(bg.confirmed && bg.ring<1) bg.ring = Math.min(1, bg.ring+0.06); }
+      else { bg.lit *= 0.955; }
+      if (bg.lit < 0.02) { bg.ring *= 0.9; continue; }
+
+      var R = 3 + bg.lit*3;
+      // glow
+      var gl = ctx.createRadialGradient(bg.x,bg.y,0,bg.x,bg.y,R*5);
+      gl.addColorStop(0, hexA(bg.col, 0.5*bg.lit));
+      gl.addColorStop(1, hexA(bg.col, 0));
+      ctx.fillStyle = gl;
+      ctx.beginPath(); ctx.arc(bg.x,bg.y,R*5,0,6.2832); ctx.fill();
+      // dot
+      ctx.globalAlpha = Math.min(1,bg.lit+0.15);
+      ctx.fillStyle = bg.col;
+      ctx.beginPath(); ctx.arc(bg.x,bg.y,R,0,6.2832); ctx.fill();
+      // confirmed ring (verified teal)
+      if (bg.confirmed && bg.ring>0.05){
+        ctx.globalAlpha = bg.ring*bg.lit;
+        ctx.strokeStyle = "#57C1A6";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.arc(bg.x,bg.y, R+4+bg.ring*3, 0, 6.2832); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function hexA(hex,a){
+    var n = parseInt(hex.slice(1),16);
+    return "rgba("+((n>>16)&255)+","+((n>>8)&255)+","+(n&255)+","+a+")";
+  }
+
+  function tick(){
+    if(!running) return;
+    beamX += dir * Math.max(0.6, W*0.0016);
+    if (beamX > W*1.02){ beamX = W*1.02; dir=-1; }
+    if (beamX < -W*0.02){ beamX = -W*0.02; dir=1; }
+    drawFrame();
+    raf = requestAnimationFrame(tick);
+  }
+
+  window.addEventListener("resize", resize, {passive:true});
+  resize();
+
+  if (!reduce){
+    beamX = -W*0.02;
+    // pause when hero off-screen
+    if ("IntersectionObserver" in window){
+      var vio = new IntersectionObserver(function(es){
+        es.forEach(function(e){
+          if (e.isIntersecting){ if(!running){ running=true; raf=requestAnimationFrame(tick); } }
+          else { running=false; cancelAnimationFrame(raf); }
+        });
+      },{threshold:0});
+      vio.observe(canvas);
+    }
+    document.addEventListener("visibilitychange", function(){
+      if (document.hidden){ running=false; cancelAnimationFrame(raf); }
+      else if(!running){ running=true; raf=requestAnimationFrame(tick); }
+    });
+    raf = requestAnimationFrame(tick);
+  }
+})();
+</script>
+</body>
+</html>
