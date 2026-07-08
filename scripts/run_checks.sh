@@ -168,12 +168,14 @@ detail=""
 # results_file. Deliberately check-scoped (not a generic per-check map) since
 # flaky rerun only ever applies to "test" (see header comment).
 test_check_failed=0
-# Whether any check OTHER than "test" failed. Needed because "overall" is a
-# single shared 0/1 flag across all checks (pre-existing shape, unchanged) —
-# if lint/build/typecheck ALSO regressed at the same time the "test" check
-# turns out to be flaky, reclassifying test as flaky must NOT also erase a
-# genuine lint/build/typecheck regression. Tracking this separately lets the
-# flaky path recompute "overall" instead of blindly zeroing it.
+# Count of checks OTHER than "test" that failed (0..3: typecheck/build/lint).
+# "overall" (bugsweep-gli) is a per-check FAILURE COUNT, not a collapsed 0/1
+# flag, so a brand-new failure in ANY check always raises the total even when
+# a DIFFERENT check was already failing at baseline -- a flag stuck at 1 on
+# both sides would mask that new regression. Tracked separately from
+# "overall" so that when "test" is reclassified flaky below, "overall" can be
+# recomputed as exactly the other-checks' count instead of blindly zeroing it
+# (which would erase a genuine, simultaneous lint/build/typecheck regression).
 other_check_failed=0
 
 run_one() {
@@ -184,8 +186,8 @@ run_one() {
     detail="${detail}{\"check\":\"${name}\",\"status\":\"pass\"},"
   else
     detail="${detail}{\"check\":\"${name}\",\"status\":\"fail\"},"
-    overall=1
-    if [ "$name" = "test" ]; then test_check_failed=1; else other_check_failed=1; fi
+    overall=$((overall + 1))
+    if [ "$name" = "test" ]; then test_check_failed=1; else other_check_failed=$((other_check_failed + 1)); fi
   fi
 }
 
@@ -306,7 +308,7 @@ if [ "$test_check_failed" -eq 1 ] && [ "$base_test_failed" -eq 0 ] && [ -n "$cmd
       flaky_test_ids="${test_id}"$'\n'
     fi
     # rerun_infra_ok=0, or reruns did NOT pass by a strict majority -> fall
-    # through unchanged: this check's earlier "overall=1" contribution stands,
+    # through unchanged: this check's earlier "overall" contribution stands,
     # so the pre-existing deterministic REGRESSION path fires exactly as it
     # did before this feature existed (fail-safe / acceptance criterion 1, 4,
     # and the state-pollution / tie defenses).

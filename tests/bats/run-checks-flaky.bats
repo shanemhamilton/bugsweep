@@ -522,3 +522,72 @@ JSON
   grep -q '"reruns":3' "${RUN_DIR}/flaky.jsonl"
   grep -q '"failures":2' "${RUN_DIR}/flaky.jsonl"
 }
+
+# ---------------------------------------------------------------------------
+# bugsweep-gli: "overall" must be a per-check FAILURE COUNT, not a collapsed
+# 0/1 flag, so a brand-new failure in one check is never masked by an
+# UNRELATED check that was already failing at baseline. (This is exactly the
+# semantics the module header above already claims: "sums fails into an
+# 'overall' count" — the pre-fix code instead set overall=1 unconditionally,
+# so a second failing check never raised the total past 1.)
+# ---------------------------------------------------------------------------
+
+@test "verify: NEW deterministic failure in a check DIFFERENT from baseline's pre-existing failure is a REGRESSION (bugsweep-gli)" {
+  # Baseline: lint is already broken (pre-existing failure), test passes.
+  cat > "${PROJECT}/always_fail_lint.sh" <<'SH'
+#!/usr/bin/env bash
+echo "lint: pre-existing breakage"
+exit 1
+SH
+  chmod +x "${PROJECT}/always_fail_lint.sh"
+  _write_config "true" 3 "bash '${PROJECT}/always_fail_lint.sh'"
+  _stage_scripts_with_config
+  run _run_baseline
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "BASELINE_OVERALL=1"
+
+  # Verify: lint STILL fails (unchanged, same command) but "test" — a
+  # DIFFERENT check that passed at baseline — now fails deterministically
+  # (every run and every rerun). A collapsed 0/1 "overall" flag stays at 1 on
+  # both sides (1 > 1 is false) and would wrongly report OK, masking the
+  # brand-new test regression. A per-check count goes from 1 (lint only) to
+  # 2 (lint + test), correctly tripping REGRESSION.
+  cat > "${PROJECT}/always_fail_test.sh" <<'SH'
+#!/usr/bin/env bash
+echo "FAILED tests/test_new.py::test_newly_broken"
+exit 1
+SH
+  chmod +x "${PROJECT}/always_fail_test.sh"
+  _write_config "bash '${PROJECT}/always_fail_test.sh'" 3 "bash '${PROJECT}/always_fail_lint.sh'"
+  cp "${PROJECT}/config/bugsweep.config.json" "${STAGE}/config/bugsweep.config.json"
+
+  run _run_verify
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "^REGRESSION$"
+  # The new test failure is deterministic (fails every rerun too), so it must
+  # NOT be reclassified flaky -- this is a real regression, not a flake.
+  [ ! -f "${RUN_DIR}/flaky.jsonl" ]
+}
+
+@test "verify: a failure present at baseline that persists (no new failure) stays OK, not a REGRESSION (bugsweep-gli)" {
+  # Baseline: lint already broken, test passes.
+  cat > "${PROJECT}/always_fail_lint.sh" <<'SH'
+#!/usr/bin/env bash
+echo "lint: pre-existing breakage"
+exit 1
+SH
+  chmod +x "${PROJECT}/always_fail_lint.sh"
+  _write_config "true" 3 "bash '${PROJECT}/always_fail_lint.sh'"
+  _stage_scripts_with_config
+  run _run_baseline
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "BASELINE_OVERALL=1"
+
+  # Verify: the same lint failure persists unchanged and test still passes --
+  # no NEW failure anywhere. Must stay OK, not REGRESSION.
+  cp "${PROJECT}/config/bugsweep.config.json" "${STAGE}/config/bugsweep.config.json"
+
+  run _run_verify
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "^OK$"
+}
