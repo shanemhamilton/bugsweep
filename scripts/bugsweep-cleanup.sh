@@ -187,8 +187,19 @@ branch_contained_in_target() {
 # An explicit BUGSWEEP_TARGET is still honored — a caller who names the
 # target means it. Absent that, pin to the repo's default branch: the first
 # configured protected branch that actually exists (main/master/... — see
-# $PROTECTED), independent of cwd. Only if no protected branch exists at all
-# (unusual) do we fall back to cwd HEAD, exactly as before, as a last resort.
+# $PROTECTED), independent of cwd.
+#
+# bugsweep-8d0 dataloss re-review MAJOR 2: the last resort is EMPTY — NEVER
+# the caller's cwd HEAD. An earlier revision fell back to `git rev-parse
+# --abbrev-ref HEAD`, which reintroduced the exact bug BLOCKER B set out to
+# kill: in a repo whose default branch is not in $PROTECTED (e.g. `trunk`)
+# with a worktree that has no recorded run mapping, the pin became the
+# ambient checkout, and an unreviewed branch merged only into THAT incidental
+# cwd branch got deleted though the real integration target never received
+# it. "No cwd-independent target resolvable" now means "cannot prove
+# containment safely" — the caller (reap_one_worktree) must PRESERVE the
+# branch rather than delete it against ambient ancestry. Empty output is that
+# signal.
 resolve_pinned_target_branch() {
   if [ -n "${BUGSWEEP_TARGET:-}" ]; then
     printf '%s' "$BUGSWEEP_TARGET"
@@ -201,7 +212,7 @@ resolve_pinned_target_branch() {
       return 0
     fi
   done
-  git rev-parse --abbrev-ref HEAD 2>/dev/null || printf ''
+  printf ''
 }
 
 # Per-worktree containment target (BLOCKER B, alternate precision path): when
@@ -248,21 +259,58 @@ _bsw_path_mtime() {
   case "$m" in ''|*[!0-9]*) printf '' ;; *) printf '%s' "$m" ;; esac
 }
 
-# BLOCKER A fix (2): unconditional minimum-age grace floor. Returns 0 (true —
-# "still within grace, must be preserved") when the worktree's age is unknown
-# (ambiguous -> preserve, same rule as everywhere else) or younger than
-# min_age; returns 1 only when the directory is provably older than the
-# floor. This applies REGARDLESS of lease state (even an expired/absent
-# lease), as defense-in-depth alongside preflight.sh now acquiring the lease
-# before `git worktree add` (which makes a lease-less worktree impossible for
-# runs going through the fixed preflight in the first place).
-worktree_younger_than_grace() {
-  local path="$1" min_age="${2:-120}" mtime now age
+# The lease-reclaim grace window (state.sh's BUGSWEEP_LEASE_GRACE_SECONDS,
+# default 900s). The reaper aligns its OWN eligibility windows to this single
+# source of truth: it must never consider a run reapable before the lease
+# subsystem itself would consider that run's lease reclaimable, or it races a
+# still-heartbeating live run. Sanitised to a positive integer; falls back to
+# 900 on any garbage.
+_bsw_grace_seconds() {
+  local g="${BUGSWEEP_LEASE_GRACE_SECONDS:-900}"
+  case "$g" in ''|*[!0-9]*) g=900 ;; esac
+  [ "$g" -gt 0 ] 2>/dev/null || g=900
+  printf '%s' "$g"
+}
+
+# Minimum-age floor helper. Returns 0 (true — "younger than min_age, must be
+# preserved") when the worktree's age is unknown (ambiguous -> preserve, same
+# rule as everywhere else) or younger than min_age; returns 1 only when the
+# directory is provably at least min_age old.
+#
+# bugsweep-8d0 dataloss re-review MAJOR 1a: the DEFAULT floor is now the lease
+# grace window (>= BUGSWEEP_LEASE_GRACE_SECONDS), NOT the old 120s. A live run
+# in one long (>grace) read-only hunt iteration writes nothing to its worktree
+# root and its lease goes stale; a sub-grace floor made that live worktree
+# reapable. Deriving the floor from the grace window means a run is never
+# eligible before the lease system itself would treat its lease as reclaimable.
+worktree_younger_than_floor() {
+  local path="$1" min_age="$2" mtime now age
   mtime="$(_bsw_path_mtime "$path")"
   [ -n "$mtime" ] || return 0
   now="$(date +%s)"
   age=$(( now - mtime ))
   [ "$age" -lt "$min_age" ]
+}
+
+# bugsweep-8d0 dataloss re-review MAJOR 1b: the run's ledger.jsonl is the
+# authoritative liveness signal DURING a hunt — guard.sh appends
+# batch_covered / iteration events to it as the run makes progress (and
+# preflight seeds it). If it was written within the grace window, the run is
+# active and its worktree MUST be preserved, even if its lease lapsed (the
+# heartbeat and the ledger can both fall silent inside one long iteration, but
+# treating a within-grace ledger as "alive" is the conservative, data-safe
+# read). Returns 0 (true, "active") only when ledger.jsonl exists AND its
+# mtime is within the window; an absent ledger is NOT active (returns 1), so a
+# genuinely dead run with no ledger is still reapable.
+ledger_active_within() {
+  local run_dir="$1" window="$2" ledger mtime now
+  [ -n "$run_dir" ] || return 1
+  ledger="${run_dir}/ledger.jsonl"
+  [ -f "$ledger" ] || return 1
+  mtime="$(_bsw_path_mtime "$ledger")"
+  [ -n "$mtime" ] || return 1
+  now="$(date +%s)"
+  [ $(( now - mtime )) -lt "$window" ]
 }
 
 run_dir_for_worktree() {
@@ -366,6 +414,16 @@ reap_missing_worktree() {
   local path="$1" branch="$2" target="$3"
   log "worktree directory is missing for $branch ($path) — resolving branch containment before the registration is pruned"
 
+  # MAJOR 2: with no cwd-independent target, never prove containment against an
+  # ambient HEAD — clear the dead registration but PRESERVE the branch ref.
+  if [ -z "$target" ] && branch_exists "$branch"; then
+    log "no cwd-independent containment target for missing-directory branch $branch — preserving branch ref, clearing only the stale registration"
+    git worktree remove --force "$path" >/dev/null 2>&1 \
+      || log "could not clear stale worktree registration for $path — it may be cleared by a later 'git worktree prune'"
+    record_preserved "$branch"
+    return 0
+  fi
+
   if branch_exists "$branch" && branch_contained_in_target "$branch" "$target"; then
     if git worktree remove --force "$path" >/dev/null 2>&1; then
       log "cleared stale worktree registration for missing directory $path"
@@ -396,8 +454,25 @@ reap_missing_worktree() {
   # output this fix closes.
 }
 
+# Reap-eligibility rule (bugsweep-8d0 dataloss re-review MAJOR 1). A mapped,
+# existing, canonical-path bugsweep worktree is reaped ONLY on POSITIVE
+# evidence its run is no longer active; on ANY ambiguity it is PRESERVED and
+# reported. Positive evidence is either:
+#   (i)  the owning run recorded a durable ".finalized" sentinel in its
+#        run_dir (finalize.sh writes it — the run definitively ended), OR
+#   (ii) ALL of: a lease record for this run DID exist but is no longer live
+#        (stale, reclaimed past the grace window) AND the worktree is at least
+#        the age floor old (default = grace window) AND ledger.jsonl has been
+#        quiescent for at least the grace window (no hunt activity).
+# Everything else — no run mapping, no lease record ever, still within the age
+# floor, or a ledger touched within the grace window — is ambiguous and
+# PRESERVED. This closes the reproduced live-sibling reap: a live run whose
+# lease lapsed during one long read-only iteration keeps a fresh-enough ledger
+# (or, failing that, is under the grace-aligned age floor) and is preserved.
 reap_one_worktree() {
-  local path="$1" branch="$2" live_file="$3" run_dir="" canonical_root canonical_worktree min_age worktree_target
+  local path="$1" branch="$2" live_file="$3" snapshot_file="$4"
+  local run_dir="" canonical_root canonical_worktree worktree_target
+  local grace min_age finalized="no"
 
   canonical_root="$(canonical_path "$BUGSWEEP_WORKTREES_DIR")"
   canonical_worktree="$(canonical_path "$path")"
@@ -419,6 +494,8 @@ reap_one_worktree() {
   # BLOCKER B fix: prefer the per-worktree recorded original branch (the real
   # integration target THIS run's fix was meant for) when known; fall back to
   # the pinned, cwd-independent default otherwise. Never the caller's cwd HEAD.
+  # (MAJOR 2: TARGET_BRANCH may itself be EMPTY when nothing cwd-independent
+  # resolved — handled at the branch-deletion step below.)
   worktree_target="$(orig_branch_for_run_dir "$run_dir" 2>/dev/null || true)"
   [ -n "$worktree_target" ] || worktree_target="$TARGET_BRANCH"
 
@@ -433,25 +510,61 @@ reap_one_worktree() {
     return 0
   fi
 
-  # BLOCKER A fix: unconditional minimum-age grace floor, regardless of lease
-  # state — never reap anything younger than this, even a worktree with an
-  # already-expired lease. Defense-in-depth alongside preflight.sh now
-  # acquiring the lease before `git worktree add`.
-  min_age="${BUGSWEEP_REAP_MIN_AGE_SECONDS:-120}"
-  if worktree_younger_than_grace "$path" "$min_age"; then
-    log "preserving worktree younger than the grace floor (${min_age}s), regardless of lease state: $path ($branch)"
-    record_worktree_preserved "$path"
-    return 0
+  # Positive DONE evidence: the owning run finalized (durable sentinel written
+  # by finalize.sh). This is the deterministic teardown path — reap regardless
+  # of lease/ledger/age, since the run is provably over.
+  if [ -n "$run_dir" ] && [ -f "${run_dir}/.finalized" ]; then
+    finalized="yes"
   fi
 
-  # "No lease record found" now PRESERVES by default; we only get this far
-  # once age >= min_age, which is itself the positive dead evidence the fix
-  # requires (either an expired/absent lease on a run_dir we DO have a
-  # mapping for, or no mapping at all but the worktree is provably old).
-  if [ -n "$run_dir" ]; then
-    log "lease for $path ($branch) is not live and the worktree exceeds the grace floor — treating as a finished/dead run"
+  grace="$(_bsw_grace_seconds)"
+  min_age="${BUGSWEEP_REAP_MIN_AGE_SECONDS:-$grace}"
+  case "$min_age" in ''|*[!0-9]*) min_age="$grace" ;; esac
+
+  if [ "$finalized" != "yes" ]; then
+    # --- Ambiguity / liveness belts: PRESERVE unless positive dead evidence. ---
+
+    # (MAJOR 1c) No run_dir mapping at all -> we cannot check lease OR ledger
+    # -> ambiguous -> preserve. In production every bugsweep worktree has a
+    # run mapping from birth (preflight writes state.env before `git worktree
+    # add`); a mapping-less worktree is unknown provenance, never reaped.
+    if [ -z "$run_dir" ]; then
+      log "no run mapping for $path ($branch) — ambiguous (cannot prove the run is dead); preserving, not reaping"
+      record_worktree_preserved "$path"
+      return 0
+    fi
+
+    # (MAJOR 1c) No lease record EVER existed for this run (not in the
+    # pre-reclaim snapshot) -> ambiguous -> preserve. Positive dead evidence
+    # requires a lease to have existed and gone stale; "never had a lease" is
+    # not that.
+    if ! grep -qxF "$run_dir" "$snapshot_file" 2>/dev/null; then
+      log "no lease record was ever found for $path ($branch) — ambiguous; preserving (reap requires a stale-past-grace lease)"
+      record_worktree_preserved "$path"
+      return 0
+    fi
+
+    # (MAJOR 1a) Age floor, default = the lease grace window. Never reap a
+    # worktree the lease system itself would still be inside the grace window
+    # for.
+    if worktree_younger_than_floor "$path" "$min_age"; then
+      log "preserving worktree younger than the reap age floor (${min_age}s): $path ($branch)"
+      record_worktree_preserved "$path"
+      return 0
+    fi
+
+    # (MAJOR 1b) Ledger activity within the grace window == the run is alive
+    # (a long read-only iteration whose lease lapsed still has a recent ledger,
+    # or is caught by the age floor above). Preserve.
+    if ledger_active_within "$run_dir" "$grace"; then
+      log "preserving $path ($branch): ledger.jsonl was written within the grace window (${grace}s) — the run appears alive despite a lapsed lease"
+      record_worktree_preserved "$path"
+      return 0
+    fi
+
+    log "reaping $path ($branch): lease existed but is stale past the grace window AND ledger.jsonl has been quiescent for >=${grace}s (positive dead evidence)"
   else
-    log "no lease record was ever found for $path ($branch) and the worktree exceeds the grace floor — treating as orphaned"
+    log "reaping $path ($branch): its owning run recorded a .finalized sentinel (positive done evidence)"
   fi
 
   if ! ensure_worktree_clean_or_committed "$path" "$branch"; then
@@ -466,6 +579,16 @@ reap_one_worktree() {
   else
     log "git worktree remove failed for $path — preserving"
     record_worktree_preserved "$path"
+    record_preserved "$branch"
+    return 0
+  fi
+
+  # MAJOR 2: never prove containment against an ambient cwd HEAD. If no
+  # cwd-independent target resolved (empty), we cannot safely decide
+  # containment -> PRESERVE the branch ref (the worktree content is already
+  # safely committed on that branch by ensure_worktree_clean_or_committed).
+  if [ -z "$worktree_target" ]; then
+    log "no cwd-independent containment target resolved for $branch — cannot prove containment; preserving branch ref (never deleted against ambient cwd ancestry)"
     record_preserved "$branch"
     return 0
   fi
@@ -511,7 +634,7 @@ reap_worktrees() {
         current_branch="${line#branch refs/heads/}"
         this_run_dir="$(run_dir_for_worktree "$current_path" || true)"
         [ -n "$this_run_dir" ] && printf '%s\n' "$this_run_dir" >> "$processed_run_dirs_file"
-        reap_one_worktree "$current_path" "$current_branch" "$live_file"
+        reap_one_worktree "$current_path" "$current_branch" "$live_file" "$pre_leases_file"
         ;;
     esac
   done < <(git worktree list --porcelain)
@@ -683,12 +806,28 @@ if [ "$REAP_WORKTREES" = "yes" ]; then
     mkdir -p "${BUGSWEEP_REPO_ROOT}/.bugsweep" 2>/dev/null || true
   fi
   if [ -n "$reap_lock" ] && bugsweep_lock_acquire "$reap_lock" "${BUGSWEEP_REAP_LOCK_TIMEOUT:-25}"; then
-    reap_worktrees
+    # MINOR 4 (dataloss re-review): make lock release STRUCTURAL. reap_worktrees
+    # is under `set -euo pipefail`; a non-zero return would otherwise exit
+    # before bugsweep_lock_release runs, leaking the lock (it self-heals via
+    # dead-pid reclaim, but structurally it must always release). Capture the
+    # status with `|| status=$?` so `set -e` cannot short-circuit the release,
+    # then always release and propagate the real status.
+    reap_status=0
+    reap_worktrees || reap_status=$?
     bugsweep_lock_release "$reap_lock"
-    exit 0
+    exit "$reap_status"
   fi
   log "reap-worktrees: lock busy or repo root unresolved — skipping this pass (non-fatal; a later preflight/finalize call will retry)."
+  # MINOR 3 (dataloss re-review): AC4 requires every KEY=VALUE counter line to
+  # be emitted on EVERY path, including zeros — a headless caller parsing the
+  # output must never see a counter simply vanish. Emit all five as 0 here.
   echo "REAP_RESULT=skipped_locked"
+  [ -n "$TARGET_BRANCH" ] && echo "TARGET_BRANCH=${TARGET_BRANCH}"
+  echo "WORKTREES_REMOVED=0"
+  echo "WORKTREES_PRESERVED=0"
+  echo "WORKTREES_OUT_OF_SCOPE=0"
+  echo "BRANCHES_PRUNED=0"
+  echo "LEASES_RELEASED=0"
   exit 0
 fi
 

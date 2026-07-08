@@ -296,6 +296,19 @@ else
 fi
 
 if [ -n "${BUGSWEEP_WORKTREE:-}" ] && [ -f "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" ]; then
+  # bugsweep-8d0 dataloss re-review MAJOR 1: write a durable ".finalized"
+  # sentinel into this run's run_dir BEFORE invoking the reaper. This is the
+  # positive "the run is definitively over" signal the reaper needs to safely
+  # reap THIS worktree — the reaper now preserves-on-ambiguity (a released
+  # lease is indistinguishable from a reclaimed-stale one, and the ledger is
+  # typically fresh at finalize time), so without this sentinel a
+  # just-finalized worktree whose lease is already released would be preserved
+  # forever ("no live lease + stale-ledger only" is the reap path; a released
+  # lease is "no lease record" → ambiguous → preserve). The sentinel lives
+  # under .bugsweep/ (git-excluded) and lets BOTH this reaper call and any
+  # later session-end sweep reap finalized runs deterministically. (Same
+  # sentinel-file idiom finalize already uses for .report-is-stub.)
+  : > "${run_dir}/.finalized" 2>/dev/null || true
   if cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null; then
     bash "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" --reap-worktrees \
       || log "WARNING: worktree reaper failed; ${BUGSWEEP_WORKTREE} may still need manual cleanup."

@@ -178,21 +178,31 @@ index. In this mode `STASH=none` means "nothing to restore" (no stash is ever ta
 "the tree was clean". Do all hunt/fix work inside the printed `WORKTREE=` path. Callers
 should pass `BUGSWEEP_LEASE_PID=$$` so the run's lease tracks the shell that actually owns
 the run (liveness for stale-lease reclaim); `finalize.sh` releases the lease.
-Preflight and finalize also run `bugsweep-cleanup.sh --reap-worktrees` best-effort: stale
-bugsweep-managed worktrees are removed, live leased sibling runs are preserved, dirty
-worktrees are committed to their own branch before removal, and branch refs are deleted
-only after merge-base containment proof against a pinned target (never the caller's
-ambient cwd branch). A worktree/branch younger than a minimum-age grace floor
-(`BUGSWEEP_REAP_MIN_AGE_SECONDS`, default 120s) is never reaped regardless of lease state.
+Preflight and finalize also run `bugsweep-cleanup.sh --reap-worktrees` best-effort. The
+reaper reaps a worktree ONLY on positive evidence its run is over, and PRESERVES on any
+ambiguity (a live sibling must never be reaped): reap happens only when the run recorded a
+`.finalized` sentinel (finalize's deterministic teardown), OR when its lease existed but is
+stale past the grace window AND its `ledger.jsonl` has been quiescent for at least that
+window AND the worktree is older than the age floor. A run with a live lease, a fresh
+ledger (an active hunt), no lease record at all, or age under the floor is always
+preserved. Dirty/gitignored worktree content is committed to the branch (or the worktree is
+preserved) before any removal, and branch refs are deleted only after merge-base containment
+proof against a pinned, cwd-independent target — never the caller's ambient checkout, and
+never at all when no such target resolves. The age floor defaults to the lease grace window
+(`BUGSWEEP_REAP_MIN_AGE_SECONDS`, default `BUGSWEEP_LEASE_GRACE_SECONDS` = 900s).
 
-**Session-end sweep.** preflight and finalize each call `--reap-worktrees` for their own
-run, but an orchestrator managing several worktree-mode runs across a session (e.g. a
-metaswarm dispatcher, or the nightshift scheduler's k3f playbook) should invoke
+**Session-end sweep.** preflight and finalize each call `--reap-worktrees` (and finalize
+marks its own run `.finalized` so that run is reaped deterministically). An orchestrator
+managing several worktree-mode runs across a session (e.g. a metaswarm dispatcher, or the
+nightshift scheduler's k3f playbook) should invoke
 `bash scripts/bugsweep-cleanup.sh --reap-worktrees` once more at session end, after every
-subagent has finalized (or been confirmed dead). This is the same standalone, idempotent
-entry point preflight/finalize already use — no separate mode is needed — and it is the
-only way to guarantee zero leftover worktrees/branches when a subagent crashed or was
-killed before it ever reached its own finalize call.
+subagent has finalized. This is the same standalone, idempotent entry point — no separate
+mode is needed. It cleans up every run that finalized. A subagent that CRASHED before
+finalizing leaves no `.finalized` sentinel, so — by design, to never reap a run that might
+still be alive — its worktree is preserved until its lease is stale past grace and its
+ledger has gone quiescent (then a later sweep reaps it), or a human removes it. "Zero
+leftovers" is therefore guaranteed for cleanly-finalized runs, not for a run still within
+the grace window of its last heartbeat.
 
 **Stale-branch check (do this right after preflight succeeds).** Unlanded fix branches
 from prior runs are the #1 failure mode: because each run forks from current main, any fix

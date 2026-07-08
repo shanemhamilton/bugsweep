@@ -66,6 +66,23 @@ JSON
   fi
 }
 
+# bugsweep-8d0 dataloss re-review MAJOR 1b: the reaper preserves any run whose
+# ledger.jsonl was written within the lease grace window (a live-hunt liveness
+# signal). Tests that intend a run to be REAPED must age its ledger past that
+# window so the ledger-activity guard doesn't (correctly) preserve it.
+_age_ledger() {
+  local run_dir="$1"
+  touch -t 202001010000 "${run_dir}/ledger.jsonl" 2>/dev/null || true
+}
+
+# bugsweep-8d0 dataloss re-review MAJOR 1: finalize.sh drops a durable
+# ".finalized" sentinel so the reaper can deterministically reap a
+# definitively-finished run. Tests that model a finished run use this.
+_mark_finalized() {
+  local run_dir="$1"
+  : > "${run_dir}/.finalized"
+}
+
 setup() {
   START_CWD="$(pwd)"
   BATS_TMP="$(mktemp -d)"
@@ -220,12 +237,18 @@ teardown() {
   git -C "$REPO" worktree add -q "$wt1" "bugsweep/reap-one"
   git -C "$REPO" worktree add -q "$wt2" "bugsweep/reap-two"
 
-  # BUGSWEEP_REAP_MIN_AGE_SECONDS=0 disables the BLOCKER-A minimum-age grace
-  # floor (default 120s) added by the bugsweep-8d0 dataloss review — these
-  # worktrees are seconds old by wall-clock time in this test, and this test
-  # is exercising contained-branch pruning, not the age floor (which has its
-  # own dedicated test below).
-  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+  # bugsweep-8d0 dataloss re-review MAJOR 1: the reaper now reaps ONLY on
+  # positive evidence a run is over. Model these as FINISHED runs: each gets a
+  # run mapping + a durable .finalized sentinel (what finalize.sh writes), so
+  # the reaper reaps them deterministically. Without it they would be
+  # correctly preserved as ambiguous (no positive dead/done evidence).
+  local rd1 rd2
+  rd1="$(_make_run_dir_for_worktree "reap-one" "bugsweep/reap-one" "$wt1")"
+  rd2="$(_make_run_dir_for_worktree "reap-two" "bugsweep/reap-two" "$wt2")"
+  _mark_finalized "$rd1"
+  _mark_finalized "$rd2"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
@@ -239,7 +262,7 @@ teardown() {
   ! _branch_exists "bugsweep/reap-two"
   ! git -C "$REPO" worktree list --porcelain | grep -q "${REPO}/.bugsweep/worktrees/"
 
-  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
     bash "$CLEANUP_SH" --reap-worktrees
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "WORKTREES_REMOVED=0"
@@ -255,7 +278,13 @@ teardown() {
 
   local run_dir
   run_dir="$(_make_run_dir_for_worktree "reap-dirty" "bugsweep/reap-dirty" "$wt")"
+  # Model a genuinely DEAD/crashed run: a stale-past-grace lease (old) AND a
+  # quiescent ledger (aged past grace) — the positive dead evidence the reaper
+  # now requires. MIN_AGE=0 waives only the worktree-dir age floor (the dir is
+  # seconds old by wall-clock); the stale-lease + quiescent-ledger evidence is
+  # what authorizes the reap.
   _make_lease "run-reap-dirty" "$run_dir" 999999 old
+  _age_ledger "$run_dir"
 
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
     bash "$CLEANUP_SH" --reap-worktrees
@@ -299,7 +328,10 @@ teardown() {
   git -C "$REPO" worktree add -q "$orphan" "bugsweep/reap-preflight"
   local run_dir
   run_dir="$(_make_run_dir_for_worktree "reap-preflight" "bugsweep/reap-preflight" "$orphan")"
+  # Dead run: stale-past-grace lease + quiescent ledger (see the dirty-worktree
+  # test above for why both are needed under the re-review MAJOR 1 rule).
   _make_lease "run-reap-preflight" "$run_dir" 999999 old
+  _age_ledger "$run_dir"
 
   run env BUGSWEEP_REAP_MIN_AGE_SECONDS=0 bash "$PREFLIGHT_SH" --worktree
 
@@ -358,6 +390,12 @@ teardown() {
   local wt="${REPO}/.bugsweep/worktrees/unreviewed"
   mkdir -p "${REPO}/.bugsweep/worktrees"
   git -C "$REPO" worktree add -q "$wt" "bugsweep/unreviewed"
+  # Reap-eligible finished run (records BUGSWEEP_ORIG_BRANCH=main as the real
+  # integration target), so the reaper reaches the branch-containment step —
+  # the step BLOCKER B protects.
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "unreviewed" "bugsweep/unreviewed" "$wt")"
+  _mark_finalized "$run_dir"
 
   # A separate branch that legitimately descends from (contains) the
   # unreviewed branch's tip — simulating some unrelated branch that happens
@@ -371,16 +409,17 @@ teardown() {
   # Pre-fix, TARGET_BRANCH would resolve to "someone-elses-branch" (the
   # invoking cwd's HEAD), against which bugsweep/unreviewed IS contained —
   # and the reaper would delete an unreviewed fix main never received. The
-  # worktree itself is still removed (it is clean, so its content is safe —
-  # nothing is lost, since the fix lives on the branch ref); what BLOCKER B
-  # protects is the BRANCH REF surviving because it is correctly judged
-  # "not contained in main", never in the incidental sibling branch.
-  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+  # worktree itself is still removed (it is clean/finalized, so its content is
+  # safe — the fix lives on the branch ref); what BLOCKER B protects is the
+  # BRANCH REF surviving because it is correctly judged "not contained in
+  # main", never in the incidental sibling branch.
+  run env BUGSWEEP_ALLOW_PROTECTED=1 \
     bash -c "cd '$other_wt' && bash '$CLEANUP_SH' --reap-worktrees"
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "TARGET_BRANCH=main"
   echo "$output" | grep -q "BRANCH_PRESERVED=bugsweep/unreviewed"
+  ! echo "$output" | grep -q "BRANCH_PRUNED=bugsweep/unreviewed"
   _branch_exists "bugsweep/unreviewed"
 }
 
@@ -499,13 +538,19 @@ teardown() {
   mkdir -p "${REPO}/.bugsweep/worktrees"
   git -C "$REPO" worktree add -q "$wt" "bugsweep/reap-ignored"
   wt="$(cd "$wt" && pwd -P)"
+  # Reap-eligible finished run, so the reaper reaches the content-safety guard
+  # (ensure_worktree_clean_or_committed) where MAJOR E lives — it is that guard
+  # that must detect the gitignored content and preserve rather than remove.
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "reap-ignored" "bugsweep/reap-ignored" "$wt")"
+  _mark_finalized "$run_dir"
   printf 'build/\n' > "${wt}/.gitignore"
   git -C "$wt" add .gitignore >/dev/null
   git -C "$wt" commit -q -m "add gitignore"
   mkdir -p "${wt}/build"
   printf 'generated output that must not vanish silently\n' > "${wt}/build/out.txt"
 
-  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
@@ -533,6 +578,7 @@ teardown() {
   local run_dir
   run_dir="$(_make_run_dir_for_worktree "reap-scoped-lease" "bugsweep/reap-scoped-lease" "$wt")"
   _make_lease "run-reap-scoped-lease" "$run_dir" 999999 old
+  _age_ledger "$run_dir"
 
   # An UNRELATED in-place-mode run's stale lease — preflight acquires a lease
   # for in-place runs too, and its run_dir has no BUGSWEEP_WORKTREE mapping
@@ -579,4 +625,188 @@ teardown() {
 
   rm -f "${lockdir}/pid"
   rmdir "$lockdir" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss re-review MINOR 3: the skipped_locked path must still
+# emit every KEY=VALUE counter line (as 0), not just REAP_RESULT — a headless
+# caller parsing the output must never see a counter vanish.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: skipped_locked path emits all five counter lines as zero (MINOR 3)" {
+  local lockdir="${REPO}/.bugsweep/.reap-worktrees.lock"
+  mkdir -p "$lockdir"
+  printf '%s' "$$" > "${lockdir}/pid"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_LOCK_TIMEOUT=1 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "REAP_RESULT=skipped_locked"
+  echo "$output" | grep -q "^WORKTREES_REMOVED=0$"
+  echo "$output" | grep -q "^WORKTREES_PRESERVED=0$"
+  echo "$output" | grep -q "^WORKTREES_OUT_OF_SCOPE=0$"
+  echo "$output" | grep -q "^BRANCHES_PRUNED=0$"
+  echo "$output" | grep -q "^LEASES_RELEASED=0$"
+
+  rm -f "${lockdir}/pid"
+  rmdir "$lockdir" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss re-review MINOR 4: the reap lock must be released
+# structurally — after a normal reap completes, the lock directory must not
+# linger (a leak that would otherwise only self-heal via dead-pid reclaim).
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: releases its lock structurally (no leaked lock dir after a normal reap) (MINOR 4)" {
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "REAP_RESULT=ok"
+  [ ! -d "${REPO}/.bugsweep/.reap-worktrees.lock" ]
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss re-review MAJOR 1b: a live sibling whose lease lapsed
+# past the grace window but whose ledger.jsonl is FRESH must be PRESERVED.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: live sibling with a lapsed lease but a FRESH ledger is preserved (MAJOR 1b)" {
+  _make_bugsweep_branch "bugsweep/live-lapsed" "long read-only hunt, lease lapsed"
+  local wt="${REPO}/.bugsweep/worktrees/live-lapsed"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/live-lapsed"
+  wt="$(cd "$wt" && pwd -P)"
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "live-lapsed" "bugsweep/live-lapsed" "$wt")"
+  # Lease lapsed past grace (dead recorded pid + aged file -> reclaimed by
+  # lease-list), BUT the run is genuinely alive: its ledger.jsonl was written
+  # just now (guard.sh appends hunt events). MIN_AGE=0 waives the worktree-dir
+  # age floor, so ONLY the ledger-activity guard stands between a live run and
+  # a data-losing reap — exactly the reproduced defect.
+  _make_lease "run-live-lapsed" "$run_dir" 999999 old
+  printf '{"event":"batch_covered","batch":7}\n' >> "${run_dir}/ledger.jsonl"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREE_PRESERVED=${wt}"
+  [ -d "$wt" ]
+  _branch_exists "bugsweep/live-lapsed"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss re-review MAJOR 1c: a worktree with a run mapping but
+# NO lease record ever, past the age floor, must be PRESERVED (ambiguous ->
+# preserve; reap requires a stale-past-grace lease as positive dead evidence).
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: mapped worktree with NO lease record ever, past the floor, is preserved (MAJOR 1c)" {
+  _make_bugsweep_branch "bugsweep/no-lease-mapped" "run mapping but no lease ever"
+  _merge_branch_to_main "bugsweep/no-lease-mapped"
+  local wt="${REPO}/.bugsweep/worktrees/no-lease-mapped"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/no-lease-mapped"
+  wt="$(cd "$wt" && pwd -P)"
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "no-lease-mapped" "bugsweep/no-lease-mapped" "$wt")"
+  _age_ledger "$run_dir"
+  # NO _make_lease call: this run never had a lease record. Even merged and
+  # past the (MIN_AGE=0) floor with a quiescent ledger, absence of any lease
+  # record is ambiguous -> preserve, never reap.
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREE_PRESERVED=${wt}"
+  [ -d "$wt" ]
+  _branch_exists "bugsweep/no-lease-mapped"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss re-review MAJOR 2: resolve_pinned_target_branch's last
+# resort must NOT fall back to caller cwd HEAD. In a repo whose default branch
+# is not protected (e.g. trunk), an orphan worktree with no recorded target
+# must have its branch PRESERVED, never deleted against ambient cwd ancestry.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: trunk-default repo, no resolvable target, unreviewed branch survives ambient cwd ancestry (MAJOR 2)" {
+  # A repo whose default branch (trunk) is NOT in PROTECTED, with no main/master.
+  local trepo="${BATS_TMP}/trunk-repo"
+  git init -q "$trepo"
+  git -C "$trepo" config user.email "test@bugsweep"
+  git -C "$trepo" config user.name "bugsweep-test"
+  git -C "$trepo" checkout -q -b trunk
+  printf 'base\n' > "${trepo}/app.txt"
+  git -C "$trepo" add app.txt
+  git -C "$trepo" commit -q -m init
+
+  # An unreviewed bugsweep fix, never merged into trunk.
+  git -C "$trepo" checkout -q -b bugsweep/unreviewed-trunk trunk
+  printf 'fix\n' > "${trepo}/app.txt"
+  git -C "$trepo" add app.txt
+  git -C "$trepo" commit -q -m "unreviewed fix"
+  git -C "$trepo" checkout -q trunk
+
+  # A canonical-path worktree for it, but NO run mapping (crashed run; .bugsweep
+  # state reclaimed).
+  mkdir -p "${trepo}/.bugsweep/worktrees"
+  local wt="${trepo}/.bugsweep/worktrees/unreviewed-trunk"
+  git -C "$trepo" worktree add -q "$wt" bugsweep/unreviewed-trunk
+
+  # A sibling branch descending from the unreviewed fix, checked out in the
+  # cwd the reaper is invoked from — the ambient HEAD the pre-fix last resort
+  # would have (wrongly) pinned to.
+  git -C "$trepo" checkout -q -b descends-from-unreviewed bugsweep/unreviewed-trunk
+  git -C "$trepo" checkout -q trunk
+  local other_wt="${BATS_TMP}/trunk-other"
+  git -C "$trepo" worktree add -q "$other_wt" descends-from-unreviewed
+
+  # No BUGSWEEP_TARGET, no protected branch exists -> resolve_pinned yields
+  # empty. The unreviewed branch must SURVIVE.
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash -c "cd '$other_wt' && bash '$CLEANUP_SH' --reap-worktrees"
+
+  [ "$status" -eq 0 ]
+  # Empty target -> no TARGET_BRANCH line, and NEVER the ambient cwd branch.
+  ! echo "$output" | grep -q "TARGET_BRANCH=descends-from-unreviewed"
+  ! echo "$output" | grep -q "BRANCH_PRUNED=bugsweep/unreviewed-trunk"
+  git -C "$trepo" show-ref --verify --quiet refs/heads/bugsweep/unreviewed-trunk
+
+  git -C "$trepo" worktree prune >/dev/null 2>&1 || true
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss re-review MAJOR 1 (done evidence): a run that recorded
+# a .finalized sentinel is reaped deterministically (this is how finalize.sh
+# reaps its own worktree despite a fresh ledger / released lease).
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: a .finalized run is reaped even with a fresh ledger and no live lease (MAJOR 1 done-evidence)" {
+  _make_bugsweep_branch "bugsweep/finalized-run" "finished fix, merged"
+  _merge_branch_to_main "bugsweep/finalized-run"
+  local wt="${REPO}/.bugsweep/worktrees/finalized-run"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/finalized-run"
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "finalized-run" "bugsweep/finalized-run" "$wt")"
+  # Fresh ledger (would preserve under the liveness belts) + NO lease record,
+  # but a .finalized sentinel => positive DONE evidence => reap deterministically.
+  printf '{"event":"finalize"}\n' >> "${run_dir}/ledger.jsonl"
+  _mark_finalized "$run_dir"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_REMOVED=1"
+  echo "$output" | grep -q "BRANCH_PRUNED=bugsweep/finalized-run"
+  [ ! -d "$wt" ]
+  ! _branch_exists "bugsweep/finalized-run"
 }

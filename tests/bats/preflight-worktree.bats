@@ -271,13 +271,14 @@ teardown() {
 
   printf 'fix\n' > "${wt}/fix.txt"
   cd "$wt"
-  # BUGSWEEP_REAP_MIN_AGE_SECONDS=0 disables the bugsweep-8d0 dataloss review's
-  # minimum-age grace floor (default 120s): this worktree is seconds old by
-  # wall-clock time in this test, but a REAL run reaches finalize only after
-  # minutes-to-hours of hunting, well past the floor — the override just keeps
-  # this test's assertions (worktree removed at finalize) meaningful without
-  # sleeping.
-  run env BUGSWEEP_REAP_MIN_AGE_SECONDS=0 bash "$FINALIZE_SH" "$run_dir"
+  # No BUGSWEEP_REAP_MIN_AGE_SECONDS override here: finalize.sh writes a
+  # durable .finalized sentinel before invoking the reaper, which is positive
+  # DONE evidence, so this run's own worktree is reaped deterministically —
+  # regardless of the grace-aligned age floor, the (released) lease, or a
+  # fresh ledger. This is exactly the production teardown path (a real run's
+  # ledger is fresh at finalize time too). If the reaper still relied on the
+  # age floor, this test worktree (seconds old) would be wrongly preserved.
+  run bash "$FINALIZE_SH" "$run_dir"
   [ "$status" -eq 0 ]
 
   # No misleading generic warning from git's (correct) refusal to check out a
