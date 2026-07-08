@@ -220,7 +220,12 @@ teardown() {
   git -C "$REPO" worktree add -q "$wt1" "bugsweep/reap-one"
   git -C "$REPO" worktree add -q "$wt2" "bugsweep/reap-two"
 
-  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+  # BUGSWEEP_REAP_MIN_AGE_SECONDS=0 disables the BLOCKER-A minimum-age grace
+  # floor (default 120s) added by the bugsweep-8d0 dataloss review — these
+  # worktrees are seconds old by wall-clock time in this test, and this test
+  # is exercising contained-branch pruning, not the age floor (which has its
+  # own dedicated test below).
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
@@ -234,7 +239,7 @@ teardown() {
   ! _branch_exists "bugsweep/reap-two"
   ! git -C "$REPO" worktree list --porcelain | grep -q "${REPO}/.bugsweep/worktrees/"
 
-  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
     bash "$CLEANUP_SH" --reap-worktrees
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "WORKTREES_REMOVED=0"
@@ -252,7 +257,7 @@ teardown() {
   run_dir="$(_make_run_dir_for_worktree "reap-dirty" "bugsweep/reap-dirty" "$wt")"
   _make_lease "run-reap-dirty" "$run_dir" 999999 old
 
-  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
@@ -296,11 +301,282 @@ teardown() {
   run_dir="$(_make_run_dir_for_worktree "reap-preflight" "bugsweep/reap-preflight" "$orphan")"
   _make_lease "run-reap-preflight" "$run_dir" 999999 old
 
-  run bash "$PREFLIGHT_SH" --worktree
+  run env BUGSWEEP_REAP_MIN_AGE_SECONDS=0 bash "$PREFLIGHT_SH" --worktree
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "PREFLIGHT_OK"
   [ ! -d "$orphan" ]
   ! _branch_exists "bugsweep/reap-preflight"
   ! git -C "$REPO" worktree list --porcelain | grep -q "$orphan"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss review: BLOCKER A — lease-before-add TOCTOU + wrong
+# ambiguous default (no lease found used to mean "remove if clean"; now it
+# must mean "preserve" unless the worktree is provably old).
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: worktree with no lease record and age below the grace floor is preserved, live-lease sibling also untouched (BLOCKER A)" {
+  # A worktree with NO run_dir/lease ever created for it — indistinguishable
+  # from a worktree caught mid-creation by a concurrent preflight (the exact
+  # TOCTOU this fix closes). It must be preserved purely because it is new
+  # (default grace floor 120s), independent of lease state.
+  _make_bugsweep_branch "bugsweep/no-lease-young" "young orphan, no lease ever recorded"
+  local wt_no_lease="${REPO}/.bugsweep/worktrees/no-lease-young"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt_no_lease" "bugsweep/no-lease-young"
+
+  # A sibling worktree with a genuinely LIVE lease (this test process's own
+  # pid), which must also survive regardless of the age floor.
+  _make_bugsweep_branch "bugsweep/reap-live-sibling" "live sibling"
+  local wt_live="${REPO}/.bugsweep/worktrees/reap-live-sibling"
+  git -C "$REPO" worktree add -q "$wt_live" "bugsweep/reap-live-sibling"
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "reap-live-sibling" "bugsweep/reap-live-sibling" "$wt_live")"
+  _make_lease "run-reap-live-sibling" "$run_dir" "$$"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREES_PRESERVED=2"
+  [ -d "$wt_no_lease" ]
+  [ -d "$wt_live" ]
+  _branch_exists "bugsweep/no-lease-young"
+  _branch_exists "bugsweep/reap-live-sibling"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss review: BLOCKER B — TARGET_BRANCH resolved from
+# caller cwd HEAD deletes unreviewed branches merged only into an incidental
+# sibling branch, never into the real integration target.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: pinned target ignores caller cwd branch ancestry (BLOCKER B)" {
+  _make_bugsweep_branch "bugsweep/unreviewed" "unreviewed fix, never merged to main"
+  local wt="${REPO}/.bugsweep/worktrees/unreviewed"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/unreviewed"
+
+  # A separate branch that legitimately descends from (contains) the
+  # unreviewed branch's tip — simulating some unrelated branch that happens
+  # to be checked out in the CALLER's cwd when the reaper runs.
+  git -C "$REPO" checkout -b "someone-elses-branch" "bugsweep/unreviewed" -q
+  git -C "$REPO" checkout main -q
+
+  local other_wt="${BATS_TMP}/other-checkout"
+  git -C "$REPO" worktree add -q "$other_wt" "someone-elses-branch"
+
+  # Pre-fix, TARGET_BRANCH would resolve to "someone-elses-branch" (the
+  # invoking cwd's HEAD), against which bugsweep/unreviewed IS contained —
+  # and the reaper would delete an unreviewed fix main never received. The
+  # worktree itself is still removed (it is clean, so its content is safe —
+  # nothing is lost, since the fix lives on the branch ref); what BLOCKER B
+  # protects is the BRANCH REF surviving because it is correctly judged
+  # "not contained in main", never in the incidental sibling branch.
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash -c "cd '$other_wt' && bash '$CLEANUP_SH' --reap-worktrees"
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "TARGET_BRANCH=main"
+  echo "$output" | grep -q "BRANCH_PRESERVED=bugsweep/unreviewed"
+  _branch_exists "bugsweep/unreviewed"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss review: BLOCKER C — worktree directory vanished
+# out-of-band while git still registers it; must resolve containment before
+# `git worktree prune` erases the linkage, never leaving a permanent orphan.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: directory-vanished worktree with a CONTAINED branch is resolved, not orphaned (BLOCKER C)" {
+  _make_bugsweep_branch "bugsweep/vanished-contained" "fix, later merged"
+  _merge_branch_to_main "bugsweep/vanished-contained"
+  local wt="${REPO}/.bugsweep/worktrees/vanished-contained"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/vanished-contained"
+  # Simulate out-of-band directory removal: git still has it registered.
+  rm -rf "$wt"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  # A nonexistent path must never be reported as "preserved" (that is the
+  # exact false-truthful line this fix removes).
+  ! echo "$output" | grep -q "WORKTREE_PRESERVED=${wt}"
+  echo "$output" | grep -q "BRANCH_PRUNED=bugsweep/vanished-contained"
+  ! _branch_exists "bugsweep/vanished-contained"
+  ! git -C "$REPO" worktree list --porcelain | grep -q "$wt"
+}
+
+@test "reap-worktrees: directory-vanished worktree with an UNMERGED branch preserves the branch ref, never orphaning it silently (BLOCKER C)" {
+  _make_bugsweep_branch "bugsweep/vanished-unmerged" "fix, never merged"
+  local wt="${REPO}/.bugsweep/worktrees/vanished-unmerged"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/vanished-unmerged"
+  rm -rf "$wt"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -q "WORKTREE_PRESERVED=${wt}"
+  echo "$output" | grep -q "BRANCH_PRESERVED=bugsweep/vanished-unmerged"
+  _branch_exists "bugsweep/vanished-unmerged"
+  # The stale registration must be cleared (never a permanent orphan that no
+  # future reaper pass revisits) — `git worktree prune`/`--force` cleared it.
+  ! git -C "$REPO" worktree list --porcelain | grep -q "$wt"
+
+  # The branch itself is a normal, ordinary branch ref now (no worktree links
+  # to it at all) — proving it is NOT a permanent orphan: it remains fully
+  # visible to and operable by the rest of the cleanup tooling, e.g. once it
+  # is later merged, ordinary (non-worktree) cleanup can still find and
+  # delete it like any other contained bugsweep branch.
+  _merge_branch_to_main "bugsweep/vanished-unmerged"
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" "bugsweep/vanished-unmerged"
+  [ "$status" -eq 0 ]
+  ! _branch_exists "bugsweep/vanished-unmerged"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss review: MAJOR D — off-canonical-path bugsweep
+# worktrees were invisible (no record at all) instead of being reported.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: off-canonical-path bugsweep worktree is reported, not silently skipped (MAJOR D)" {
+  _make_bugsweep_branch "bugsweep/off-canonical" "fix in a non-canonical worktree location"
+  local wt="${BATS_TMP}/off-canonical-worktree"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/off-canonical"
+  # `git worktree list --porcelain` always reports paths in resolved
+  # (realpath) form; normalize here too so the string comparison below
+  # matches what the script actually reports (same idiom the pre-existing
+  # "clean linked worktree" test above already uses).
+  wt="$(cd "$wt" && pwd -P)"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_OUT_OF_SCOPE=1"
+  echo "$output" | grep -q "WORKTREE_OUT_OF_SCOPE=${wt}"
+  # Never touched: still exists, branch untouched, not double-counted as
+  # either removed or (canonical-scope) preserved.
+  [ -d "$wt" ]
+  _branch_exists "bugsweep/off-canonical"
+  ! echo "$output" | grep -q "WORKTREES_REMOVED=1"
+}
+
+@test "reap-worktrees: un-registered directory under BUGSWEEP_WORKTREES_DIR is reported via directory-scan reconciliation (MAJOR D)" {
+  # A directory that 'git worktree list' does not know about at all (e.g. a
+  # crashed/partial 'git worktree add', or an out-of-band copy) — the
+  # porcelain-based enumeration loop alone would never even visit this, let
+  # alone report it.
+  mkdir -p "${REPO}/.bugsweep/worktrees/ghost-dir"
+  printf 'not a real worktree\n' > "${REPO}/.bugsweep/worktrees/ghost-dir/marker.txt"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_OUT_OF_SCOPE=1"
+  echo "$output" | grep -q "WORKTREE_OUT_OF_SCOPE=${REPO}/.bugsweep/worktrees/ghost-dir"
+  [ -d "${REPO}/.bugsweep/worktrees/ghost-dir" ]
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss review: MAJOR E — gitignored-but-present untracked
+# content was invisible to the dirty-check AND `git add -A`, so it was
+# silently deleted by `git worktree remove` with no commit, no warning.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: gitignored untracked content is never silently discarded (MAJOR E)" {
+  _make_bugsweep_branch "bugsweep/reap-ignored" "fix with ignored content"
+  _merge_branch_to_main "bugsweep/reap-ignored"
+  local wt="${REPO}/.bugsweep/worktrees/reap-ignored"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/reap-ignored"
+  wt="$(cd "$wt" && pwd -P)"
+  printf 'build/\n' > "${wt}/.gitignore"
+  git -C "$wt" add .gitignore >/dev/null
+  git -C "$wt" commit -q -m "add gitignore"
+  mkdir -p "${wt}/build"
+  printf 'generated output that must not vanish silently\n' > "${wt}/build/out.txt"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  # Must never be silently discarded: the worktree (and its gitignored file)
+  # must still be on disk, preserved and reported — not removed out from
+  # under the content.
+  [ -d "$wt" ]
+  [ -f "${wt}/build/out.txt" ]
+  grep -q "generated output that must not vanish silently" "${wt}/build/out.txt"
+  echo "$output" | grep -q "WORKTREE_PRESERVED=${wt}"
+  _branch_exists "bugsweep/reap-ignored"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss review: MEDIUM F — LEASES_RELEASED was a repo-wide
+# before/after JSON-file-count delta that conflated unrelated in-place-mode
+# runs' reclaimed leases with worktrees this call actually reaped.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: LEASES_RELEASED counts only this call's worktrees, not unrelated in-place-run leases (MEDIUM F)" {
+  _make_bugsweep_branch "bugsweep/reap-scoped-lease" "fix scoped lease"
+  local wt="${REPO}/.bugsweep/worktrees/reap-scoped-lease"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/reap-scoped-lease"
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "reap-scoped-lease" "bugsweep/reap-scoped-lease" "$wt")"
+  _make_lease "run-reap-scoped-lease" "$run_dir" 999999 old
+
+  # An UNRELATED in-place-mode run's stale lease — preflight acquires a lease
+  # for in-place runs too, and its run_dir has no BUGSWEEP_WORKTREE mapping
+  # to any worktree at all. This must NEVER be folded into this call's
+  # LEASES_RELEASED count.
+  local unrelated_run_dir="${REPO}/.bugsweep/run-unrelated-inplace"
+  mkdir -p "$unrelated_run_dir"
+  _make_lease "run-unrelated-inplace" "$unrelated_run_dir" 999998 old
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "LEASES_RELEASED=1"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss review: MINOR G — concurrent reapers could report a
+# stale "preserved" line for a branch/worktree a sibling reaper had already
+# resolved.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: concurrent reap attempts serialize via lock instead of racing (MINOR G)" {
+  _make_bugsweep_branch "bugsweep/reap-lockcheck" "fix lock check"
+  _merge_branch_to_main "bugsweep/reap-lockcheck"
+  local wt="${REPO}/.bugsweep/worktrees/reap-lockcheck"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/reap-lockcheck"
+
+  # Simulate a concurrent reaper already holding the lock (a live pid: this
+  # bats test process itself).
+  local lockdir="${REPO}/.bugsweep/.reap-worktrees.lock"
+  mkdir -p "$lockdir"
+  printf '%s' "$$" > "${lockdir}/pid"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_LOCK_TIMEOUT=1 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "REAP_RESULT=skipped_locked"
+  # Nothing was touched while the lock was held by "another" reaper.
+  [ -d "$wt" ]
+  _branch_exists "bugsweep/reap-lockcheck"
+
+  rm -f "${lockdir}/pid"
+  rmdir "$lockdir" 2>/dev/null || true
 }

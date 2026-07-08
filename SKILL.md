@@ -181,7 +181,18 @@ the run (liveness for stale-lease reclaim); `finalize.sh` releases the lease.
 Preflight and finalize also run `bugsweep-cleanup.sh --reap-worktrees` best-effort: stale
 bugsweep-managed worktrees are removed, live leased sibling runs are preserved, dirty
 worktrees are committed to their own branch before removal, and branch refs are deleted
-only after merge-base containment proof.
+only after merge-base containment proof against a pinned target (never the caller's
+ambient cwd branch). A worktree/branch younger than a minimum-age grace floor
+(`BUGSWEEP_REAP_MIN_AGE_SECONDS`, default 120s) is never reaped regardless of lease state.
+
+**Session-end sweep.** preflight and finalize each call `--reap-worktrees` for their own
+run, but an orchestrator managing several worktree-mode runs across a session (e.g. a
+metaswarm dispatcher, or the nightshift scheduler's k3f playbook) should invoke
+`bash scripts/bugsweep-cleanup.sh --reap-worktrees` once more at session end, after every
+subagent has finalized (or been confirmed dead). This is the same standalone, idempotent
+entry point preflight/finalize already use — no separate mode is needed — and it is the
+only way to guarantee zero leftover worktrees/branches when a subagent crashed or was
+killed before it ever reached its own finalize call.
 
 **Stale-branch check (do this right after preflight succeeds).** Unlanded fix branches
 from prior runs are the #1 failure mode: because each run forks from current main, any fix

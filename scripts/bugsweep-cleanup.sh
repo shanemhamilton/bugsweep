@@ -38,6 +38,7 @@ BRANCH_DELETED_LINES=""
 BRANCH_PRESERVED_LINES=""
 WORKTREE_REMOVED_LINES=""
 WORKTREE_PRESERVED_LINES=""
+WORKTREE_OUT_OF_SCOPE_LINES=""
 REAP_WORKTREES="no"
 
 if [ "${1:-}" = "--reap-worktrees" ]; then
@@ -81,6 +82,20 @@ record_worktree_preserved(){
 $1"
   else
     WORKTREE_PRESERVED_LINES="$1"
+  fi
+}
+
+# MAJOR D (bugsweep-8d0 dataloss review): a bugsweep worktree that is out of
+# this reaper's remove scope (off the canonical path, or an unregistered
+# directory) must never be silently invisible in the output — record it so
+# the count/accounting invariant holds even for things we deliberately don't
+# touch.
+record_worktree_out_of_scope(){
+  if [ -n "$WORKTREE_OUT_OF_SCOPE_LINES" ]; then
+    WORKTREE_OUT_OF_SCOPE_LINES="${WORKTREE_OUT_OF_SCOPE_LINES}
+$1"
+  else
+    WORKTREE_OUT_OF_SCOPE_LINES="$1"
   fi
 }
 
@@ -134,13 +149,19 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
   finish 1
 }
 
+# BLOCKER B (bugsweep-8d0 dataloss review): --reap-worktrees must NEVER
+# resolve its containment target from the caller's ambient cwd HEAD — see
+# resolve_pinned_target_branch() below. Skip the cwd-derived default (and the
+# detached-HEAD guard that only makes sense for it) entirely in reap mode; the
+# reaper does not need the invoking shell's checkout to be on any particular
+# branch at all.
 if [ -n "${BUGSWEEP_TARGET:-}" ]; then
   TARGET_BRANCH="$BUGSWEEP_TARGET"
-else
+elif [ "$REAP_WORKTREES" != "yes" ]; then
   TARGET_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 fi
 
-if [ "$TARGET_BRANCH" = "HEAD" ] || [ -z "$TARGET_BRANCH" ]; then
+if [ "$REAP_WORKTREES" != "yes" ] && { [ "$TARGET_BRANCH" = "HEAD" ] || [ -z "$TARGET_BRANCH" ]; }; then
   fail_preserved "refusing cleanup from a detached HEAD"
 fi
 
@@ -152,10 +173,96 @@ branch_contained_in_target() {
   git merge-base --is-ancestor "$1" "$2" >/dev/null 2>&1
 }
 
-lease_file_count() {
-  local leases="${BUGSWEEP_REPO_ROOT}/.bugsweep/state/leases"
-  [ -d "$leases" ] || { echo 0; return 0; }
-  find "$leases" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' '
+# BLOCKER B fix: resolve a containment target that is completely independent
+# of the CALLER's cwd/checkout. Unlike merge-mode's deliberate "default to
+# whatever branch I'm on" (a human explicitly runs this script from their
+# intended target), --reap-worktrees runs unattended from preflight/finalize,
+# invoked from whatever branch or linked worktree the calling shell happens
+# to be sitting in. Resolving TARGET_BRANCH from `git rev-parse --abbrev-ref
+# HEAD` in that context can prove containment against the wrong branch
+# entirely (e.g. a sibling worktree's own feature branch that happens to
+# descend from an unreviewed bugsweep branch) and delete a fix that was never
+# merged into the real integration target.
+#
+# An explicit BUGSWEEP_TARGET is still honored — a caller who names the
+# target means it. Absent that, pin to the repo's default branch: the first
+# configured protected branch that actually exists (main/master/... — see
+# $PROTECTED), independent of cwd. Only if no protected branch exists at all
+# (unusual) do we fall back to cwd HEAD, exactly as before, as a last resort.
+resolve_pinned_target_branch() {
+  if [ -n "${BUGSWEEP_TARGET:-}" ]; then
+    printf '%s' "$BUGSWEEP_TARGET"
+    return 0
+  fi
+  local p
+  for p in $PROTECTED; do
+    if branch_exists "$p"; then
+      printf '%s' "$p"
+      return 0
+    fi
+  done
+  git rev-parse --abbrev-ref HEAD 2>/dev/null || printf ''
+}
+
+# Per-worktree containment target (BLOCKER B, alternate precision path): when
+# a run_dir mapping is known for a worktree, its OWN recorded
+# BUGSWEEP_ORIG_BRANCH is the most precise proof of "the real integration
+# target this fix was meant for" — more precise than the single repo-wide
+# pinned default, since different runs may have started from different
+# branches. Falls back (empty output, caller substitutes the pinned default)
+# when no mapping or no recorded value exists.
+orig_branch_for_run_dir() {
+  local run_dir="$1" value
+  [ -n "$run_dir" ] && [ -f "${run_dir}/state.env" ] || return 1
+  value="$(sed -n 's/^BUGSWEEP_ORIG_BRANCH=//p' "${run_dir}/state.env" | head -1)"
+  [ -n "$value" ] || return 1
+  printf '%s' "$value"
+}
+
+# Snapshot of every currently-recorded lease's run_dir, taken BEFORE this
+# call's stale-lease reclaim pass (MEDIUM F: needed to scope LEASES_RELEASED
+# to worktrees this call actually processed, rather than every lease
+# reclaimed repo-wide).
+lease_run_dirs_snapshot() {
+  local leases="${BUGSWEEP_REPO_ROOT}/.bugsweep/state/leases" f run_dir
+  [ -d "$leases" ] || return 0
+  for f in "$leases"/*.json; do
+    [ -e "$f" ] || continue
+    run_dir="$(sed -n 's/.*"run_dir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    [ -n "$run_dir" ] && printf '%s\n' "$run_dir"
+  done
+}
+
+# Portable mtime (epoch seconds) of a path, or empty if it can't be read —
+# same idiom as state.sh's _file_mtime, duplicated here in cleanup.sh (not
+# state.sh) because it answers a different question: the AGE of a worktree
+# directory on disk, not a lease file's liveness.
+_bsw_path_mtime() {
+  local path="$1" m
+  [ -e "$path" ] || { printf ''; return 0; }
+  if stat --version >/dev/null 2>&1; then
+    m="$(stat -c %Y "$path" 2>/dev/null || true)"
+  else
+    m="$(stat -f %m "$path" 2>/dev/null || true)"
+  fi
+  case "$m" in ''|*[!0-9]*) printf '' ;; *) printf '%s' "$m" ;; esac
+}
+
+# BLOCKER A fix (2): unconditional minimum-age grace floor. Returns 0 (true —
+# "still within grace, must be preserved") when the worktree's age is unknown
+# (ambiguous -> preserve, same rule as everywhere else) or younger than
+# min_age; returns 1 only when the directory is provably older than the
+# floor. This applies REGARDLESS of lease state (even an expired/absent
+# lease), as defense-in-depth alongside preflight.sh now acquiring the lease
+# before `git worktree add` (which makes a lease-less worktree impossible for
+# runs going through the fixed preflight in the first place).
+worktree_younger_than_grace() {
+  local path="$1" min_age="${2:-120}" mtime now age
+  mtime="$(_bsw_path_mtime "$path")"
+  [ -n "$mtime" ] || return 0
+  now="$(date +%s)"
+  age=$(( now - mtime ))
+  [ "$age" -lt "$min_age" ]
 }
 
 run_dir_for_worktree() {
@@ -197,15 +304,24 @@ worktree_for_branch() {
 }
 
 worktree_is_clean() {
-  local path="$1" untracked
+  local path="$1" untracked ignored
   git -C "$path" diff --quiet || return 1
   git -C "$path" diff --cached --quiet || return 1
   untracked="$(git -C "$path" ls-files --others --exclude-standard)"
-  [ -z "$untracked" ]
+  [ -z "$untracked" ] || return 1
+  # MAJOR E fix (bugsweep-8d0 dataloss review): `ls-files --others
+  # --exclude-standard` (above) respects .gitignore, so gitignored-but-present
+  # content (build output, node_modules, debug logs) was previously invisible
+  # to this clean-check — and to the `git add -A` commit-before-remove path
+  # below, which ALSO respects .gitignore — so it got silently deleted by
+  # `git worktree remove` with no commit, no warning, no trace. Treat it as
+  # dirty too.
+  ignored="$(git -C "$path" ls-files --others --ignored --exclude-standard)"
+  [ -z "$ignored" ]
 }
 
 ensure_worktree_clean_or_committed() {
-  local path="$1" branch="$2"
+  local path="$1" branch="$2" ignored
   if worktree_is_clean "$path"; then
     return 0
   fi
@@ -213,29 +329,129 @@ ensure_worktree_clean_or_committed() {
   log "$branch has dirty worktree content; committing it before removal"
   if git -C "$path" add -A >/dev/null 2>&1 \
     && git -C "$path" commit -m "chore(bugsweep): preserve dirty worktree before cleanup" >/dev/null 2>&1; then
+    # MAJOR E fix: `git add -A` respects .gitignore just like the dirty-check
+    # does, so a successful commit here NEVER captures gitignored content —
+    # it may have committed OTHER (tracked/non-ignored) changes just fine
+    # while ignored content remains uncommitted. Re-check and refuse to let
+    # the caller proceed to `git worktree remove` if any remains, instead of
+    # silently discarding it.
+    ignored="$(git -C "$path" ls-files --others --ignored --exclude-standard 2>/dev/null || true)"
+    if [ -n "$ignored" ]; then
+      log "$branch worktree still has gitignored content that cannot be committed — preserving instead of removing: $(printf '%s' "$ignored" | tr '\n' ' ')"
+      return 1
+    fi
     return 0
   fi
 
-  log "could not commit dirty content in $path — preserving worktree"
+  ignored="$(git -C "$path" ls-files --others --ignored --exclude-standard 2>/dev/null || true)"
+  if [ -n "$ignored" ]; then
+    log "$branch has gitignored content that git cannot commit — preserving worktree so nothing is silently discarded: $(printf '%s' "$ignored" | tr '\n' ' ')"
+  else
+    log "could not commit dirty content in $path — preserving worktree"
+  fi
   return 1
 }
 
+# BLOCKER C fix (bugsweep-8d0 dataloss review): the worktree directory may
+# have been removed out-of-band while git still has it registered (`git
+# worktree list` still reports it — this is exactly what git calls
+# "prunable"). This MUST be resolved (branch containment decided) BEFORE `git
+# worktree prune` (called once, after the whole reap_worktrees loop) erases
+# the registration — otherwise a possibly-unreviewed branch becomes a
+# permanent orphan no future reaper pass ever revisits, because nothing links
+# it to a worktree anymore. `--force` is safe here specifically because the
+# directory is already gone: there is no uncommitted content left to lose by
+# forcing the registration away.
+reap_missing_worktree() {
+  local path="$1" branch="$2" target="$3"
+  log "worktree directory is missing for $branch ($path) — resolving branch containment before the registration is pruned"
+
+  if branch_exists "$branch" && branch_contained_in_target "$branch" "$target"; then
+    if git worktree remove --force "$path" >/dev/null 2>&1; then
+      log "cleared stale worktree registration for missing directory $path"
+    else
+      log "could not clear stale worktree registration for $path (will retry via 'git worktree prune')"
+    fi
+    if git branch -d "$branch" >/dev/null 2>&1; then
+      log "deleted contained branch $branch (worktree directory was already gone)"
+      record_deleted "$branch"
+    else
+      log "could not delete contained branch $branch after clearing missing worktree — preserving ref"
+      record_preserved "$branch"
+    fi
+  elif branch_exists "$branch"; then
+    log "worktree directory for unmerged branch $branch is missing — preserving the branch ref (not contained in $target)"
+    if git worktree remove --force "$path" >/dev/null 2>&1; then
+      log "cleared stale worktree registration for missing directory $path (branch ref preserved)"
+    else
+      log "could not clear stale worktree registration for $path — it may be cleared by a later 'git worktree prune'"
+    fi
+    record_preserved "$branch"
+  else
+    log "worktree directory for $branch is missing and the branch no longer exists — nothing to preserve"
+    git worktree remove --force "$path" >/dev/null 2>&1 || true
+  fi
+  # Never record this path as "preserved" — it does not exist. Reporting
+  # WORKTREE_PRESERVED for a nonexistent path is exactly the false-truthful
+  # output this fix closes.
+}
+
 reap_one_worktree() {
-  local path="$1" branch="$2" live_file="$3" run_dir="" canonical_root canonical_worktree
+  local path="$1" branch="$2" live_file="$3" run_dir="" canonical_root canonical_worktree min_age worktree_target
 
   canonical_root="$(canonical_path "$BUGSWEEP_WORKTREES_DIR")"
   canonical_worktree="$(canonical_path "$path")"
   case "$canonical_worktree" in
     "${canonical_root}"/*) : ;;
-    *) return 0 ;;
+    *)
+      # MAJOR D fix: an off-canonical-path bugsweep worktree must never be
+      # silently invisible — report it explicitly so the accounting/count
+      # invariant holds, even though removing it is out of this reaper's scope.
+      log "bugsweep branch $branch has a worktree off the canonical path ($path) — out of reap scope, reporting only"
+      record_worktree_out_of_scope "$path"
+      return 0
+      ;;
   esac
 
   path="$canonical_worktree"
   run_dir="$(run_dir_for_worktree "$path" || true)"
+
+  # BLOCKER B fix: prefer the per-worktree recorded original branch (the real
+  # integration target THIS run's fix was meant for) when known; fall back to
+  # the pinned, cwd-independent default otherwise. Never the caller's cwd HEAD.
+  worktree_target="$(orig_branch_for_run_dir "$run_dir" 2>/dev/null || true)"
+  [ -n "$worktree_target" ] || worktree_target="$TARGET_BRANCH"
+
+  if [ ! -d "$path" ]; then
+    reap_missing_worktree "$path" "$branch" "$worktree_target"
+    return 0
+  fi
+
   if run_dir_is_live "$run_dir" "$live_file"; then
     log "preserving live leased worktree $path ($branch)"
     record_worktree_preserved "$path"
     return 0
+  fi
+
+  # BLOCKER A fix: unconditional minimum-age grace floor, regardless of lease
+  # state — never reap anything younger than this, even a worktree with an
+  # already-expired lease. Defense-in-depth alongside preflight.sh now
+  # acquiring the lease before `git worktree add`.
+  min_age="${BUGSWEEP_REAP_MIN_AGE_SECONDS:-120}"
+  if worktree_younger_than_grace "$path" "$min_age"; then
+    log "preserving worktree younger than the grace floor (${min_age}s), regardless of lease state: $path ($branch)"
+    record_worktree_preserved "$path"
+    return 0
+  fi
+
+  # "No lease record found" now PRESERVES by default; we only get this far
+  # once age >= min_age, which is itself the positive dead evidence the fix
+  # requires (either an expired/absent lease on a run_dir we DO have a
+  # mapping for, or no mapping at all but the worktree is provably old).
+  if [ -n "$run_dir" ]; then
+    log "lease for $path ($branch) is not live and the worktree exceeds the grace floor — treating as a finished/dead run"
+  else
+    log "no lease record was ever found for $path ($branch) and the worktree exceeds the grace floor — treating as orphaned"
   fi
 
   if ! ensure_worktree_clean_or_committed "$path" "$branch"; then
@@ -254,7 +470,7 @@ reap_one_worktree() {
     return 0
   fi
 
-  if branch_exists "$branch" && branch_contained_in_target "$branch" "$TARGET_BRANCH"; then
+  if branch_exists "$branch" && branch_contained_in_target "$branch" "$worktree_target"; then
     if git branch -d "$branch" >/dev/null 2>&1; then
       log "deleted contained branch $branch"
       record_deleted "$branch"
@@ -269,39 +485,86 @@ reap_one_worktree() {
 }
 
 reap_worktrees() {
-  local live_file leases_before leases_after leases_released line current_path current_branch
+  local live_file leases_released line current_path current_branch
+  local seen_paths_file pre_leases_file processed_run_dirs_file this_run_dir d canon
   live_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-live-leases.XXXXXX")"
   : > "$live_file"
+  seen_paths_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-seen-worktrees.XXXXXX")"
+  : > "$seen_paths_file"
+  pre_leases_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-pre-leases.XXXXXX")"
+  lease_run_dirs_snapshot > "$pre_leases_file" 2>/dev/null || true
+  processed_run_dirs_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-processed-rundirs.XXXXXX")"
+  : > "$processed_run_dirs_file"
 
-  leases_before="$(lease_file_count)"
   bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-list 2>/dev/null \
     | sed -n 's/^LEASE=//p' > "$live_file" || true
-  leases_after="$(lease_file_count)"
-  leases_released=$(( leases_before - leases_after ))
-  [ "$leases_released" -ge 0 ] || leases_released=0
 
   current_path=""
   current_branch=""
   while IFS= read -r line; do
     case "$line" in
-      worktree\ *) current_path="${line#worktree }"; current_branch="" ;;
+      worktree\ *)
+        current_path="${line#worktree }"; current_branch=""
+        canonical_path "$current_path" >> "$seen_paths_file"
+        ;;
       branch\ refs/heads/bugsweep/*)
         current_branch="${line#branch refs/heads/}"
+        this_run_dir="$(run_dir_for_worktree "$current_path" || true)"
+        [ -n "$this_run_dir" ] && printf '%s\n' "$this_run_dir" >> "$processed_run_dirs_file"
         reap_one_worktree "$current_path" "$current_branch" "$live_file"
         ;;
     esac
   done < <(git worktree list --porcelain)
 
+  # MAJOR D fix (part 2): reconcile the canonical worktrees directory against
+  # what `git worktree list` actually reported. A directory left behind by a
+  # crashed/partial `git worktree add` (or created out-of-band) would
+  # otherwise never be visited by the loop above at all — not even reported —
+  # because it was never git-registered as a worktree. Report it explicitly
+  # rather than staying silent; never touch it (git doesn't know it exists).
+  if [ -d "$BUGSWEEP_WORKTREES_DIR" ]; then
+    for d in "${BUGSWEEP_WORKTREES_DIR}"/*; do
+      [ -d "$d" ] || continue
+      canon="$(canonical_path "$d")"
+      if ! grep -qxF "$canon" "$seen_paths_file" 2>/dev/null; then
+        log "found a directory under BUGSWEEP_WORKTREES_DIR that 'git worktree list' does not know about: $d — reporting, not touching"
+        record_worktree_out_of_scope "$d"
+      fi
+    done
+  fi
+
+  # MEDIUM F fix: count ONLY leases whose run_dir maps to a worktree THIS call
+  # actually processed above — not a repo-wide before/after lease-file-count
+  # delta, which conflated stale-lease reclaims of unrelated in-place-mode
+  # runs (preflight acquires a lease for both worktree AND in-place runs, and
+  # lease-list's reclaim pass is repo-wide) with worktrees this call reports on.
+  leases_released=0
+  if [ -s "$processed_run_dirs_file" ]; then
+    while IFS= read -r this_run_dir; do
+      [ -n "$this_run_dir" ] || continue
+      if grep -qxF "$this_run_dir" "$pre_leases_file" 2>/dev/null \
+        && ! grep -qxF "$this_run_dir" "$live_file" 2>/dev/null; then
+        leases_released=$(( leases_released + 1 ))
+      fi
+    done < "$processed_run_dirs_file"
+  fi
+
   git worktree prune >/dev/null 2>&1 || true
-  rm -f "$live_file" 2>/dev/null || true
+  rm -f "$live_file" "$seen_paths_file" "$pre_leases_file" "$processed_run_dirs_file" 2>/dev/null || true
 
   echo "REAP_RESULT=ok"
+  # BLOCKER B observability: surface the resolved pinned target so callers
+  # (and tests) can verify containment was proven against the real
+  # integration target, never incidental cwd ancestry.
+  [ -n "$TARGET_BRANCH" ] && echo "TARGET_BRANCH=${TARGET_BRANCH}"
   echo "WORKTREES_REMOVED=$(count_list "$WORKTREE_REMOVED_LINES")"
   echo "WORKTREES_PRESERVED=$(count_list "$WORKTREE_PRESERVED_LINES")"
+  echo "WORKTREES_OUT_OF_SCOPE=$(count_list "$WORKTREE_OUT_OF_SCOPE_LINES")"
   echo "BRANCHES_PRUNED=$(count_list "$BRANCH_DELETED_LINES")"
   echo "LEASES_RELEASED=${leases_released}"
   emit_list "WORKTREE_REMOVED" "$WORKTREE_REMOVED_LINES"
   emit_list "WORKTREE_PRESERVED" "$WORKTREE_PRESERVED_LINES"
+  emit_list "WORKTREE_OUT_OF_SCOPE" "$WORKTREE_OUT_OF_SCOPE_LINES"
   emit_list "BRANCH_PRUNED" "$BRANCH_DELETED_LINES"
   emit_list "BRANCH_PRESERVED" "$BRANCH_PRESERVED_LINES"
 }
@@ -398,7 +661,34 @@ discard_branch() {
 }
 
 if [ "$REAP_WORKTREES" = "yes" ]; then
-  reap_worktrees
+  TARGET_BRANCH="$(resolve_pinned_target_branch)"
+
+  # MINOR G fix (bugsweep-8d0 dataloss review): serialize concurrent
+  # --reap-worktrees calls behind a short mkdir lock (the same idiom already
+  # used for meta.json/the shared-index build elsewhere in this repo) so two
+  # reapers racing on the same worktree/branch never both act on it — the
+  # loser used to `git worktree remove`/`git branch -d` fail (the winner
+  # already did it) and then log a stale "preserved" line for a branch that
+  # was, in fact, already correctly deleted. If the lock is busy, skip this
+  # pass entirely rather than proceeding unlocked: a skipped pass is harmless
+  # (the next preflight/finalize call reaps it), which is a better trade than
+  # ever emitting untrustworthy output.
+  reap_lock="${BUGSWEEP_REPO_ROOT:+${BUGSWEEP_REPO_ROOT}/.bugsweep/.reap-worktrees.lock}"
+  # bugsweep_lock_acquire does a plain `mkdir "$lockdir"` (no -p) — its parent
+  # .bugsweep/ dir is not guaranteed to exist yet (e.g. the very first
+  # --reap-worktrees call on a repo with no prior bugsweep activity), so
+  # ensure it exists first or the lock would always fail to acquire and every
+  # call would silently degrade to skipped_locked forever.
+  if [ -n "$reap_lock" ]; then
+    mkdir -p "${BUGSWEEP_REPO_ROOT}/.bugsweep" 2>/dev/null || true
+  fi
+  if [ -n "$reap_lock" ] && bugsweep_lock_acquire "$reap_lock" "${BUGSWEEP_REAP_LOCK_TIMEOUT:-25}"; then
+    reap_worktrees
+    bugsweep_lock_release "$reap_lock"
+    exit 0
+  fi
+  log "reap-worktrees: lock busy or repo root unresolved — skipping this pass (non-fatal; a later preflight/finalize call will retry)."
+  echo "REAP_RESULT=skipped_locked"
   exit 0
 fi
 

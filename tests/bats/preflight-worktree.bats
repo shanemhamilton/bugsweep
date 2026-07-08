@@ -271,7 +271,13 @@ teardown() {
 
   printf 'fix\n' > "${wt}/fix.txt"
   cd "$wt"
-  run bash "$FINALIZE_SH" "$run_dir"
+  # BUGSWEEP_REAP_MIN_AGE_SECONDS=0 disables the bugsweep-8d0 dataloss review's
+  # minimum-age grace floor (default 120s): this worktree is seconds old by
+  # wall-clock time in this test, but a REAL run reaches finalize only after
+  # minutes-to-hours of hunting, well past the floor — the override just keeps
+  # this test's assertions (worktree removed at finalize) meaningful without
+  # sleeping.
+  run env BUGSWEEP_REAP_MIN_AGE_SECONDS=0 bash "$FINALIZE_SH" "$run_dir"
   [ "$status" -eq 0 ]
 
   # No misleading generic warning from git's (correct) refusal to check out a
@@ -303,4 +309,57 @@ PY
   grep -q -- '--worktree' "$SKILL_MD"
   grep -q 'BUGSWEEP_LEASE_PID' "$SKILL_MD"
   grep -q '\.bugsweep/worktrees' "$SKILL_MD"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss review, BLOCKER A: preflight must acquire this run's
+# lease BEFORE `git worktree add` creates the worktree, so a lease-less
+# bugsweep worktree can never legitimately exist (closing the TOCTOU window
+# a concurrent sibling's --reap-worktrees call could otherwise land in).
+# ---------------------------------------------------------------------------
+
+@test "preflight --worktree: the lease exists and the worktree directory does not, at the exact instant before 'git worktree add' runs (BLOCKER A ordering)" {
+  # _PREFLIGHT_TEST_PRE_ADD_HOOK is a test-only hook (see preflight.sh) that
+  # is eval'd inside preflight's own process, in the worktree-mode branch,
+  # immediately after the lease is acquired and immediately before `git
+  # worktree add` executes. It shares preflight's variable scope, so it can
+  # assert on $worktree_path directly. A nonzero exit here surfaces as
+  # preflight's own exit status.
+  run env _PREFLIGHT_TEST_PRE_ADD_HOOK='
+    lease_count=$(find .bugsweep/state/leases -type f -name "*.json" 2>/dev/null | wc -l | tr -d " ")
+    [ "$lease_count" = "1" ] || exit 90
+    [ ! -e "$worktree_path" ] || exit 91
+  ' bash "$PREFLIGHT_SH" --worktree
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "PREFLIGHT_OK"
+}
+
+@test "preflight --worktree: releases the pre-acquired lease and cleans up the run dir if 'git worktree add' fails (BLOCKER A ordering)" {
+  # Force `git worktree add` to fail deterministically (no write permission
+  # on its parent dir) without needing to race a concurrent process. This
+  # exercises the NEW failure-path cleanup: a lease acquired before the add
+  # attempt must not be left behind as an orphan when the add itself fails.
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  chmod 555 "${REPO}/.bugsweep/worktrees"
+
+  run bash "$PREFLIGHT_SH" --worktree
+  local rc="$status"
+
+  chmod 755 "${REPO}/.bugsweep/worktrees"  # restore so teardown can clean up
+
+  [ "$rc" -ne 0 ]
+  echo "$output" | grep -qi "could not create worktree"
+  [ -z "$(find "${REPO}/.bugsweep/state/leases" -type f -name '*.json' 2>/dev/null)" ]
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-8d0 dataloss review, COMPLETENESS: a session-end sweep entry point
+# must exist and be documented (three wiring points: preflight, finalize,
+# and session end).
+# ---------------------------------------------------------------------------
+
+@test "SKILL.md documents a session-end --reap-worktrees sweep for orchestrators" {
+  grep -qi 'session.end' "$SKILL_MD"
+  grep -q -- '--reap-worktrees' "$SKILL_MD"
 }

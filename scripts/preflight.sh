@@ -151,8 +151,16 @@ elif [ ! -f "$exclude_file" ]; then
   printf '.bugsweep/\n' > "$exclude_file"
 fi
 
+# BLOCKER B fix (bugsweep-8d0 dataloss review): run the reaper from the MAIN
+# repo root, mirroring finalize.sh's --reap-worktrees call site exactly, so
+# TARGET_BRANCH/containment can never be resolved from whatever cwd this
+# preflight invocation happens to be running in. A subshell is used (not a
+# permanent `cd`) so preflight's own cwd is never altered for the rest of
+# this script, out of caution — nothing after this point currently depends on
+# the original cwd in worktree mode (every path used below is absolute), but
+# there is no reason to risk it.
 if [ "$bs_worktree" = "yes" ] && [ -f "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" ]; then
-  bash "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" --reap-worktrees >/dev/null 2>&1 \
+  ( cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null && bash "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" --reap-worktrees ) >/dev/null 2>&1 \
     || log "worktree reaper skipped or failed before preflight (non-fatal)."
 fi
 
@@ -171,12 +179,84 @@ deadline_epoch=$(( start_epoch + (max_runtime_minutes * 60) ))
 run_dir="${BUGSWEEP_REPO_ROOT}/.bugsweep/run-${bs_id}"
 mkdir -p "$run_dir"
 
+# --- Persist run state + acquire this run's lease (bugsweep-p74) --------------
+# Factored into a function so BOTH modes can call it, but at DIFFERENT points
+# relative to worktree/branch creation — see the BLOCKER A comment at the
+# worktree-mode call site below for why the ordering matters there.
+_bsw_persist_run_state_and_lease() {
+  cat > "${run_dir}/state.env" <<EOF
+BUGSWEEP_TS=${ts}
+BUGSWEEP_RUN_DIR=${run_dir}
+BUGSWEEP_BRANCH=${branch}
+BUGSWEEP_ORIG_BRANCH=${orig_branch}
+BUGSWEEP_ORIG_HEAD=${orig_head}
+BUGSWEEP_STASH_REF=${stash_ref}
+BUGSWEEP_START_EPOCH=${start_epoch}
+BUGSWEEP_DEADLINE_EPOCH=${deadline_epoch}
+BUGSWEEP_MAX_RUNTIME_MINUTES=${max_runtime_minutes}
+BUGSWEEP_MODE=${bs_mode}
+BUGSWEEP_WORKTREE=${worktree_path}
+EOF
+
+  : > "${run_dir}/ledger.jsonl"
+  printf '{"event":"preflight","ts":"%s","branch":"%s","orig_branch":"%s","stash":"%s","worktree":"%s"}\n' \
+    "$ts" "$branch" "$orig_branch" "$stash_ref" "$worktree_path" >> "${run_dir}/ledger.jsonl"
+
+  # Bookkeeping only: leases COEXIST (this is never a mutex that blocks
+  # sibling subagents). Best-effort; a failure here must never fail preflight.
+  #
+  # Review fix B: the recorded liveness pid is the CALLER's shell ($PPID —
+  # the process that owns the whole run), never this preflight process's own
+  # $$ — preflight exits right after PREFLIGHT_OK, so its pid is dead moments
+  # after the lease is written. Callers that know a better owner (e.g. an
+  # orchestrator session) pass BUGSWEEP_LEASE_PID=$$ explicitly and it is
+  # honored verbatim.
+  #
+  # bugsweep-re9: the recorded pid is IN FACT dead almost immediately in
+  # every agent-driven flow — each Bash tool call is its own fresh shell, so
+  # even a caller that dutifully passes BUGSWEEP_LEASE_PID=$$ is naming a
+  # process that exits the instant that tool call returns, long before the
+  # run itself finishes. The HEARTBEAT (guard.sh's lease-touch on every
+  # iteration) is what actually keeps a long-running run's lease alive past
+  # the grace window — see state.sh for the full rationale.
+  BUGSWEEP_LEASE_PID="${BUGSWEEP_LEASE_PID:-$PPID}" bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-acquire "$run_dir" >/dev/null 2>&1 || true
+}
+
 worktree_path=""
 if [ "$bs_worktree" = "yes" ]; then
   # --- Worktree mode: isolated working dir, NEVER touch the user's tree ------
   branch="bugsweep/${bs_id}"
   worktree_path="${BUGSWEEP_WORKTREES_DIR}/${bs_id}"
   mkdir -p "${BUGSWEEP_WORKTREES_DIR}"
+  stash_ref="none"
+
+  # BLOCKER A fix (bugsweep-8d0 dataloss review): persist state.env (with
+  # BUGSWEEP_WORKTREE already pointing at the not-yet-created path) and
+  # acquire this run's lease BEFORE `git worktree add` creates the worktree.
+  # Pre-fix, `git worktree add` ran up to ~75 lines before lease-acquire — a
+  # concurrent sibling's --reap-worktrees call landing in that window would
+  # see a brand-new, lease-less worktree and (under the old "no lease =>
+  # remove if clean" reaper default) delete it and its branch outright,
+  # destroying a live sibling under the exact 5-subagent concurrency this
+  # bead protects. Ordering it this way means a lease-less bugsweep worktree
+  # can never legitimately exist: from the very first moment the worktree
+  # appears in `git worktree list`, a lease naming it is already on disk.
+  # (The reaper also now has an unconditional minimum-age grace floor and
+  # preserves-by-default on "no lease found" as further defense-in-depth —
+  # see bugsweep-cleanup.sh — but this reordering is what closes the race
+  # at its source.)
+  _bsw_persist_run_state_and_lease
+
+  # TEST-ONLY hook (bugsweep-8d0 dataloss review): lets
+  # tests/bats/preflight-worktree.bats deterministically observe the exact
+  # window this fix closes — the lease/state.env must already exist and the
+  # worktree directory must NOT exist yet at this point. In production this
+  # variable is unset and the line is a no-op. Same test-hook idiom as
+  # _PREFLIGHT_TEST_CONFIG_OVERRIDE above and
+  # BUGSWEEP_LEASE_TOUCH_RACE_SLEEP in state.sh.
+  if [ -n "${_PREFLIGHT_TEST_PRE_ADD_HOOK:-}" ]; then
+    eval "$_PREFLIGHT_TEST_PRE_ADD_HOOK"
+  fi
 
   # Cut a brand-new linked worktree straight from the user's current HEAD, on a
   # brand-new branch. This never reads, stashes, or switches the user's tree —
@@ -187,10 +267,10 @@ if [ "$bs_worktree" = "yes" ]; then
   # view (they are neither lost nor moved — STASH=none reflects that there was
   # never anything to restore for THIS run).
   if ! git worktree add -q -b "$branch" "$worktree_path" "$orig_head" >/dev/null 2>&1; then
+    bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-release "$run_dir" >/dev/null 2>&1 || true
     rm -rf "$worktree_path" "$run_dir" 2>/dev/null || true
     die "Could not create worktree '$worktree_path' on branch '$branch'. No changes made to your working tree."
   fi
-  stash_ref="none"
   log "Working in isolated worktree: $worktree_path (branch: $branch)"
 else
   # --- Default mode: original single-run-per-tree contract, unchanged --------
@@ -214,54 +294,14 @@ else
     die "Could not create branch '$branch'. No changes made."
   fi
   log "Working on throwaway branch: $branch"
+
+  # In-place mode never creates a worktree under BUGSWEEP_WORKTREES_DIR, so
+  # it is never visible to bugsweep-cleanup.sh's reaper in the first place
+  # (reap_one_worktree scopes strictly to that directory) — the lease-before-
+  # branch-creation reordering above is not needed here; this mirrors the
+  # script's pre-existing (byte-for-byte unaffected) in-place-mode contract.
+  _bsw_persist_run_state_and_lease
 fi
-
-# --- Persist run state (consumed by guard.sh / finalize.sh) -------------------
-cat > "${run_dir}/state.env" <<EOF
-BUGSWEEP_TS=${ts}
-BUGSWEEP_RUN_DIR=${run_dir}
-BUGSWEEP_BRANCH=${branch}
-BUGSWEEP_ORIG_BRANCH=${orig_branch}
-BUGSWEEP_ORIG_HEAD=${orig_head}
-BUGSWEEP_STASH_REF=${stash_ref}
-BUGSWEEP_START_EPOCH=${start_epoch}
-BUGSWEEP_DEADLINE_EPOCH=${deadline_epoch}
-BUGSWEEP_MAX_RUNTIME_MINUTES=${max_runtime_minutes}
-BUGSWEEP_MODE=${bs_mode}
-BUGSWEEP_WORKTREE=${worktree_path}
-EOF
-
-: > "${run_dir}/ledger.jsonl"
-printf '{"event":"preflight","ts":"%s","branch":"%s","orig_branch":"%s","stash":"%s","worktree":"%s"}\n' \
-  "$ts" "$branch" "$orig_branch" "$stash_ref" "$worktree_path" >> "${run_dir}/ledger.jsonl"
-
-# --- Acquire this run's lease (bugsweep-p74) -----------------------------------
-# Bookkeeping only: leases COEXIST (this is never a mutex that blocks sibling
-# subagents). Best-effort; a failure here must never fail preflight.
-#
-# Review fix B: the recorded liveness pid is the CALLER's shell ($PPID — the
-# process that owns the whole run), never this preflight process's own $$ —
-# preflight exits right after PREFLIGHT_OK, so its pid is dead moments after
-# the lease is written. Callers that know a better owner (e.g. an orchestrator
-# session) pass BUGSWEEP_LEASE_PID=$$ explicitly and it is honored verbatim.
-#
-# bugsweep-re9: the recorded pid is IN FACT dead almost immediately in every
-# agent-driven flow — each Bash tool call is its own fresh shell, so even a
-# caller that dutifully passes BUGSWEEP_LEASE_PID=$$ is naming a process that
-# exits the instant that tool call returns, long before the run itself
-# finishes. The lease-reclaim grace window (BUGSWEEP_LEASE_GRACE_SECONDS, see
-# state.sh) only prevents premature reclaim WITHIN that window (default
-# 900s) — it does NOT, by itself, prevent reclaim of a run that legitimately
-# takes longer than that, since a dead pid plus an aged lease file is exactly
-# the condition state.sh reclaims on. What actually keeps a long-running run's
-# lease alive past the grace window is the HEARTBEAT: guard.sh calls `state.sh
-# lease-touch` on every iteration (and state.sh's own `persist` does the same),
-# refreshing the lease file's mtime for as long as the run keeps making
-# progress. A run that stops calling guard.sh (crashed, abandoned, or genuinely
-# hung) stops refreshing its lease and is reclaimed once the grace window
-# elapses from its LAST heartbeat — not from lease-acquire time. finalize's
-# lease-release remains the deterministic happy-path teardown.
-BUGSWEEP_LEASE_PID="${BUGSWEEP_LEASE_PID:-$PPID}" bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-acquire "$run_dir" >/dev/null 2>&1 || true
 
 # --- Prime coverage-first scope from prior runs (best-effort, never fatal) -----
 # Reads .bugsweep/state/ and writes ${run_dir}/prior-coverage.json so context-build
