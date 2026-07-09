@@ -272,6 +272,26 @@ _bsw_grace_seconds() {
   printf '%s' "$g"
 }
 
+# bugsweep-l2r: minimum age (seconds) before an orphaned
+# bugsweep-integrate-results.* temp dir (see sweep_orphaned_integrate_results_dirs
+# below) is even considered for removal. Deliberately a STRICT MULTIPLE of the
+# plain lease-grace window, never exactly grace: these dirs are swept far less
+# often than worktrees are reaped (only on the --reap-worktrees session-end
+# path, and integrate.sh's own exit trap already closes the leak at the
+# source per bugsweep-l2r Part A), so the bar for "safe to remove a
+# pre-existing orphan" is set higher on purpose. Overridable for tests via
+# BUGSWEEP_INTEGRATE_RESULTS_MIN_AGE_SECONDS; sanitised to a non-negative
+# integer, falling back to the multiple on any garbage.
+_bsw_integrate_results_min_age_seconds() {
+  local grace v
+  grace="$(_bsw_grace_seconds)"
+  v="${BUGSWEEP_INTEGRATE_RESULTS_MIN_AGE_SECONDS:-}"
+  case "$v" in
+    ''|*[!0-9]*) printf '%s' $(( grace * 4 )) ;;
+    *) printf '%s' "$v" ;;
+  esac
+}
+
 # Minimum-age floor helper. Returns 0 (true — "younger than min_age, must be
 # preserved") when the worktree's age is unknown (ambiguous -> preserve, same
 # rule as everywhere else) or younger than min_age; returns 1 only when the
@@ -649,6 +669,86 @@ reap_one_worktree() {
   fi
 }
 
+# bugsweep-l2r (Part B): belt-and-suspenders sweep for PRE-EXISTING orphaned
+# bugsweep-integrate-results.* temp dirs (scripts/integrate.sh's no-run-dir
+# mktemp output — see that script's own exit trap, bugsweep-l2r Part A, which
+# now stops the leak at the source for every NEW invocation; this sweep only
+# ever cleans up dirs that predate that fix, or survived an abnormal exit the
+# trap could never catch, e.g. SIGKILL). Scoped to the single directory
+# passed in by the caller (BUGSWEEP_WORKTREES_DIR below) — the documented
+# "p74 topology" location where concurrent sibling integrate.sh invocations,
+# each cwd'd into its own worktree, mint these dirs as CWD-adjacent siblings
+# of the worktrees themselves.
+#
+# Reap-eligibility is a strict conjunction, preserve-biased (same philosophy
+# as reap_one_worktree): a candidate is removed ONLY when ALL of:
+#   (1) its basename matches the EXACT bugsweep-integrate-results.* prefix
+#       (never a broader glob — a non-matching sibling, however similarly
+#       named, is never even inspected);
+#   (2) it is NOT a symlink (mktemp -d only ever creates a real directory;
+#       anything else with this name is anomalous -> preserve);
+#   (3) it holds a completed integrate-results.json — the file
+#       write_results_json() in integrate.sh writes as its LAST content
+#       write. Its absence means the run is still in progress or crashed
+#       before finishing -> hard SKIP regardless of age (an in-progress
+#       marker would SKIP the same way if a future writer ever drops one;
+#       .in-progress is checked explicitly for that forward-compatible case);
+#   (4) its own mtime — which advances whenever an entry inside it is
+#       created or removed, including the results.json write itself, so this
+#       doubles as "no recent write activity" — is older than a GENEROUS
+#       floor: a strict MULTIPLE of the plain lease-grace window, never
+#       exactly grace (_bsw_integrate_results_min_age_seconds above).
+# Any ambiguity (unreadable mtime, unreadable dir) -> PRESERVE, silently
+# skipped. Every actual removal is logged individually for audit.
+sweep_orphaned_integrate_results_dirs() {
+  local scan_dir="$1" d base mtime now age min_age
+
+  [ -n "$scan_dir" ] && [ -d "$scan_dir" ] || return 0
+  min_age="$(_bsw_integrate_results_min_age_seconds)"
+
+  for d in "${scan_dir}"/*; do
+    [ -e "$d" ] || continue
+    base="$(basename "$d")"
+    case "$base" in
+      bugsweep-integrate-results.*) : ;;
+      *) continue ;;
+    esac
+
+    if [ -L "$d" ] || [ ! -d "$d" ]; then
+      log "preserving $d: not a plain directory (mktemp -d never creates a symlink) — ambiguous, not touching"
+      continue
+    fi
+
+    if [ -f "${d}/.in-progress" ]; then
+      log "preserving $d: in-progress marker present"
+      continue
+    fi
+
+    if [ ! -f "${d}/integrate-results.json" ]; then
+      log "preserving $d: no completed integrate-results.json (still in progress, or crashed before finishing)"
+      continue
+    fi
+
+    mtime="$(_bsw_path_mtime "$d")"
+    if [ -z "$mtime" ]; then
+      log "preserving $d: could not read mtime — ambiguous, not touching"
+      continue
+    fi
+    now="$(date +%s)"
+    age=$(( now - mtime ))
+    if [ "$age" -lt "$min_age" ]; then
+      log "preserving $d: only ${age}s old, below the ${min_age}s sweep floor"
+      continue
+    fi
+
+    if rm -rf "$d" 2>/dev/null; then
+      log "swept orphaned integrate-results temp dir $d (age ${age}s >= floor ${min_age}s, completed integrate-results.json present, no in-progress marker)"
+    else
+      log "could not remove $d — preserving"
+    fi
+  done
+}
+
 # bugsweep-gqw item 2: reap_worktrees() is invoked by its caller as
 # `reap_worktrees || reap_status=$?` so the reap lock is ALWAYS structurally
 # released (MINOR 4) even when this function fails. That `||` context
@@ -760,9 +860,20 @@ reap_worktrees() {
   # otherwise never be visited by the loop above at all — not even reported —
   # because it was never git-registered as a worktree. Report it explicitly
   # rather than staying silent; never touch it (git doesn't know it exists).
+  #
+  # bugsweep-l2r: bugsweep-integrate-results.* entries are EXCLUDED from this
+  # generic reconciliation — they are never git worktrees and are handled by
+  # their own dedicated sweep (sweep_orphaned_integrate_results_dirs) just
+  # below, with its own age/liveness conjunction and audit log lines. Without
+  # this exclusion every one of them (removed or preserved) would ALSO get
+  # reported here as WORKTREE_OUT_OF_SCOPE, which is redundant and would
+  # change the meaning of that counter for everyone parsing it.
   if [ -d "$BUGSWEEP_WORKTREES_DIR" ]; then
     for d in "${BUGSWEEP_WORKTREES_DIR}"/*; do
       [ -d "$d" ] || continue
+      case "$(basename "$d")" in
+        bugsweep-integrate-results.*) continue ;;
+      esac
       canon="$(canonical_path "$d")"
       if ! grep -qxF "$canon" "$seen_paths_file" 2>/dev/null; then
         log "found a directory under BUGSWEEP_WORKTREES_DIR that 'git worktree list' does not know about: $d — reporting, not touching"
@@ -770,6 +881,11 @@ reap_worktrees() {
       fi
     done
   fi
+
+  # bugsweep-l2r (Part B): sweep pre-existing orphaned integrate.sh results
+  # temp dirs under the same canonical worktrees directory (see the function
+  # doc comment above reap_worktrees for the full eligibility rule).
+  sweep_orphaned_integrate_results_dirs "$BUGSWEEP_WORKTREES_DIR"
 
   # MEDIUM F fix: count ONLY leases whose run_dir maps to a worktree THIS call
   # actually processed above — not a repo-wide before/after lease-file-count

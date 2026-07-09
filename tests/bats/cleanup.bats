@@ -978,3 +978,117 @@ teardown() {
   rm -f "${lockdir}/pid"
   rmdir "$lockdir" 2>/dev/null || true
 }
+
+# ---------------------------------------------------------------------------
+# bugsweep-l2r (Part B): belt-and-suspenders sweep for PRE-EXISTING orphaned
+# bugsweep-integrate-results.* temp dirs. Part A (scripts/integrate.sh) now
+# stops the leak at the source via its own exit trap, but this reaper still
+# needs to clean up dirs that predate that fix (or survived a SIGKILL the
+# trap could never catch). Scoped to BUGSWEEP_WORKTREES_DIR — the documented
+# "p74 topology" location where concurrent sibling integrate.sh invocations
+# (each cwd'd into its own worktree) create these dirs as CWD-adjacent
+# siblings of the worktrees themselves. Reap requires the conjunction of (1)
+# a completed integrate-results.json, (2) no in-progress marker, and (3) age
+# past a GENEROUS floor — a strict multiple of the plain lease-grace window,
+# never exactly grace. Any ambiguity -> preserve.
+# ---------------------------------------------------------------------------
+
+_make_orphan_results_dir() {
+  local name="$1" have_json="${2:-yes}" in_progress="${3:-no}"
+  local dir="${REPO}/.bugsweep/worktrees/bugsweep-integrate-results.${name}"
+  mkdir -p "$dir"
+  if [ "$have_json" = "yes" ]; then
+    printf '{"result":"complete"}\n' > "${dir}/integrate-results.json"
+  fi
+  if [ "$in_progress" = "yes" ]; then
+    : > "${dir}/.in-progress"
+  fi
+  printf '%s\n' "$dir"
+}
+
+@test "reap-worktrees: sweeps an OLD orphaned bugsweep-integrate-results.* dir with a completed json and no in-progress marker" {
+  local orphan
+  orphan="$(_make_orphan_results_dir "OLD1")"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_INTEGRATE_RESULTS_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  [ ! -d "$orphan" ]
+  # Auditable per-removal log line.
+  echo "$output" | grep -qi "swept.*${orphan}\|${orphan}.*swept"
+}
+
+@test "reap-worktrees: preserves a RECENT bugsweep-integrate-results.* dir (below the default generous sweep floor)" {
+  local orphan
+  orphan="$(_make_orphan_results_dir "FRESH1")"
+
+  # No age-floor override: the dir was just created, so it is far younger
+  # than the default floor (a strict multiple of the lease-grace window).
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  [ -d "$orphan" ]
+  [ -f "${orphan}/integrate-results.json" ]
+}
+
+@test "reap-worktrees: preserves a bugsweep-integrate-results.* dir with an in-progress marker present, even when old" {
+  local orphan
+  orphan="$(_make_orphan_results_dir "INPROG1" "yes" "yes")"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_INTEGRATE_RESULTS_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  [ -d "$orphan" ]
+  [ -f "${orphan}/.in-progress" ]
+}
+
+@test "reap-worktrees: preserves a bugsweep-integrate-results.* dir with NO completed integrate-results.json, even when old" {
+  local orphan
+  orphan="$(_make_orphan_results_dir "NOJSON1" "no")"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_INTEGRATE_RESULTS_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  [ -d "$orphan" ]
+  [ ! -f "${orphan}/integrate-results.json" ]
+}
+
+@test "reap-worktrees: never touches a sibling directory that does not match the exact bugsweep-integrate-results.* prefix" {
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  local decoy1="${REPO}/.bugsweep/worktrees/bugsweep-integrate-result.DECOY"    # missing trailing 's'
+  local decoy2="${REPO}/.bugsweep/worktrees/notbugsweep-integrate-results.DECOY"
+  mkdir -p "$decoy1" "$decoy2"
+  printf '{"result":"complete"}\n' > "${decoy1}/integrate-results.json"
+  printf '{"result":"complete"}\n' > "${decoy2}/integrate-results.json"
+  touch -t 202001010000 "$decoy1" "$decoy2"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_INTEGRATE_RESULTS_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  [ -d "$decoy1" ]
+  [ -d "$decoy2" ]
+}
+
+@test "reap-worktrees: sweep floor is a strict multiple of the grace window, not exactly grace (an orphan past grace but under the floor is preserved)" {
+  local old_orphan young_orphan
+
+  old_orphan="$(_make_orphan_results_dir "PASTGRACE")"
+  sleep 3
+  young_orphan="$(_make_orphan_results_dir "WITHINGRACE")"
+  sleep 2
+
+  # grace=1s: if the floor were exactly grace(1s), BOTH dirs (now 5s and 2s
+  # old respectively) would be swept. The default floor is a strict multiple
+  # of grace (> 1s) — only the dir past that higher bar may be swept.
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_LEASE_GRACE_SECONDS=1 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  [ ! -d "$old_orphan" ]
+  [ -d "$young_orphan" ]
+}

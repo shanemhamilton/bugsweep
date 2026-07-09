@@ -379,6 +379,12 @@ fi
 # ordering is a TOCTOU against a peer's fresh dir. Cleanup of these sidecar temp
 # dirs is the orchestrator/teardown's job (bead 8d0 owns unattended-run
 # reclamation) — exactly like --run-dir, where the caller owns the directory.
+# This script must NOT self-delete the dir it advertised on stdout as
+# RESULTS_JSON=: a caller reads that path AFTER integrate.sh returns, so an
+# exit-time rm would make the advertised path point at a vanished file
+# (bugsweep-l2r review). Pre-existing orphans on this path are swept later by
+# bugsweep-cleanup.sh --reap-worktrees; the orchestrator avoids the leak
+# entirely by passing --run-dir (k3f doc convention).
 results_json_path=""
 if [ -n "$RUN_DIR" ]; then
   results_json_path="${RUN_DIR}/integrate-results.json"
