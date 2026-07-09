@@ -339,6 +339,228 @@ JSON
 }
 _write_post_finalize_handoff
 
+# --- Cross-repo/night operator rollup (bugsweep-6w8) --------------------------
+# nightshift/automation-optimizer runs bugsweep across many repos overnight;
+# without a rollup, each run only leaves its own report.md + this run's
+# post-finalize-handoff.json, so an operator sweeping N repos gets N places to
+# check instead of one inbox. When BUGSWEEP_ROLLUP_FILE is set, append one
+# compact, dated digest line per run:
+#
+#   <date> <repo> <branch> - confirmed C/H/M/L - fixed F quarantined Q -
+#     coverage x/y - <stop_reason> - ACTION: land|discard|review (<report path>)
+#
+# OFF by default: BUGSWEEP_ROLLUP_FILE unset is a complete no-op (no file
+# created, no error) — this is opt-in nightshift plumbing, not bugsweep-core
+# behavior.
+#
+# Idempotent per run, keyed by RUN_DIR: a companion sentinel file
+# "<run_dir>/.rollup-appended" is written right after a successful append, and
+# its presence short-circuits every later finalize call on the SAME run_dir —
+# so a retried/resumed finalize never duplicates the line, even across a
+# different BUGSWEEP_ROLLUP_FILE value between calls.
+#
+# ACTION is derived from run-summary.json's own arrays, most-actionable first:
+#   fixed[] non-empty                                    -> land    (there is
+#                                                           already-committed
+#                                                           fix work worth
+#                                                           merging)
+#   else confirmed_unfixed[] or quarantined[] non-empty  -> review  (something
+#                                                           was found but
+#                                                           needs a human call
+#                                                           before it lands)
+#   else                                                  -> discard (a clean
+#                                                           run — nothing to
+#                                                           do)
+#
+# JSON reads mirror common.sh's cfg_get tiering: jq first, then have_python
+# (python3 stdlib json), then a minimal grep fallback — never hard-require
+# python3 (bare-machine contract).
+_rollup_sanitize_int() {
+  case "${1:-}" in
+    ''|*[!0-9]*) printf '0' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# Tier-3 (no jq, no python3) element count for a top-level JSON string array
+# "<key>": [...] in a run-summary.json this codebase itself produced. `grep -o`
+# only matches within a single line, so it cannot span the multi-line
+# json.dumps(indent=2) shape bench/scorer/run_summary.py emits for a non-empty
+# array (one quoted element per line, between a "<key>": [ line and a closing
+# ] line) — this awk pass reads line-by-line instead, so it handles BOTH real
+# shapes: the compact "<key>": [] (empty) summarize.sh's own degraded tier
+# also emits, and the multi-line non-empty form. It is NOT a general JSON
+# array parser (e.g. a hypothetical single-line non-empty array would
+# mis-count) — sufficient because those are the only two shapes this
+# codebase's own producers ever write.
+_rollup_grep_array_len() {
+  local key="$1" file="$2"
+  awk -v k="\"${key}\":" '
+    $0 ~ k {
+      if ($0 ~ /\[\]/) { print 0; exit }
+      if ($0 ~ /\[/) { collecting=1; count=0; next }
+    }
+    collecting && /\]/ { print count; exit }
+    collecting && /"/ { count++ }
+  ' "$file" 2>/dev/null
+}
+
+_write_rollup_digest() {
+  local rollup_file="${BUGSWEEP_ROLLUP_FILE:-}"
+  [ -n "$rollup_file" ] || return 0                     # default off: true no-op
+
+  local sentinel="${run_dir}/.rollup-appended"
+  [ -f "$sentinel" ] && return 0                        # idempotent per RUN_DIR
+
+  local summary="${run_dir}/run-summary.json"
+  if [ ! -f "$summary" ]; then
+    log "WARNING: rollup skipped — ${summary} is missing (summarize.sh may have failed)."
+    return 0
+  fi
+
+  local critical high medium low fixed_n quarantined_n confirmed_n covered total status stop_reason
+  critical=0; high=0; medium=0; low=0
+  fixed_n=0; quarantined_n=0; confirmed_n=0
+  covered=0; total=0
+  status=""; stop_reason=""
+
+  if command -v jq >/dev/null 2>&1; then
+    critical="$(jq -r '.counts.critical // 0'                   "$summary" 2>/dev/null || printf 0)"
+    high="$(jq -r '.counts.high // 0'                            "$summary" 2>/dev/null || printf 0)"
+    medium="$(jq -r '.counts.medium // 0'                        "$summary" 2>/dev/null || printf 0)"
+    low="$(jq -r '.counts.low // 0'                               "$summary" 2>/dev/null || printf 0)"
+    fixed_n="$(jq -r '(.fixed // []) | length'                    "$summary" 2>/dev/null || printf 0)"
+    quarantined_n="$(jq -r '(.quarantined // []) | length'        "$summary" 2>/dev/null || printf 0)"
+    confirmed_n="$(jq -r '(.confirmed_unfixed // []) | length'    "$summary" 2>/dev/null || printf 0)"
+    covered="$(jq -r '.coverage.covered // 0'                     "$summary" 2>/dev/null || printf 0)"
+    total="$(jq -r '.coverage.total // 0'                         "$summary" 2>/dev/null || printf 0)"
+    status="$(jq -r '.status // ""'                               "$summary" 2>/dev/null || printf '')"
+    stop_reason="$(jq -r '.stop_reason // ""'                     "$summary" 2>/dev/null || printf '')"
+  elif have_python; then
+    local py_out
+    py_out="$(python3 - "$summary" <<'PY' 2>/dev/null || true
+import json, sys
+
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    d = {}
+
+
+def as_int(x):
+    return x if isinstance(x, int) else 0
+
+
+counts = d.get("counts") or {}
+coverage = d.get("coverage") or {}
+for value in (
+    as_int(counts.get("critical")),
+    as_int(counts.get("high")),
+    as_int(counts.get("medium")),
+    as_int(counts.get("low")),
+    len(d.get("fixed") or []),
+    len(d.get("quarantined") or []),
+    len(d.get("confirmed_unfixed") or []),
+    as_int(coverage.get("covered")),
+    as_int(coverage.get("total")),
+    d.get("status") or "",
+    d.get("stop_reason") or "",
+):
+    print(value)
+PY
+)"
+    critical="$(printf      '%s\n' "$py_out" | sed -n '1p')"
+    high="$(printf          '%s\n' "$py_out" | sed -n '2p')"
+    medium="$(printf        '%s\n' "$py_out" | sed -n '3p')"
+    low="$(printf           '%s\n' "$py_out" | sed -n '4p')"
+    fixed_n="$(printf       '%s\n' "$py_out" | sed -n '5p')"
+    quarantined_n="$(printf '%s\n' "$py_out" | sed -n '6p')"
+    confirmed_n="$(printf   '%s\n' "$py_out" | sed -n '7p')"
+    covered="$(printf       '%s\n' "$py_out" | sed -n '8p')"
+    total="$(printf         '%s\n' "$py_out" | sed -n '9p')"
+    status="$(printf        '%s\n' "$py_out" | sed -n '10p')"
+    stop_reason="$(printf   '%s\n' "$py_out" | sed -n '11p')"
+  else
+    # Tier 3: minimal grep/sed fallback for the bare-machine contract (no jq,
+    # no python3). Handles the flat-scalar shapes both the real reducer and
+    # summarize.sh's degraded tier emit; a miss just defaults to 0/"" below —
+    # never fatal. Every pipeline ends in `|| true`: under this script's
+    # `set -euo pipefail`, `grep -o` finding no match exits non-zero and
+    # `pipefail` propagates that through `head`/`sed` even though THEY
+    # succeed on the resulting empty input — without `|| true` a legitimately
+    # absent field (e.g. stop_reason is JSON null, not a string, on every
+    # "complete" run) would abort finalize.sh entirely instead of degrading
+    # to "" here.
+    critical="$(grep -o '"critical"[[:space:]]*:[[:space:]]*[0-9]*'          "$summary" 2>/dev/null | grep -o '[0-9]*$' | head -1 || true)"
+    high="$(    grep -o '"high"[[:space:]]*:[[:space:]]*[0-9]*'              "$summary" 2>/dev/null | grep -o '[0-9]*$' | head -1 || true)"
+    medium="$(  grep -o '"medium"[[:space:]]*:[[:space:]]*[0-9]*'            "$summary" 2>/dev/null | grep -o '[0-9]*$' | head -1 || true)"
+    low="$(     grep -o '"low"[[:space:]]*:[[:space:]]*[0-9]*'               "$summary" 2>/dev/null | grep -o '[0-9]*$' | head -1 || true)"
+    covered="$( grep -o '"covered"[[:space:]]*:[[:space:]]*[0-9]*'           "$summary" 2>/dev/null | grep -o '[0-9]*$' | head -1 || true)"
+    total="$(   grep -o '"total"[[:space:]]*:[[:space:]]*[0-9]*'             "$summary" 2>/dev/null | grep -o '[0-9]*$' | head -1 || true)"
+    # `|| var=0`: these are plain (non-`local`) re-assignments, so under this
+    # script's `set -euo pipefail` a non-zero from the helper (its `awk` erroring
+    # on a vanished/unreadable summary — a TOCTOU after the line-416 existence
+    # check, or a permission change) would otherwise abort the whole assignment
+    # statement. Belt-and-suspenders with the isolated call site (see the tail of
+    # this script): the digest must never be able to propagate a failure into
+    # finalize's trust-critical teardown.
+    fixed_n="$(_rollup_grep_array_len       fixed             "$summary")" || fixed_n=0
+    quarantined_n="$(_rollup_grep_array_len quarantined       "$summary")" || quarantined_n=0
+    confirmed_n="$(_rollup_grep_array_len   confirmed_unfixed "$summary")" || confirmed_n=0
+    status="$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$summary" 2>/dev/null | head -1 | sed 's/.*:[[:space:]]*"//; s/"$//' || true)"
+    stop_reason="$(grep -o '"stop_reason"[[:space:]]*:[[:space:]]*"[^"]*"' "$summary" 2>/dev/null | head -1 | sed 's/.*:[[:space:]]*"//; s/"$//' || true)"
+  fi
+
+  critical="$(_rollup_sanitize_int "$critical")"
+  high="$(_rollup_sanitize_int "$high")"
+  medium="$(_rollup_sanitize_int "$medium")"
+  low="$(_rollup_sanitize_int "$low")"
+  fixed_n="$(_rollup_sanitize_int "$fixed_n")"
+  quarantined_n="$(_rollup_sanitize_int "$quarantined_n")"
+  confirmed_n="$(_rollup_sanitize_int "$confirmed_n")"
+  covered="$(_rollup_sanitize_int "$covered")"
+  total="$(_rollup_sanitize_int "$total")"
+
+  local action
+  if [ "$fixed_n" -gt 0 ]; then
+    action="land"
+  elif [ "$confirmed_n" -gt 0 ] || [ "$quarantined_n" -gt 0 ]; then
+    action="review"
+  else
+    action="discard"
+  fi
+
+  # <stop_reason> slot: prefer the actual stop_reason text; a completed run's
+  # stop_reason is null/empty, so fall back to status ("complete") — still
+  # meaningful context for the digest line.
+  local reason_text="${stop_reason:-$status}"
+  [ -n "$reason_text" ] || reason_text="unknown"
+
+  local repo_name
+  repo_name="$(basename "${BUGSWEEP_REPO_ROOT:-$(pwd)}")"
+
+  local line
+  line="$(printf '%s %s %s - confirmed %s/%s/%s/%s - fixed %s quarantined %s - coverage %s/%s - %s - ACTION: %s (%s)' \
+    "$BUGSWEEP_TS" "$repo_name" "$BUGSWEEP_BRANCH" \
+    "$critical" "$high" "$medium" "$low" \
+    "$fixed_n" "$quarantined_n" \
+    "$covered" "$total" \
+    "$reason_text" "$action" "${run_dir}/report.md")"
+
+  # `>>` append of one short line is atomic under PIPE_BUF on every POSIX
+  # filesystem bugsweep runs on, so concurrent finalize calls targeting the
+  # SAME rollup file across different repos/run_dirs never interleave.
+  if printf '%s\n' "$line" >> "$rollup_file" 2>/dev/null; then
+    : > "$sentinel" 2>/dev/null || true
+  else
+    log "WARNING: could not append rollup digest to BUGSWEEP_ROLLUP_FILE=${rollup_file}."
+  fi
+}
+# NOTE: _write_rollup_digest is deliberately NOT invoked here. The rollup is a
+# cosmetic, default-OFF operator convenience; it must run AFTER the
+# trust-critical teardown (branch-restore + stash-pop) below, at the very tail
+# of this script — never before it. See the invocation at the end of the file.
+
 # Return the user to their original branch (the bugsweep branch is preserved).
 #
 # Review fix E (bugsweep-p74): in worktree mode there is nothing to return or
@@ -400,3 +622,16 @@ echo "REPORT=${run_dir}/report.md"
 echo "RUN_SUMMARY=${_bugsweep_run_summary_path:-${run_dir}/run-summary.json}"
 echo "POST_FINALIZE_HANDOFF=${run_dir}/post-finalize-handoff.json"
 echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
+
+# Cross-repo/night operator rollup digest — LAST, and isolated. This runs only
+# AFTER the trust-critical teardown above (branch-restore + stash-pop + worktree
+# reaper) and after the stdout contract, because it is the least-important,
+# most-fragile step: a cosmetic, default-OFF operator convenience that must
+# NEVER be able to strand the user on the bugsweep branch. It only READS
+# run-summary.json (already on disk, under the main repo's .bugsweep/ — never in
+# the reaped worktree) plus env (BUGSWEEP_BRANCH/TS/REPO_ROOT), none of which the
+# teardown touches, so running it last is safe. The `|| log` makes it
+# unabortable: any failure inside is swallowed to a warning so it can never
+# propagate to finalize's exit status. Defense in depth with the internal
+# `|| var=0` guards above.
+_write_rollup_digest || log "WARNING: rollup digest emission failed (non-fatal; run still finalized)."

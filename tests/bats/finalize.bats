@@ -62,6 +62,28 @@ _make_recon_json() {
 JSON
 }
 
+# Appends one FINDING_EVENTS ledger line (see bench/scorer/run_summary.py) so
+# summarize.sh's real reduction produces known counts/fixed/quarantined/
+# confirmed_unfixed for the rollup-digest tests below.
+_append_finding_event() {
+  local run_dir="$1" event="$2" bug_id="$3" severity="$4"
+  printf '{"event":"%s","file":"a.py","bug_id":"%s","severity":"%s","category":"security","line":1,"rationale":"r"}\n' \
+    "$event" "$bug_id" "$severity" >> "${run_dir}/ledger.jsonl"
+}
+
+# A real (non-stub) report.md, so finalize.sh's status derivation resolves to
+# "complete" (stop_reason null) rather than "stalled"/"partial".
+_make_real_report() {
+  local run_dir="$1"
+  cat > "${run_dir}/report.md" <<'REPORT'
+# bugsweep report
+**Branch:** bugsweep/x   **Mode:** fix
+
+## Summary
+- Confirmed bugs: 2
+REPORT
+}
+
 # ---------------------------------------------------------------------------
 # Setup / teardown
 # ---------------------------------------------------------------------------
@@ -232,4 +254,191 @@ PY
     and (.final_readback_commands | type == "array")
   ' "$handoff"
   [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Cross-repo/night operator rollup (bugsweep-6w8)
+# ---------------------------------------------------------------------------
+
+@test "finalize: rollup digest line is appended with correct fields when BUGSWEEP_ROLLUP_FILE is set" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  _make_real_report "$RUN_DIR"
+  _append_finding_event "$RUN_DIR" "fix_committed" "BUG-1" "critical"
+  _append_finding_event "$RUN_DIR" "fix_committed" "BUG-2" "high"
+  _append_finding_event "$RUN_DIR" "quarantine"    "BUG-3" "medium"
+  _append_finding_event "$RUN_DIR" "confirmed"     "BUG-4" "low"
+
+  local rollup="${BATS_TMP}/rollup.log"
+  BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  [ -f "$rollup" ]
+  local repo_name
+  repo_name="$(basename "$REPO")"
+  local expected="20991231T000000Z ${repo_name} bugsweep/20991231T000000Z - confirmed 1/1/1/1 - fixed 2 quarantined 1 - coverage 5/5 - complete - ACTION: land (${RUN_DIR}/report.md)"
+  local actual
+  actual="$(cat "$rollup")"
+  [ "$actual" = "$expected" ]
+}
+
+@test "finalize: rollup ACTION is 'review' when nothing was fixed but something was confirmed/quarantined" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  _make_real_report "$RUN_DIR"
+  _append_finding_event "$RUN_DIR" "quarantine" "BUG-1" "medium"
+
+  local rollup="${BATS_TMP}/rollup.log"
+  BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  grep -q -- '- ACTION: review (' "$rollup"
+}
+
+@test "finalize: rollup ACTION is 'discard' and stop_reason falls back to status when nothing was found" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  _make_real_report "$RUN_DIR"
+
+  local rollup="${BATS_TMP}/rollup.log"
+  BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  local repo_name
+  repo_name="$(basename "$REPO")"
+  local expected="20991231T000000Z ${repo_name} bugsweep/20991231T000000Z - confirmed 0/0/0/0 - fixed 0 quarantined 0 - coverage 5/5 - complete - ACTION: discard (${RUN_DIR}/report.md)"
+  local actual
+  actual="$(cat "$rollup")"
+  [ "$actual" = "$expected" ]
+}
+
+@test "finalize: rollup digest line is NOT duplicated on re-finalize (idempotent per RUN_DIR)" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  _make_real_report "$RUN_DIR"
+  _append_finding_event "$RUN_DIR" "fix_committed" "BUG-1" "critical"
+
+  local rollup="${BATS_TMP}/rollup.log"
+  BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  local lines
+  lines="$(wc -l < "$rollup" | tr -d ' ')"
+  [ "$lines" -eq 1 ]
+}
+
+@test "finalize: BUGSWEEP_ROLLUP_FILE unset is a complete no-op (no file created, no error)" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  _make_real_report "$RUN_DIR"
+
+  local rollup="${BATS_TMP}/rollup-should-not-exist.log"
+  unset BUGSWEEP_ROLLUP_FILE || true
+
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  [ ! -f "$rollup" ]
+  [ ! -f "${RUN_DIR}/.rollup-appended" ]
+}
+
+@test "finalize: rollup digest works on the bare-machine (no jq, no python3) grep/awk fallback tier" {
+  # Regression test: the Tier-3 grep fallback previously aborted finalize.sh
+  # entirely (under this script's `set -euo pipefail`) whenever a field was
+  # legitimately absent — e.g. stop_reason is JSON null (not a string) on
+  # every "complete" run, so `grep -o '"stop_reason":..."[^"]*"'` finds no
+  # match, exits non-zero, and pipefail propagated that failure through the
+  # rest of the pipe even though `head`/`sed` themselves succeeded. Forces
+  # BOTH jq and python3 out of PATH (have_python() is separately gated by
+  # BUGSWEEP_NO_PYTHON) to exercise the real grep/awk-only code path end to
+  # end, and asserts finalize.sh still exits 0 and appends a well-formed line.
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  _make_real_report "$RUN_DIR"
+
+  local fakebin="${BATS_TMP}/fakebin"
+  mkdir -p "$fakebin"
+  for tool in bash git grep sed awk cat mkdir date tr wc head cut basename dirname mktemp rm cp mv find true false printf test env sh; do
+    real="$(command -v "$tool" 2>/dev/null || true)"
+    [ -n "$real" ] && ln -sf "$real" "${fakebin}/${tool}"
+  done
+
+  local rollup="${BATS_TMP}/rollup.log"
+  PATH="$fakebin" BUGSWEEP_NO_PYTHON=1 BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  [ -f "$rollup" ]
+  local repo_name
+  repo_name="$(basename "$REPO")"
+  # summarize.sh ALSO degrades under BUGSWEEP_NO_PYTHON=1 (it has no jq tier
+  # of its own), so run-summary.json comes out as the minimal degraded shape
+  # (counts/fixed/quarantined/confirmed_unfixed all zero/empty) — this test
+  # asserts the grep/awk tier reads that real degraded shape correctly
+  # (notably: an EMPTY array must count as 0, not 1 — the original bug
+  # miscounted the JSON key name itself as an array element).
+  local expected="20991231T000000Z ${repo_name} bugsweep/20991231T000000Z - confirmed 0/0/0/0 - fixed 0 quarantined 0 - coverage 5/5 - complete - ACTION: discard (${RUN_DIR}/report.md)"
+  local actual
+  actual="$(cat "$rollup")"
+  [ "$actual" = "$expected" ]
+}
+
+@test "finalize: a failing rollup digest NEVER strands the user on the bugsweep branch (trust contract)" {
+  # ROBUSTNESS BLOCKER regression (bugsweep-6w8 review): the rollup digest is a
+  # cosmetic, default-OFF operator convenience. It must be structurally
+  # incapable of aborting finalize.sh before the trust-critical teardown
+  # (branch-restore + stash-pop) runs — otherwise a failure inside it strands
+  # the user on the throwaway bugsweep branch with their stash unpopped.
+  #
+  # Reproduction of a real failure mode: an unreadable run-summary.json (a
+  # permission change, or a TOCTOU vanish after the digest's own existence
+  # check) combined with the no-jq/no-python3 grep tier, where the array-length
+  # helper's `awk` errors (EACCES) with a NON-ZERO exit. Before the fix, that
+  # non-zero propagated through a bare (non-`local`) command-substitution
+  # assignment under `set -euo pipefail`, aborting the WHOLE script at a call
+  # site placed BEFORE the branch-restore — leaving the user on the bugsweep
+  # branch. After the fix (internal `|| var=0` guards + an isolated
+  # `_write_rollup_digest || log` call moved to the very tail, after teardown),
+  # finalize must ALWAYS return the user to their original branch and exit 0.
+  if [ "$(id -u)" -eq 0 ]; then
+    skip "runs as root: chmod 000 does not deny the owner, so the failure cannot be provoked"
+  fi
+
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  _make_real_report "$RUN_DIR"
+
+  # Pre-place an UNREADABLE run-summary.json. summarize.sh (also degraded under
+  # BUGSWEEP_NO_PYTHON=1) cannot open-for-write a mode-000 file it owns, so it
+  # fails and leaves this unreadable file in place — exactly the state the
+  # digest then trips over when its grep-tier awk tries to read it.
+  printf '{"counts":{"critical":0,"high":0,"medium":0,"low":0},"fixed":[],"quarantined":[],"confirmed_unfixed":[],"coverage":{"covered":5,"total":5},"status":"complete","stop_reason":null}\n' \
+    > "${RUN_DIR}/run-summary.json"
+  chmod 000 "${RUN_DIR}/run-summary.json"
+
+  # Confirm the run really starts ON the bugsweep branch, so a pre-restore abort
+  # would be observable as "still on bugsweep branch" afterward.
+  [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "bugsweep/20991231T000000Z" ]
+
+  # Force the grep/awk tier: no jq, no python3.
+  local fakebin="${BATS_TMP}/fakebin"
+  mkdir -p "$fakebin"
+  for tool in bash git grep sed awk cat mkdir date tr wc head cut basename dirname mktemp rm cp mv find true false printf test env sh; do
+    real="$(command -v "$tool" 2>/dev/null || true)"
+    [ -n "$real" ] && ln -sf "$real" "${fakebin}/${tool}"
+  done
+
+  local rollup="${BATS_TMP}/rollup.log"
+  PATH="$fakebin" BUGSWEEP_NO_PYTHON=1 BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
+
+  # Trust contract, in priority order:
+  #   1. finalize exits 0 (the digest failure was swallowed, not propagated).
+  #   2. the user is back on their ORIGINAL branch (teardown ran).
+  #   3. the machine-readable FINALIZED marker was emitted (the script reached
+  #      its normal end, it did not abort mid-way).
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "$ORIG_BRANCH" ]
+  echo "$output" | grep -q "FINALIZED"
 }
