@@ -67,6 +67,21 @@
 # parsing baseline does not do today), which is out of scope here; this
 # comment exists so that limitation is documented rather than silently
 # assumed away.
+#
+# --- Repro gate (bugsweep-hty) -------------------------------------------------
+# Everything above answers ONE question: "did the configured check suite
+# regress?" It has no way to prove a SPECIFIC fix resolves the SPECIFIC bug
+# it targets — a fix that is a no-op for the real bug can still pass here if
+# nothing in the existing suite exercises that code path. scripts/repro.sh is
+# a separate, ADDITIVE script (not sourced or called by this file, and not
+# calling into it) that closes that gap: prompts/fix.md runs it ALONGSIDE
+# (never instead of) this file's verify step, driving a bug-specific repro
+# test through a red (pre-fix) -> green (post-fix) cycle. A landed fix must
+# satisfy BOTH gates — this file's suite-green/REGRESSION decision (bugsweep-
+# gli/ml7/7hw, documented above and completely unmodified by bugsweep-hty)
+# AND, only when a repro was independently pre-confirmed red, repro.sh's
+# post-fix green check. See scripts/repro.sh's own header for the full
+# contract, and prompts/fix.md for exactly how the two signals combine.
 
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"

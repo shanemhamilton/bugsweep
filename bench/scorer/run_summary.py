@@ -149,6 +149,52 @@ Additive, OPTIONAL field on each ``findings[]`` entry (schema_version stays 1
   ``fix_committed``/``quarantine``/``confirmed`` event is ever written; see
   ``prompts/referee.md``). ``vote_split`` makes that decision auditable
   after the fact in the machine-readable summary.
+
+``repro`` on every finding (bugsweep-hty)
+-------------------------------------------
+Additive, OPTIONAL field on each ``findings[]`` entry (schema_version stays 1
+— same versioning rule as the fields above). Unlike ``vote_split``, this
+field is **always** attached (default ``"none"``) rather than conditionally
+absent — see ``_repro_for_bug``.
+
+* A described trigger is not executable proof. Per ``prompts/repro.md`` and
+  ``scripts/repro.sh``, a confirmed bug with a reproducible shape gets a
+  minimal test synthesized and run through a red (pre-fix) -> green
+  (post-fix) cycle, ADDITIONAL to (never instead of) the suite-green check
+  ``scripts/run_checks.sh verify`` already performs.
+* Each terminal outcome of that cycle appends exactly one ledger event,
+  ``{"event": "repro_status", "bug_id", "status"}``, where ``status`` is one
+  of:
+    - ``"none"`` — no repro command was available (no framework detected, or
+      the bug's shape isn't reproducible as a minimal test).
+    - ``"unreproduced"`` — a repro was attempted but did NOT fail before the
+      fix, so it never demonstrated the bug; falls back to suite-only gating,
+      exactly like ``"none"``.
+    - ``"confirmed"`` — the repro FAILED before the fix and PASSED after it
+      (the strongest evidence a fix actually resolved the bug). Only ever
+      seen on a ``fix_committed`` finding.
+    - ``"failed"`` — the repro was still RED after the fix, meaning the fix
+      must have been reverted and quarantined per ``prompts/fix.md``'s step
+      3b. Only ever seen on a ``quarantine`` finding.
+* ``_repro_for_bug`` looks up the ``repro_status`` event(s) matching a
+  finding's ``bug_id`` (str()-coerced, same contract as ``_votes_for_bug``)
+  and returns the LAST matching status found (ledger-order tolerant, though
+  in practice exactly one terminal event is ever written per bug_id).
+  ``bug_id is None``, or no matching event exists at all (the repro phase
+  was skipped for this bug, e.g. because no framework was detected), both
+  default to ``"none"`` — the same value ``scripts/repro.sh`` itself emits
+  for a bug with no repro command, so an untouched finding reads identically
+  to one that explicitly declined to attempt reproduction (see the bead's
+  design note: "no framework or non-reproducible shape => mark repro:
+  none").
+* **Safety invariant**: ``repro_status`` is deliberately NOT a member of
+  ``FINDING_EVENTS`` (same isolation pattern as ``referee_vote`` and
+  ``near_miss``), so it can never itself contribute to
+  ``fixed``/``quarantined``/``confirmed_unfixed``/``findings``/``counts`` —
+  those are computed from ``FINDING_EVENTS`` lines alone. ``repro`` is
+  reporting-only: it never changes which list a bug_id lands in, it only
+  annotates the finding that a real ``fix_committed``/``quarantine``/
+  ``confirmed`` ledger line already produced.
 """
 
 from __future__ import annotations
@@ -227,6 +273,27 @@ _VOTE_CONFIRMED = "CONFIRMED"
 #: get a vote_split (see module docstring).
 _VOTE_ELIGIBLE_SEVERITIES = frozenset({"critical", "high"})
 
+#: Ledger event recording the repro gate's terminal outcome for one bug_id
+#: (bugsweep-hty), emitted by scripts/repro.sh. Deliberately NOT a member of
+#: FINDING_EVENTS — same isolation pattern as ``referee_vote``/``near_miss``
+#: — so it can never itself contribute to fixed/quarantined/
+#: confirmed_unfixed/counts; it only informs the ``repro`` field attached to
+#: a finding that already came from a real FINDING_EVENTS line.
+_REPRO_EVENT = "repro_status"
+
+#: The default/fallback repro status: no repro command was available, or the
+#: repro phase was never attempted/recorded for this bug_id. Matches the
+#: value scripts/repro.sh itself emits for a bug with no repro command (see
+#: module docstring).
+_REPRO_DEFAULT = "none"
+
+#: The full closed set of statuses scripts/repro.sh ever writes to a
+#: repro_status ledger event. A status value outside this set (a malformed
+#: or future-version event) is tolerated but ignored — never invented, never
+#: trusted blindly (same defensive posture as majority_gate's verdict
+#: tolerance).
+_REPRO_STATUSES = frozenset({"none", "unreproduced", "confirmed", "failed"})
+
 
 def _iter_ledger_events(ledger_path: Path) -> list[dict[str, Any]]:
     """Parse ``ledger_path`` as JSONL, skipping blank/malformed lines.
@@ -297,6 +364,36 @@ def _finding_from_event(event: dict[str, Any], *, fixed: bool) -> dict[str, Any]
 
 def _empty_counts() -> dict[str, int]:
     return {"critical": 0, "high": 0, "medium": 0, "low": 0, "architectural": 0}
+
+
+def _repro_for_bug(events: list[dict[str, Any]], bug_id: str | None) -> str:
+    """Return the repro-gate status recorded for ``bug_id`` (bugsweep-hty),
+    defaulting to ``_REPRO_DEFAULT`` ("none") when ``bug_id`` is ``None`` or
+    no matching ``repro_status`` event exists.
+
+    Mirrors ``_votes_for_bug``'s matching contract (``bug_id`` str()-coerced
+    the same way finding-level ``bug_id`` is) but returns a single status
+    string rather than a list: exactly one terminal ``repro_status`` event is
+    ever written per bug_id in practice (see scripts/repro.sh), but if more
+    than one somehow exists, the LAST one in ledger order wins — the same
+    "most recent state wins" tolerance the rest of this module applies to
+    ledger replay. A status value outside ``_REPRO_STATUSES`` (malformed or
+    from a future version) is skipped rather than trusted, leaving whatever
+    the last VALID status was (or the default, if none was ever valid).
+    """
+    if bug_id is None:
+        return _REPRO_DEFAULT
+    status = _REPRO_DEFAULT
+    for event in events:
+        if event.get("event") != _REPRO_EVENT:
+            continue
+        event_bug_id = event.get("bug_id")
+        if event_bug_id is None or str(event_bug_id) != bug_id:
+            continue
+        value = event.get("status")
+        if isinstance(value, str) and value in _REPRO_STATUSES:
+            status = value
+    return status
 
 
 def majority_gate(verdicts: list[str]) -> dict[str, Any]:
@@ -615,6 +712,12 @@ def reduce_run(
             quarantined.append(bug_id)
         elif name == "confirmed" and bug_id:
             confirmed_unfixed.append(bug_id)
+
+        # repro (bugsweep-hty): always attached, defaulting to "none" — see
+        # _repro_for_bug. Unlike vote_split's conditional-absence pattern,
+        # every finding gets a repro classification, matching the design
+        # note "no framework or non-reproducible shape => mark repro: none".
+        finding["repro"] = _repro_for_bug(events, bug_id)
 
         severity = finding["severity"]
         if severity in _SEVERITIES:

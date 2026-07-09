@@ -101,6 +101,11 @@
               "total": {"type": "integer", "minimum": 0},
               "eligible": {"type": "boolean"}
             }
+          },
+          "repro": {
+            "type": "string",
+            "enum": ["none", "unreproduced", "confirmed", "failed"],
+            "description": "OPTIONAL (bugsweep-hty). The repro gate's outcome for this finding, from scripts/repro.sh's repro_status ledger events: 'none' — no repro command was available (no framework detected, or the bug's shape isn't reproducible as a minimal test); 'unreproduced' — a repro was attempted but did NOT fail before the fix, so it never demonstrated the bug (falls back to suite-only gating, exactly like 'none'); 'confirmed' — the repro FAILED before the fix and PASSED after it (only ever seen on a fixed finding); 'failed' — the repro was still RED after the fix, meaning the fix was reverted and quarantined (only ever seen on a quarantined finding). Always present on every finding reduce_run emits (defaults to 'none'), but NOT in `required` so older run-summary.json producers/consumers stay schema-valid without it."
           }
         }
       }

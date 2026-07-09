@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from bench.scorer.run_summary import (  # noqa: E402
     SCHEMA_VERSION,
+    _repro_for_bug,
     majority_gate,
     reduce_run,
     reduce_run_degraded,
@@ -1792,6 +1793,301 @@ def test_vote_split_never_changes_fix_eligibility_lists(tmp_path: Path) -> None:
 def test_reduce_run_degraded_findings_stay_empty_no_vote_split(tmp_path: Path) -> None:
     """Degraded mode never fabricates findings, so there is nothing to attach
     a vote_split to — findings stays an empty list, same as before."""
+    summary = reduce_run_degraded(covered=1, total=2, report_is_stub=True, mode="detect-only")
+
+    assert summary["findings"] == []
+    _validate_against_schema(summary)
+
+
+# ---------------------------------------------------------------------------
+# repro (bugsweep-hty): scripts/repro.sh's red -> green gate, surfaced as an
+# always-present, OPTIONAL-in-schema `repro` field on every finding.
+# ---------------------------------------------------------------------------
+
+
+def test_repro_for_bug_defaults_to_none_when_bug_id_is_none() -> None:
+    assert _repro_for_bug([], None) == "none"
+
+
+def test_repro_for_bug_defaults_to_none_when_no_matching_event() -> None:
+    events = [{"event": "repro_status", "bug_id": "BUG-99", "status": "confirmed"}]
+    assert _repro_for_bug(events, "BUG-1") == "none"
+
+
+def test_repro_none_default_when_no_repro_events_at_all(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "fix_committed",
+                "bug_id": "BUG-1",
+                "severity": "medium",
+                "category": "logic",
+                "file": "a.py",
+                "line": 5,
+                "rationale": "off-by-one",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["repro"] == "none"
+    _validate_against_schema(summary)
+
+
+def test_repro_confirmed_recorded_on_fixed_finding(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "repro_status", "bug_id": "BUG-1", "status": "confirmed"},
+            {
+                "event": "fix_committed",
+                "bug_id": "BUG-1",
+                "severity": "high",
+                "category": "security",
+                "file": "auth.py",
+                "line": 12,
+                "rationale": "missing authz check",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["repro"] == "confirmed"
+    assert summary["fixed"] == ["BUG-1"]
+    _validate_against_schema(summary)
+
+
+def test_repro_failed_recorded_on_quarantined_finding(tmp_path: Path) -> None:
+    """A repro that stayed RED after the fix means the fix was reverted and
+    quarantined — the finding's event is `quarantine`, and its repro field
+    records why."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "repro_status", "bug_id": "BUG-2", "status": "failed"},
+            {
+                "event": "quarantine",
+                "bug_id": "BUG-2",
+                "severity": "medium",
+                "category": "logic",
+                "file": "calc.py",
+                "line": 8,
+                "rationale": "repro stayed red after fix",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["repro"] == "failed"
+    assert summary["quarantined"] == ["BUG-2"]
+    assert summary["fixed"] == []
+    _validate_against_schema(summary)
+
+
+def test_repro_unreproduced_recorded(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "repro_status", "bug_id": "BUG-3", "status": "unreproduced"},
+            {
+                "event": "confirmed",
+                "bug_id": "BUG-3",
+                "severity": "low",
+                "category": "style",
+                "file": "b.py",
+                "line": 3,
+                "rationale": "minor",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["repro"] == "unreproduced"
+    _validate_against_schema(summary)
+
+
+def test_repro_none_explicit_event_recorded(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "repro_status", "bug_id": "BUG-4", "status": "none"},
+            {
+                "event": "fix_committed",
+                "bug_id": "BUG-4",
+                "severity": "low",
+                "category": "logic",
+                "file": "c.py",
+                "line": 1,
+                "rationale": "trivial fix",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["repro"] == "none"
+    _validate_against_schema(summary)
+
+
+def test_repro_ignores_events_for_other_bug_ids(tmp_path: Path) -> None:
+    """A repro_status event for a DIFFERENT bug_id must not leak into this
+    finding's repro field — isolation per bug_id, mirroring vote_split's
+    ignores-other-bug-ids test."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "repro_status", "bug_id": "BUG-OTHER", "status": "confirmed"},
+            {
+                "event": "fix_committed",
+                "bug_id": "BUG-5",
+                "severity": "medium",
+                "category": "logic",
+                "file": "d.py",
+                "line": 2,
+                "rationale": "fix",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["repro"] == "none"
+    _validate_against_schema(summary)
+
+
+def test_repro_bug_id_absent_defaults_to_none(tmp_path: Path) -> None:
+    """A minimal fix_committed carrying only `file` (the state.sh fallback
+    persist path — no bug_id) has no bug_id to match against, so repro
+    defaults to "none" rather than raising or guessing."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "fix_committed", "file": "src/minimal.py"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["bug_id"] is None
+    assert summary["findings"][0]["repro"] == "none"
+    _validate_against_schema(summary)
+
+
+def test_repro_int_bug_id_matches_str_coerced_repro_event(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "repro_status", "bug_id": "6", "status": "confirmed"},
+            {
+                "event": "fix_committed",
+                "bug_id": 6,
+                "severity": "medium",
+                "category": "logic",
+                "file": "e.py",
+                "line": 4,
+                "rationale": "fix",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["bug_id"] == "6"
+    assert summary["findings"][0]["repro"] == "confirmed"
+    _validate_against_schema(summary)
+
+
+def test_repro_last_matching_event_wins_when_multiple_exist(tmp_path: Path) -> None:
+    """Defensive tolerance: if more than one repro_status event somehow
+    exists for the same bug_id, the LAST one in ledger order wins (most-
+    recent-state-wins, matching the rest of this module's ledger-replay
+    tolerance) — never the first, and never a crash."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "repro_status", "bug_id": "BUG-7", "status": "unreproduced"},
+            {"event": "repro_status", "bug_id": "BUG-7", "status": "confirmed"},
+            {
+                "event": "fix_committed",
+                "bug_id": "BUG-7",
+                "severity": "medium",
+                "category": "logic",
+                "file": "f.py",
+                "line": 6,
+                "rationale": "fix",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["repro"] == "confirmed"
+    _validate_against_schema(summary)
+
+
+def test_repro_malformed_status_value_is_ignored_not_trusted(tmp_path: Path) -> None:
+    """A repro_status event whose status is outside the closed enum (a
+    malformed or future-version event) must not be trusted blindly — it is
+    skipped, leaving the default."""
+    events = [{"event": "repro_status", "bug_id": "BUG-8", "status": "not-a-real-status"}]
+    assert _repro_for_bug(events, "BUG-8") == "none"
+
+
+def test_repro_never_changes_fix_eligibility_lists(tmp_path: Path) -> None:
+    """Scope guard: repro_status is deliberately NOT a member of
+    FINDING_EVENTS, so it can never itself create a phantom finding or
+    change fixed/quarantined/confirmed_unfixed — those are computed from
+    FINDING_EVENTS lines alone, exactly as before this field existed."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "repro_status", "bug_id": "BUG-9", "status": "confirmed"},
+            {"event": "repro_status", "bug_id": "BUG-10", "status": "failed"},
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"] == []
+    assert summary["fixed"] == []
+    assert summary["quarantined"] == []
+    assert summary["confirmed_unfixed"] == []
+    _validate_against_schema(summary)
+
+
+def test_reduce_run_degraded_findings_stay_empty_no_repro_field(tmp_path: Path) -> None:
+    """Degraded mode never fabricates findings, so there is nothing to attach
+    a repro field to — findings stays an empty list, same as before."""
     summary = reduce_run_degraded(covered=1, total=2, report_is_stub=True, mode="detect-only")
 
     assert summary["findings"] == []
