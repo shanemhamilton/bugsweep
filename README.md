@@ -273,7 +273,12 @@ into a branch you choose, deletes only branches proven contained in that target,
 preserves dirty worktrees or unmerged branches — using only plain git, outside the core
 hunt/fix loop. See
 [`references/autonomous-maintenance.md`](references/autonomous-maintenance.md) for the
-copy-paste prompt, settings, and scheduling notes.
+copy-paste prompt, settings, and scheduling notes for a single sequential run.
+
+For a fleet of up to 5 worktree-isolated subagents fanned out by one non-hunting
+orchestrator — partitioning the hunt frontier, integrating verified branches with
+re-verification after each merge, and planning follow-up coverage — see
+[`references/orchestrator.md`](references/orchestrator.md).
 
 ## Configure
 

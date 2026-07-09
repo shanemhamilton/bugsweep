@@ -4,6 +4,12 @@ This is a recipe for running bugsweep on a schedule so it slowly deepens its cov
 your codebase over time, while every session still ends in a clean git state — no pile of
 leftover `bugsweep/<timestamp>` branches.
 
+**This doc covers a single sequential `/bugsweep --autonomous` run only.** If you want one
+orchestrator session to fan out up to 5 worktree-isolated bugsweep subagents in parallel
+(partitioning the hunt frontier, integrating verified branches with re-verification after
+each merge, and never hunting itself), see
+[`references/orchestrator.md`](orchestrator.md) instead.
+
 ## What you do and don't need to build
 
 - **You do NOT need to add anything to make bugsweep "learn" or "go deeper."** That is

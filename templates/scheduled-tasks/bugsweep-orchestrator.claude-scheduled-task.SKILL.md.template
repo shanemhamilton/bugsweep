@@ -1,0 +1,66 @@
+<!--
+TEMPLATE — this is not a drop-in file. Adapt the placeholders below, then use it as-is.
+
+What's VERIFIED real about this template:
+- The YAML frontmatter shape (`name:` + `description:`) matches the actual SKILL.md
+  frontmatter used by this machine's installed Claude Code scheduled tasks under
+  `~/.claude/scheduled-tasks/<task-name>/SKILL.md` (verified by inspection when this
+  template was written — see references/orchestrator.md).
+- The body below is the exact copy-paste orchestrator prompt from
+  references/orchestrator.md, which is grounded in this repo's real scripts/flags.
+
+What's NOT verified / not this repo's to define:
+- The actual cron/interval TRIGGER for a Claude Code scheduled task is not a field inside
+  this file — it's registered separately through Claude Code's own scheduled-task tooling
+  (the `schedule` skill / equivalent scheduled-task creation flow). This repo does not
+  manage that registration; do not invent a schedule field here.
+- `<PROJECT_PATH>`, `<TARGET_BRANCH>` below are placeholders — fill in for your project.
+
+Install:
+  1. Fill in the placeholders below.
+  2. Save this file (minus this comment block) as:
+       ~/.claude/scheduled-tasks/<your-task-name>/SKILL.md
+  3. Register the schedule/trigger through Claude Code's own scheduled-task mechanism —
+     this file only supplies the prompt Claude Code runs when triggered, not the trigger
+     itself.
+-->
+---
+name: bugsweep-orchestrator
+description: Fan out up to 5 worktree-isolated bugsweep subagents against <PROJECT_PATH>, review and integrate their fixes, push to <TARGET_BRANCH>, and record follow-up coverage. The orchestrator never hunts bugs itself — see references/orchestrator.md in the bugsweep skill for the full contract.
+---
+
+Run this in project directory: `<PROJECT_PATH>`
+
+Run bugsweep as an orchestrator across this repository. Fan out up to 5 worktree-isolated
+bugsweep subagents to find and fix bugs in parallel. You are the orchestrator — you do NOT
+hunt for bugs yourself. Each subagent runs its own full hunt/fix/finalize loop
+(/bugsweep --autonomous or --approve) inside an isolated git worktree
+(scripts/preflight.sh --worktree). Your job is only to:
+
+1. Partition the hunt frontier across the subagents so they cover disjoint batches
+   (scripts/partition.sh shard|claim), then dispatch them with their assigned batch ids.
+2. Wait for each subagent to finish, then read its <RUN_DIR>/run-summary.json — never
+   re-derive its findings by hunting yourself. Use root_cause_clusters to spot broader,
+   systemic issues (not just one-off bugs) and use follow_up plus each subagent's
+   quarantined/confirmed_unfixed findings to build the next-session frontier.
+3. Review every subagent's fixes (diff + report.md) before integrating — do not blind-merge.
+   Decide integration order yourself, then integrate the verified branches with
+   scripts/integrate.sh --run-dir <ORCH_DIR> --delete-merged <TARGET_BRANCH> <branch1> [branch2 ...],
+   which re-runs the quality gate after every merge and stops cleanly on the first conflict
+   or regression, preserving everything unmerged.
+4. Only after integration completes and you have reviewed the result, push and merge to
+   <TARGET_BRANCH>. Never force-push, never skip a failed gate, never merge a branch whose
+   fixes you have not reviewed.
+5. Before ending the session, write down where to follow up next — the combined follow_up[]
+   frontier and any root_cause_clusters[] from every subagent's run-summary — so the next
+   run knows exactly what's left to root out all the bugs eventually, not just what this
+   wave covered.
+
+Constraints: never touch the user's real branch/tree from inside a subagent (that's what
+--worktree isolation is for); never bypass run_checks.sh verify; never delete a branch that
+isn't proven contained in the target; on the first INTEGRATE_RESULT=stopped, stop and report
+rather than reordering blindly.
+
+Full mechanics, the failure taxonomy, and grep-cited script evidence for every step above:
+see `references/orchestrator.md` in the bugsweep skill (`~/.claude/skills/bugsweep/` or
+`~/.codex/skills/bugsweep/`).

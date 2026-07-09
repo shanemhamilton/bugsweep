@@ -1,0 +1,72 @@
+# TEMPLATE — this is not a drop-in file. Adapt the placeholders below, then use it as-is.
+#
+# What's VERIFIED real about this template: the top-level key set (version, id, kind, name,
+# prompt, status, rrule, model, reasoning_effort, execution_environment, cwds, created_at,
+# updated_at) matches actual installed Codex `automation.toml` files on this machine under
+# ~/.codex/automations/<automation-id>/automation.toml (verified by inspection when this
+# template was written — see references/orchestrator.md). The `prompt` string below is the
+# exact copy-paste orchestrator prompt from references/orchestrator.md, grounded in this
+# repo's real scripts/flags.
+#
+# What's NOT verified / needs your own values:
+# - `created_at` / `updated_at` are epoch-millisecond timestamps that appear to be stamped
+#   by the Codex automation tooling itself when an automation is created/saved through its
+#   own flow, not hand-authored. If you create this automation through Codex's own tooling
+#   rather than hand-placing this file, let Codex set those fields itself.
+# - `rrule` (an RFC 5545 recurrence rule) and `model` are policy choices for your project,
+#   not something this repo prescribes. The example rrule below (adapted from a real
+#   installed automation on this machine) runs daily at 01:30.
+# - `<PROJECT_PATH>` and `<TARGET_BRANCH>` are placeholders — fill in for your project.
+#
+# Install: adapt the placeholders, then place at (or create through Codex's own automation
+# flow, pointing it at this prompt): ~/.codex/automations/bugsweep-orchestrator/automation.toml
+
+version = 1
+id = "bugsweep-orchestrator"
+kind = "cron"
+name = "Bugsweep Overnight Orchestrator"
+status = "ACTIVE"
+rrule = "FREQ=DAILY;BYHOUR=1;BYMINUTE=30;BYSECOND=0"
+model = "gpt-5.5"
+reasoning_effort = "high"
+execution_environment = "local"
+cwds = ["<PROJECT_PATH>"]
+
+prompt = """
+Run bugsweep as an orchestrator across this repository. Fan out up to 5 worktree-isolated
+bugsweep subagents to find and fix bugs in parallel. You are the orchestrator — you do NOT
+hunt for bugs yourself. Each subagent runs its own full hunt/fix/finalize loop
+(/bugsweep --autonomous or --approve) inside an isolated git worktree
+(scripts/preflight.sh --worktree). Your job is only to:
+
+1. Partition the hunt frontier across the subagents so they cover disjoint batches
+   (scripts/partition.sh shard|claim), then dispatch them with their assigned batch ids.
+2. Wait for each subagent to finish, then read its <RUN_DIR>/run-summary.json — never
+   re-derive its findings by hunting yourself. Use root_cause_clusters to spot broader,
+   systemic issues (not just one-off bugs) and use follow_up plus each subagent's
+   quarantined/confirmed_unfixed findings to build the next-session frontier.
+3. Review every subagent's fixes (diff + report.md) before integrating — do not blind-merge.
+   Decide integration order yourself, then integrate the verified branches with
+   scripts/integrate.sh --run-dir <ORCH_DIR> --delete-merged <TARGET_BRANCH> <branch1> [branch2 ...],
+   which re-runs the quality gate after every merge and stops cleanly on the first conflict
+   or regression, preserving everything unmerged.
+4. Only after integration completes and you have reviewed the result, push and merge to
+   <TARGET_BRANCH>. Never force-push, never skip a failed gate, never merge a branch whose
+   fixes you have not reviewed.
+5. Before ending the session, write down where to follow up next — the combined follow_up[]
+   frontier and any root_cause_clusters[] from every subagent's run-summary — so the next
+   run knows exactly what's left to root out all the bugs eventually, not just what this
+   wave covered.
+
+Constraints: never touch the user's real branch/tree from inside a subagent (that's what
+--worktree isolation is for); never bypass run_checks.sh verify; never delete a branch that
+isn't proven contained in the target; on the first INTEGRATE_RESULT=stopped, stop and report
+rather than reordering blindly.
+
+Full mechanics, the failure taxonomy, and grep-cited script evidence for every step above:
+see references/orchestrator.md in the bugsweep skill (~/.claude/skills/bugsweep/ or
+~/.codex/skills/bugsweep/).
+"""
+
+# created_at = <epoch-ms>   # set by Codex automation tooling, not hand-authored
+# updated_at = <epoch-ms>   # set by Codex automation tooling, not hand-authored
