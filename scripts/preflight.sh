@@ -184,23 +184,33 @@ mkdir -p "$run_dir"
 # relative to worktree/branch creation — see the BLOCKER A comment at the
 # worktree-mode call site below for why the ordering matters there.
 _bsw_persist_run_state_and_lease() {
-  cat > "${run_dir}/state.env" <<EOF
-BUGSWEEP_TS=${ts}
-BUGSWEEP_RUN_DIR=${run_dir}
-BUGSWEEP_BRANCH=${branch}
-BUGSWEEP_ORIG_BRANCH=${orig_branch}
-BUGSWEEP_ORIG_HEAD=${orig_head}
-BUGSWEEP_STASH_REF=${stash_ref}
-BUGSWEEP_START_EPOCH=${start_epoch}
-BUGSWEEP_DEADLINE_EPOCH=${deadline_epoch}
-BUGSWEEP_MAX_RUNTIME_MINUTES=${max_runtime_minutes}
-BUGSWEEP_MODE=${bs_mode}
-BUGSWEEP_WORKTREE=${worktree_path}
-EOF
+  # bugsweep-06y: every value is emitted via _bsw_env_kv (common.sh) so the
+  # written file is a single-quoted, source-safe KEY='value' line regardless
+  # of content. This is allowlist-free by design — BUGSWEEP_ORIG_BRANCH is the
+  # attacker-reachable one (an arbitrary git branch NAME), but every other key
+  # goes through the exact same helper rather than trusting a per-key judgment
+  # call about which values could ever carry unsafe content.
+  {
+    _bsw_env_kv BUGSWEEP_TS "$ts"
+    _bsw_env_kv BUGSWEEP_RUN_DIR "$run_dir"
+    _bsw_env_kv BUGSWEEP_BRANCH "$branch"
+    _bsw_env_kv BUGSWEEP_ORIG_BRANCH "$orig_branch"
+    _bsw_env_kv BUGSWEEP_ORIG_HEAD "$orig_head"
+    _bsw_env_kv BUGSWEEP_STASH_REF "$stash_ref"
+    _bsw_env_kv BUGSWEEP_START_EPOCH "$start_epoch"
+    _bsw_env_kv BUGSWEEP_DEADLINE_EPOCH "$deadline_epoch"
+    _bsw_env_kv BUGSWEEP_MAX_RUNTIME_MINUTES "$max_runtime_minutes"
+    _bsw_env_kv BUGSWEEP_MODE "$bs_mode"
+    _bsw_env_kv BUGSWEEP_WORKTREE "$worktree_path"
+  } > "${run_dir}/state.env"
 
+  # bugsweep-06y: every interpolated value is also JSON-escaped (common.sh's
+  # _bsw_json_escape) so a branch name containing a `"`, `\`, or control
+  # character can never break this line's JSON structure.
   : > "${run_dir}/ledger.jsonl"
   printf '{"event":"preflight","ts":"%s","branch":"%s","orig_branch":"%s","stash":"%s","worktree":"%s"}\n' \
-    "$ts" "$branch" "$orig_branch" "$stash_ref" "$worktree_path" >> "${run_dir}/ledger.jsonl"
+    "$(_bsw_json_escape "$ts")" "$(_bsw_json_escape "$branch")" "$(_bsw_json_escape "$orig_branch")" \
+    "$(_bsw_json_escape "$stash_ref")" "$(_bsw_json_escape "$worktree_path")" >> "${run_dir}/ledger.jsonl"
 
   # Bookkeeping only: leases COEXIST (this is never a mutex that blocks
   # sibling subagents). Best-effort; a failure here must never fail preflight.

@@ -398,3 +398,86 @@ except Exception:
     grep -o '"runs"[[:space:]]*:[[:space:]]*[0-9]*' "$meta" 2>/dev/null | grep -o '[0-9]*' | head -1 || printf '0'
   fi
 }
+
+# --- Safe state.env emission (bugsweep-06y) ------------------------------------
+# state.env is SOURCED (not merely read) by five call sites (guard.sh,
+# finalize.sh, session.sh, run_checks.sh, state.sh), so every value written into
+# it MUST be safe to `source` regardless of content. BUGSWEEP_ORIG_BRANCH in
+# particular comes straight from the user's git branch NAME, which may legally
+# contain shell metacharacters ($(...), backticks, ;, quotes) — writing it
+# unquoted into a heredoc let any of those five sourcing sites execute arbitrary
+# shell the moment they sourced the file (command injection via the source
+# boundary). This is the fix: the canonical shell-safe-quoting idiom. Escape
+# every embedded single quote to '\'' (close quote, escaped literal quote,
+# reopen quote), then wrap the WHOLE value in single quotes. Single quotes
+# preserve everything else verbatim — $, `, ;, ", newlines — so no other
+# character needs special-casing, and every caller MUST use this for every
+# KEY=value line regardless of whether the value "looks safe": reasoning about
+# which values could carry attacker-influenced content is exactly the mistake
+# that created this bug.
+#
+# Usage: _bsw_env_kv KEY "value" >> file   ->   emits KEY='value'\n (source-safe)
+_bsw_env_kv() {
+  local _k="$1" _v
+  _v=$(printf '%s' "${2-}" | sed "s/'/'\\\\''/g")
+  printf "%s='%s'\n" "$_k" "$_v"
+}
+
+# Minimal JSON string escaper, matching the established repo-wide pattern (see
+# scripts/finalize.sh's _json_escape / scripts/summarize.sh's _json_escape /
+# scripts/run_checks.sh's json_str_or_null / scripts/recon-plan.sh's
+# _json_escape_deg) but placed in common.sh so any caller that already sources
+# common.sh (e.g. preflight.sh's ledger.jsonl line) can reuse it instead of
+# re-deriving its own local copy. JSON forbids raw control characters in
+# strings and this path never needs them, so strip 0x00-0x1F (including
+# newlines/tabs) first, THEN escape backslash BEFORE double-quote — reversing
+# that order would re-escape the backslashes the quote escaping just
+# introduced.
+_bsw_json_escape() {
+  printf '%s' "${1:-}" | tr -d '\000-\037' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# Read a SINGLE key's value from a state.env file, correctly and safely
+# (bugsweep-06y). This MUST decode as pure TEXT and MUST NOT source/eval the
+# file: bugsweep-cleanup.sh --reap-worktrees globs
+# `.bugsweep/run-*/state.env` across EVERY run dir — including pre-patch runs
+# (old unquoted format), concurrent runs, and leftover/foreign/tampered files
+# of untrusted provenance. Sourcing any of those would EXECUTE a hostile value
+# like `BUGSWEEP_ORIG_BRANCH=x$(touch M)` (a real RCE). The prior `sed -n
+# 's/^KEY=//p'` reader was inert for any content because sed never executes;
+# this getter preserves that "safe for arbitrary content" property while ALSO
+# decoding the new single-quote-wrapped _bsw_env_kv format correctly.
+#
+# Decode (all pure string ops — no `.`, no `source`, no `eval`, no glob/word
+# expansion of the value):
+#   1. Extract the raw value line by prefix (sed only strips text, never runs).
+#   2. If it is single-quote-wrapped ('...') — the _bsw_env_kv format — strip
+#      the outer quotes and reverse the escaping: every emitted `'\''` sequence
+#      becomes one `'`. This is the exact inverse of _bsw_env_kv (which turns
+#      each `'` in the value into `'\''` then wraps in single quotes), so a
+#      value like `o'brien/feature` round-trips byte-exact.
+#   3. Otherwise (old unquoted / double-quoted / legacy / hostile-unwrapped) —
+#      take the raw text as a LITERAL string. This is what keeps a hostile
+#      legacy `KEY=x$(touch M)` file INERT: it is returned verbatim as data,
+#      never executed, exactly as the old sed reader behaved.
+# Key names are caller-supplied literals, never file/user content. Prints the
+# value (empty if the file/key is absent).
+#   Usage: v="$(_bsw_state_env_get "${run_dir}/state.env" BUGSWEEP_WORKTREE)"
+_bsw_state_env_get() {
+  local _file="$1" _key="$2" _raw
+  [ -f "$_file" ] || return 0
+  _raw="$(sed -n "s/^${_key}=//p" "$_file" 2>/dev/null | head -1)"
+  case "$_raw" in
+    "'"*"'")
+      # Strip the outer single quotes, then collapse every 4-char '\'' back to
+      # a single ' via sed BRE (\\ matches a literal backslash) — portable,
+      # and never executes the value.
+      _raw="${_raw#\'}"
+      _raw="${_raw%\'}"
+      printf '%s' "$_raw" | sed "s/'\\\\''/'/g"
+      ;;
+    *)
+      printf '%s' "$_raw"
+      ;;
+  esac
+}

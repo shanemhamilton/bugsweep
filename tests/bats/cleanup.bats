@@ -52,6 +52,42 @@ ENV
   printf '%s\n' "$run_dir"
 }
 
+# bugsweep-06y: like _make_run_dir_for_worktree, but writes state.env via the
+# REAL production emitter (_bsw_env_kv in common.sh) so the fixture is
+# byte-identical to what preflight.sh now writes — every value single-quote
+# wrapped and escaped. This locks the cleanup reaper's state.env PARSING against
+# the exact quoted format shipped in production, so the raw-sed regression
+# (which captured the surrounding quotes and broke every equality check) cannot
+# silently recur. The unquoted _make_run_dir_for_worktree fixture is retained
+# separately to prove backward compatibility with older/hand-written files.
+_make_run_dir_for_worktree_quoted() {
+  local name="$1" branch="$2" worktree="$3" orig_branch="${4:-main}"
+  local run_dir="${REPO}/.bugsweep/run-${name}"
+  local common_sh script_dir
+  script_dir="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts"
+  common_sh="${script_dir}/common.sh"
+  mkdir -p "$run_dir"
+  (
+    # Source only the emitter helper; common.sh's top-level `set -u` needs
+    # BASH_SOURCE defined, which it is here. Emit exactly as preflight does.
+    # shellcheck disable=SC1090
+    . "$common_sh"
+    {
+      _bsw_env_kv BUGSWEEP_TS "$name"
+      _bsw_env_kv BUGSWEEP_RUN_DIR "$run_dir"
+      _bsw_env_kv BUGSWEEP_BRANCH "$branch"
+      _bsw_env_kv BUGSWEEP_ORIG_BRANCH "$orig_branch"
+      _bsw_env_kv BUGSWEEP_STASH_REF "none"
+      _bsw_env_kv BUGSWEEP_START_EPOCH "1"
+      _bsw_env_kv BUGSWEEP_MODE "detect-only"
+      _bsw_env_kv BUGSWEEP_WORKTREE "$worktree"
+      _bsw_env_kv BUGSWEEP_SCRIPT_DIR "$script_dir"
+    } > "${run_dir}/state.env"
+  )
+  touch "${run_dir}/ledger.jsonl"
+  printf '%s\n' "$run_dir"
+}
+
 _make_lease() {
   local id="$1" run_dir="$2" pid="$3" timestamp="${4:-now}"
   local leases="${REPO}/.bugsweep/state/leases"
@@ -267,6 +303,146 @@ teardown() {
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "WORKTREES_REMOVED=0"
   echo "$output" | grep -q "BRANCHES_PRUNED=0"
+}
+
+# bugsweep-06y regression lock: a run whose state.env is written in the
+# SHIPPED, single-quote-wrapped format (produced by preflight.sh via
+# _bsw_env_kv) must still be mapped to its worktree by the reaper. Pre-fix,
+# run_dir_for_worktree extracted BUGSWEEP_WORKTREE via raw sed, capturing the
+# literal surrounding single quotes, so it never string-matched the bare
+# canonical worktree path — every quoted-format run was seen as "no run
+# mapping" and PRESERVED even when finalized. This test finalizes such a run
+# and asserts it is actually REAPED (not just preserved), proving the parsing
+# reads the value back exactly.
+@test "reap-worktrees: maps and reaps a finalized run whose state.env is in the shipped quoted format (bugsweep-06y)" {
+  _make_bugsweep_branch "bugsweep/reap-quoted" "fix reap quoted"
+  _merge_branch_to_main "bugsweep/reap-quoted"
+
+  local wt="${REPO}/.bugsweep/worktrees/reap-quoted"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/reap-quoted"
+
+  local rd
+  rd="$(_make_run_dir_for_worktree_quoted "reap-quoted" "bugsweep/reap-quoted" "$wt")"
+  # Prove the fixture really is in the new quoted format (guards against the
+  # helper silently regressing to the old unquoted shape).
+  grep -q "^BUGSWEEP_WORKTREE='" "${rd}/state.env"
+  _mark_finalized "$rd"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "REAP_RESULT=ok"
+  echo "$output" | grep -q "WORKTREES_REMOVED=1"
+  echo "$output" | grep -q "BRANCHES_PRUNED=1"
+  [ ! -d "$wt" ]
+  ! _branch_exists "bugsweep/reap-quoted"
+  ! git -C "$REPO" worktree list --porcelain | grep -q "$wt"
+}
+
+# bugsweep-06y: the per-worktree containment-target resolution
+# (orig_branch_for_run_dir) must also read the quoted BUGSWEEP_ORIG_BRANCH back
+# EXACTLY. Isolation: the fix is merged into `integration` (the recorded
+# per-run orig branch) but NOT into the global pinned default `main`. The reaper
+# deletes the branch ref only when it is contained in the per-run target AND
+# `git branch -d` succeeds against the current HEAD — so this test runs the
+# reaper with HEAD=integration. If orig_branch_for_run_dir reads the value back
+# correctly (`integration`), the containment check passes and the ref is
+# deleted; if it returned `'integration'` (raw-quoted, the pre-fix bug — a
+# nonexistent ref) or empty (falling back to `main`, which does not contain the
+# branch), the ref is PRESERVED. Either failure mode => BRANCHES_PRUNED=0.
+@test "reap-worktrees: reads quoted BUGSWEEP_ORIG_BRANCH as the per-run containment target (bugsweep-06y)" {
+  # A dedicated integration branch (never a protected/pinned branch — so the
+  # per-run target can only come from the recorded state.env, not the pin).
+  git -C "$REPO" branch integration main
+
+  _make_bugsweep_branch "bugsweep/reap-orig" "fix reap orig"
+  # Contain the fix in `integration` ONLY — main never receives it.
+  git -C "$REPO" checkout integration -q
+  git -C "$REPO" merge --no-ff -m "merge reap-orig" "bugsweep/reap-orig" -q
+  # Sanity: contained in integration, NOT in main.
+  git -C "$REPO" merge-base --is-ancestor "bugsweep/reap-orig" integration
+  ! git -C "$REPO" merge-base --is-ancestor "bugsweep/reap-orig" main
+
+  local wt="${REPO}/.bugsweep/worktrees/reap-orig"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/reap-orig"
+
+  local rd
+  rd="$(_make_run_dir_for_worktree_quoted "reap-orig" "bugsweep/reap-orig" "$wt" "integration")"
+  grep -q "^BUGSWEEP_ORIG_BRANCH='integration'$" "${rd}/state.env"
+  _mark_finalized "$rd"
+
+  # HEAD=integration so `git branch -d` can succeed once containment is proven;
+  # the global pinned target still resolves to `main` (first existing protected
+  # branch), so the per-run `integration` target can ONLY come from correctly
+  # parsing the quoted BUGSWEEP_ORIG_BRANCH.
+  git -C "$REPO" checkout integration -q
+  run env BUGSWEEP_ALLOW_PROTECTED=1 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "TARGET_BRANCH=main"
+  echo "$output" | grep -q "WORKTREES_REMOVED=1"
+  echo "$output" | grep -q "BRANCHES_PRUNED=1"
+  # Deleted because it is contained in the correctly-read per-run target
+  # `integration` — proof the quoted value round-tripped without its quotes.
+  ! _branch_exists "bugsweep/reap-orig"
+}
+
+# bugsweep-06y RCE regression (reviewer's exact repro): the reaper globs
+# .bugsweep/run-*/state.env across EVERY run dir and reads each via the getter.
+# Those files are of UNTRUSTED provenance — pre-patch (old unquoted) runs,
+# concurrent/leftover/foreign/tampered files. The getter therefore must decode
+# as pure TEXT and NEVER source/eval: a hostile legacy-unquoted
+# `BUGSWEEP_ORIG_BRANCH=x$(touch M)` (or `;`/backtick form) must be returned as
+# an inert literal, never executed. This test plants three such hostile files
+# alongside a legitimate reapable worktree, runs the real reaper, and asserts
+# NO marker was created (no execution) AND the reaper still reaped the
+# legitimate worktree. It goes RED against a source/eval-based getter (marker
+# created) and GREEN with the text decoder.
+@test "reap-worktrees: reading a hostile legacy-unquoted state.env never executes its value (bugsweep-06y RCE)" {
+  local marker="${BATS_TMP}/PWNED_RCE"
+  rm -f "$marker"
+
+  # A legitimate, reapable victim worktree so the reaper enters its per-worktree
+  # loop — which reads EVERY .bugsweep/run-*/state.env via the getter.
+  _make_bugsweep_branch "bugsweep/victim" "victim fix"
+  _merge_branch_to_main "bugsweep/victim"
+  local vwt="${REPO}/.bugsweep/worktrees/victim"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$vwt" "bugsweep/victim"
+  local vrd
+  vrd="$(_make_run_dir_for_worktree_quoted "victim" "bugsweep/victim" "$vwt")"
+  _mark_finalized "$vrd"
+
+  # Hostile LEGACY (old unquoted) state.env files of untrusted provenance, each
+  # carrying a different injection form in BUGSWEEP_ORIG_BRANCH. Their
+  # BUGSWEEP_WORKTREE points nowhere real, so they map no worktree and are only
+  # ever READ by the reaper's getter loops — the exact RCE surface.
+  local h
+  for h in dollar semi backtick; do
+    mkdir -p "${REPO}/.bugsweep/run-attacker-${h}"
+    touch "${REPO}/.bugsweep/run-attacker-${h}/ledger.jsonl"
+  done
+  printf 'BUGSWEEP_WORKTREE=/nonexistent/wt-dollar\nBUGSWEEP_ORIG_BRANCH=x$(touch %s)\n' \
+    "$marker" > "${REPO}/.bugsweep/run-attacker-dollar/state.env"
+  printf 'BUGSWEEP_WORKTREE=/nonexistent/wt-semi\nBUGSWEEP_ORIG_BRANCH=x;touch %s\n' \
+    "$marker" > "${REPO}/.bugsweep/run-attacker-semi/state.env"
+  printf 'BUGSWEEP_WORKTREE=/nonexistent/wt-bt\nBUGSWEEP_ORIG_BRANCH=x`touch %s`\n' \
+    "$marker" > "${REPO}/.bugsweep/run-attacker-backtick/state.env"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  # THE security assertion: no injected command executed while the reaper read
+  # the hostile files.
+  [ ! -e "$marker" ]
+  # The reaper still did its legitimate job on the real victim worktree.
+  echo "$output" | grep -q "WORKTREES_REMOVED=1"
+  [ ! -d "$vwt" ]
 }
 
 @test "reap-worktrees: stale dirty worktree is committed to its branch, worktree removed, branch preserved" {

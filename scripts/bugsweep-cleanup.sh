@@ -225,7 +225,10 @@ resolve_pinned_target_branch() {
 orig_branch_for_run_dir() {
   local run_dir="$1" value
   [ -n "$run_dir" ] && [ -f "${run_dir}/state.env" ] || return 1
-  value="$(sed -n 's/^BUGSWEEP_ORIG_BRANCH=//p' "${run_dir}/state.env" | head -1)"
+  # bugsweep-06y: state.env values are now single-quote wrapped/escaped, so a
+  # raw sed extraction would capture the surrounding quotes. Read via the safe
+  # source-in-subshell getter (common.sh), which unwraps them exactly.
+  value="$(_bsw_state_env_get "${run_dir}/state.env" BUGSWEEP_ORIG_BRANCH)"
   [ -n "$value" ] || return 1
   printf '%s' "$value"
 }
@@ -338,7 +341,9 @@ run_dir_for_worktree() {
   worktree="$(canonical_path "$worktree")"
   for state_file in "${BUGSWEEP_REPO_ROOT}/.bugsweep"/run-*/state.env; do
     [ -f "$state_file" ] || continue
-    value="$(sed -n 's/^BUGSWEEP_WORKTREE=//p' "$state_file" | head -1)"
+    # bugsweep-06y: safe getter unwraps the now-single-quoted value; raw sed
+    # would keep the surrounding quotes and never match the bare worktree path.
+    value="$(_bsw_state_env_get "$state_file" BUGSWEEP_WORKTREE)"
     [ -n "$value" ] && value="$(canonical_path "$value")"
     if [ "$value" = "$worktree" ]; then
       run_dir="$(dirname "$state_file")"
@@ -370,7 +375,9 @@ any_run_dir_for_worktree_is_live() {
   worktree="$(canonical_path "$worktree")"
   for state_file in "${BUGSWEEP_REPO_ROOT}/.bugsweep"/run-*/state.env; do
     [ -f "$state_file" ] || continue
-    value="$(sed -n 's/^BUGSWEEP_WORKTREE=//p' "$state_file" | head -1)"
+    # bugsweep-06y: safe getter unwraps the now-single-quoted value (raw sed
+    # kept the quotes and would miss a live-leased run mapping this worktree).
+    value="$(_bsw_state_env_get "$state_file" BUGSWEEP_WORKTREE)"
     [ -n "$value" ] && value="$(canonical_path "$value")"
     if [ "$value" = "$worktree" ]; then
       candidate="$(dirname "$state_file")"
