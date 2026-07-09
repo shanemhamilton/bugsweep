@@ -44,6 +44,37 @@ one-line rationale. Only this list is eligible for the Fix phase. Append to the 
 no-progress detection and session checkpoints stay accurate. Put NOT-CONFIRMED items in
 the report's "needs human" section so nothing is lost.
 
+## Recall mode: record near-misses for human review (bugsweep-dxh)
+
+Check whether recall mode is active for this run (the orchestrator tells you, or you can
+read `config/bugsweep.config.json`'s `.recall.enabled`). Recall mode lowers the bar for
+what gets **recorded for human review** — it never lowers the bar for CONFIRMED, and it
+never makes anything more fix-eligible. Ignore this section entirely when recall mode is
+off.
+
+When recall mode is ON: for every item you rule **NOT CONFIRMED**, also judge whether your
+confidence sits in the 50–67 band — genuinely plausible, meaningfully more than a coin
+flip, but short of the >67% bar CONFIRMED requires. If so, it is a **near-miss**: record it
+to the ledger so a human reviewing this run later sees what almost made the cut, without it
+ever entering the fix pipeline:
+
+```bash
+echo '{"event":"near_miss","bug_id":"<BUG-ID>","severity":"<severity>","category":"<category>","file":"<file>","line":<line>,"rationale":"<one-line reason it is plausible but unproven>","confidence":<50-67>}' >> "<RUN_DIR>/ledger.jsonl"
+```
+
+Hard rules:
+- A near-miss is **never** fix-eligible. Do not add it to the CONFIRMED list, do not pass
+  it to the Fix phase, and its existence must not soften or influence any other item's
+  verdict.
+- Only a fresh, independent re-evaluation that reaches the normal >67% bar on its own
+  merits — in a later run, once more evidence exists — may promote a near-miss to
+  CONFIRMED. Recording it as a near-miss now is not partial credit toward that bar.
+- If the report template's "Near misses (review, not auto-fixed)" section is not yet
+  wired into this project's `SKILL.md`, the ledger event above is still sufficient: it is
+  what `run-summary.json`'s `near_misses[]` field is populated from at summarize time
+  (only when `--recall` is set — see `scripts/summarize.sh` and
+  `bench/scorer/run_summary.py`'s `reduce_run`).
+
 ## Synthesize a variant query per confirmed pattern bug (WU1)
 
 For each CONFIRMED finding whose bug has a *transferable shape* — a recurring pattern that

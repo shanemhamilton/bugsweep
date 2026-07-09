@@ -143,6 +143,24 @@
           "failures": {"type": ["integer", "null"]}
         }
       }
+    },
+    "near_misses": {
+      "type": "array",
+      "description": "OPTIONAL (bugsweep-dxh, --recall mode). Referee near-miss verdicts (confidence 50-67 — genuinely plausible but not >67% CONFIRMED) surfaced for human review. Populated ONLY when reduce_run's 'recall' parameter is true (see bench/scorer/run_summary.py); empty otherwise, even if near_miss ledger events exist. This field is reporting-only: near-misses are NEVER eligible for auto-fix and never appear in fixed/quarantined/confirmed_unfixed/findings, regardless of recall.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["bug_id", "severity", "category", "file", "line", "rationale", "confidence"],
+        "properties": {
+          "bug_id": {"type": ["string", "null"]},
+          "severity": {"type": ["string", "null"]},
+          "category": {"type": ["string", "null"]},
+          "file": {"type": ["string", "null"]},
+          "line": {"type": ["integer", "null"]},
+          "rationale": {"type": ["string", "null"]},
+          "confidence": {"type": ["integer", "null"], "minimum": 0, "maximum": 100}
+        }
+      }
     }
   }
 }

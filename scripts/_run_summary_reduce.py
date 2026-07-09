@@ -8,6 +8,9 @@ Inputs (env vars, set by scripts/summarize.sh):
   RUN_DIR         - absolute path to the run directory (ledger.jsonl, recon.json).
   REPORT_IS_STUB  - "true" or "false".
   MODE            - the bugsweep run mode, or empty for null.
+  RECALL          - "true" or "false" (bugsweep-dxh --recall mode; default "false"
+                    when unset). Gates ONLY run-summary.json's near_misses[] field
+                    — see bench/scorer/run_summary.py's reduce_run 'recall' param.
   BUGSWEEP_ROOT   - the skill root, so bench/scorer is importable regardless of cwd.
 
 Argv[1]: output path to write run-summary.json to.
@@ -28,6 +31,7 @@ def main() -> int:
     run_dir = Path(os.environ["RUN_DIR"])
     mode = os.environ.get("MODE") or None
     report_is_stub = os.environ.get("REPORT_IS_STUB") == "true"
+    recall = os.environ.get("RECALL") == "true"
 
     summary = reduce_run(
         ledger_path=run_dir / "ledger.jsonl",
@@ -39,6 +43,9 @@ def main() -> int:
         # absent (e.g. a first run on a repo has none) — see run_summary.py's
         # _read_prior_coverage.
         prior_coverage_path=run_dir / "prior-coverage.json",
+        # bugsweep-dxh: gates ONLY near_misses[]; never fixed/quarantined/
+        # confirmed_unfixed/findings — see reduce_run's docstring.
+        recall=recall,
     )
 
     out_path = sys.argv[1]

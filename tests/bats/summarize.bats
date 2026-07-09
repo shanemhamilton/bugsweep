@@ -659,3 +659,103 @@ assert clusters[0]['size'] == 2, clusters[0]
 assert sorted(clusters[0]['files']) == ['a.py', 'b.py'], clusters[0]
 "
 }
+
+# ---------------------------------------------------------------------------
+# bugsweep-dxh: --recall mode. near_misses[] surfaces Referee near-miss
+# ledger events (confidence 50-67) ONLY when requested — via the explicit
+# "--recall" 4th arg or the .recall.enabled config knob — and NEVER changes
+# fixed/quarantined/confirmed_unfixed/findings (the auto-fix-eligible
+# surface). This is the safety invariant: --recall changes reporting only.
+# ---------------------------------------------------------------------------
+
+@test "summarize.sh: --recall surfaces near_misses[] from near_miss ledger events" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 1 1
+  printf '{"event":"near_miss","bug_id":"BUG-NM1","severity":"medium","category":"prototype-pollution","file":"src/merge.js","line":42,"rationale":"referee 58%% confident","confidence":58}\n' \
+    >> "${RUN_DIR}/ledger.jsonl"
+
+  run bash "$SUMMARIZE_SH" "$RUN_DIR" "false" "fix" "--recall"
+  [ "$status" -eq 0 ]
+
+  local summary="${RUN_DIR}/run-summary.json"
+  python3 -c "
+import json
+d = json.load(open('${summary}'))
+assert d['near_misses'] == [{'bug_id': 'BUG-NM1', 'severity': 'medium', 'category': 'prototype-pollution', 'file': 'src/merge.js', 'line': 42, 'rationale': 'referee 58% confident', 'confidence': 58}], d['near_misses']
+"
+}
+
+@test "summarize.sh: without --recall, near_misses[] stays empty even with near_miss events present" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 1 1
+  printf '{"event":"near_miss","bug_id":"BUG-NM1","severity":"medium","category":"prototype-pollution","file":"src/merge.js","line":42,"rationale":"referee 58%% confident","confidence":58}\n' \
+    >> "${RUN_DIR}/ledger.jsonl"
+
+  run bash "$SUMMARIZE_SH" "$RUN_DIR" "false" "fix"
+  [ "$status" -eq 0 ]
+
+  local summary="${RUN_DIR}/run-summary.json"
+  python3 -c "
+import json
+d = json.load(open('${summary}'))
+assert d['near_misses'] == [], d['near_misses']
+"
+}
+
+@test "summarize.sh: .recall.enabled config knob surfaces near_misses[] without the --recall flag" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 1 1
+  printf '{"event":"near_miss","bug_id":"BUG-NM2","severity":"low","category":"xss","file":"x.js","line":7,"rationale":"borderline","confidence":51}\n' \
+    >> "${RUN_DIR}/ledger.jsonl"
+
+  local cfg="${BATS_TMP}/recall-enabled.config.json"
+  cat > "$cfg" <<'JSON'
+{"recall": {"enabled": true}}
+JSON
+
+  _SUMMARIZE_TEST_CONFIG_OVERRIDE="$cfg" run bash "$SUMMARIZE_SH" "$RUN_DIR" "false" "fix"
+  [ "$status" -eq 0 ]
+
+  local summary="${RUN_DIR}/run-summary.json"
+  python3 -c "
+import json
+d = json.load(open('${summary}'))
+assert len(d['near_misses']) == 1, d['near_misses']
+assert d['near_misses'][0]['bug_id'] == 'BUG-NM2', d['near_misses']
+"
+}
+
+@test "summarize.sh: --recall never changes fixed/quarantined/confirmed_unfixed/findings (safety invariant)" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 1 1
+  {
+    printf '{"event":"fix_committed","file":"a.py","bug_id":"BUG-1","severity":"high","category":"injection","line":10,"rationale":"r1"}\n'
+    printf '{"event":"quarantine","file":"b.py","bug_id":"BUG-2","severity":"medium","category":"logic","line":5,"rationale":"r2"}\n'
+    printf '{"event":"confirmed","file":"c.py","bug_id":"BUG-3","severity":"low","category":"style","line":1,"rationale":"r3"}\n'
+    printf '{"event":"near_miss","bug_id":"BUG-NM1","severity":"medium","category":"injection","file":"d.py","line":20,"rationale":"borderline","confidence":60}\n'
+  } >> "${RUN_DIR}/ledger.jsonl"
+
+  local run_dir_off="${RUN_DIR}-off" run_dir_on="${RUN_DIR}-on"
+  cp -R "$RUN_DIR" "$run_dir_off"
+  cp -R "$RUN_DIR" "$run_dir_on"
+
+  run bash "$SUMMARIZE_SH" "$run_dir_off" "false" "fix"
+  [ "$status" -eq 0 ]
+  run bash "$SUMMARIZE_SH" "$run_dir_on" "false" "fix" "--recall"
+  [ "$status" -eq 0 ]
+
+  python3 -c "
+import json
+off = json.load(open('${run_dir_off}/run-summary.json'))
+on = json.load(open('${run_dir_on}/run-summary.json'))
+
+for key in ('fixed', 'quarantined', 'confirmed_unfixed', 'findings', 'counts', 'status', 'coverage'):
+    assert off[key] == on[key], (key, off[key], on[key])
+
+assert 'BUG-NM1' not in off['fixed'] + off['quarantined'] + off['confirmed_unfixed']
+assert 'BUG-NM1' not in on['fixed'] + on['quarantined'] + on['confirmed_unfixed']
+
+assert off['near_misses'] == []
+assert len(on['near_misses']) == 1 and on['near_misses'][0]['bug_id'] == 'BUG-NM1'
+"
+}

@@ -85,6 +85,34 @@ bump schema_version; new optional fields never do).
   any of ``test``/``file``/``reruns``/``failures`` may be absent and is
   emitted as ``null``, never invented. Empty array when no such events exist
   (e.g. the emitter hasn't landed yet, or no flakiness was observed).
+
+``near_misses[]`` (bugsweep-dxh, ``--recall`` mode)
+-----------------------------------------------------
+Additive, OPTIONAL field (schema_version stays 1 — same versioning rule as
+the bugsweep-xdw fields above).
+
+* One entry per ``{"event": "near_miss", "bug_id", "severity", "category",
+  "file", "line", "rationale", "confidence"}`` ledger event. Per
+  ``prompts/referee.md``'s recall-mode instructions, the Referee emits this
+  event ONLY for DISPUTED/REJECTED items it is genuinely torn on (confidence
+  50-67 — plausible but not the >67% required for CONFIRMED). Same
+  tolerant-field contract as FINDING_EVENTS: any field may be absent and is
+  emitted as ``null``, never invented; ``bug_id`` is str()-coerced like
+  ``_finding_from_event`` does.
+* Gated ENTIRELY by ``reduce_run``'s ``recall`` keyword (default ``False``,
+  backward compatible): when ``recall`` is falsy, ``near_misses`` is always
+  ``[]``, regardless of whether ``near_miss`` events exist in the ledger.
+  When truthy, every ``near_miss`` event in the ledger is surfaced.
+* **THE SAFETY INVARIANT**: ``near_miss`` is deliberately NOT a member of
+  ``FINDING_EVENTS`` (see below), so it can never contribute to
+  ``fixed``/``quarantined``/``confirmed_unfixed``/``findings``/``counts`` —
+  those are computed from a single loop over ``FINDING_EVENTS`` lines only,
+  untouched by ``recall``. ``recall`` therefore changes ONLY the
+  ``near_misses`` key of the returned dict; it can never promote a near-miss
+  into fix-eligibility, and it can never suppress a real finding. This
+  property is asserted directly by
+  ``test_recall_never_changes_fix_eligibility`` in
+  ``bench/tests/unit/test_run_summary.py``.
 """
 
 from __future__ import annotations
@@ -134,6 +162,15 @@ FOLLOW_UP_CAP = 50
 #: Fields tolerated on a ``flaky_test`` ledger event; absent -> null, never
 #: invented (same tolerance contract as _FINDING_FIELDS).
 _FLAKY_FIELDS = ("test", "file", "reruns", "failures")
+
+#: Fields tolerated on a ``near_miss`` ledger event (bugsweep-dxh, --recall
+#: mode); absent -> null, never invented (same tolerance contract as
+#: _FINDING_FIELDS, plus ``confidence`` — the Referee's numeric confidence,
+#: expected in the 50-67 "plausible but not CONFIRMED" band per
+#: prompts/referee.md. This reducer does not enforce that range: the Referee
+#: is responsible for only emitting near_miss events inside it; the reducer's
+#: job is tolerant surfacing, not re-validating upstream judgment.
+_NEAR_MISS_FIELDS = ("bug_id", "severity", "category", "file", "line", "rationale", "confidence")
 
 
 def _iter_ledger_events(ledger_path: Path) -> list[dict[str, Any]]:
@@ -397,6 +434,35 @@ def _build_flaky(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _build_near_misses(events: list[dict[str, Any]], *, recall: bool) -> list[dict[str, Any]]:
+    """One entry per ``near_miss`` ledger event, tolerant of absent fields —
+    ONLY when ``recall`` is truthy (bugsweep-dxh's ``--recall`` mode).
+
+    This function is the field's SOLE gate. ``recall`` must never reach the
+    fixed/quarantined/confirmed_unfixed/findings/counts computation in
+    ``reduce_run`` — ``near_miss`` is not a member of ``FINDING_EVENTS``, so
+    that computation is identical regardless of ``recall``. Keeping this as
+    the one and only recall-gated call site is what makes the safety
+    invariant (near-misses are reporting-only, never fix-eligible) verifiable
+    by inspection, not just by test.
+    """
+    if not recall:
+        return []
+    near_misses: list[dict[str, Any]] = []
+    for event in events:
+        if event.get("event") != "near_miss":
+            continue
+        entry: dict[str, Any] = {field: event.get(field) for field in _NEAR_MISS_FIELDS}
+        line = entry.get("line")
+        entry["line"] = line if isinstance(line, int) else None
+        confidence = entry.get("confidence")
+        entry["confidence"] = confidence if isinstance(confidence, int) else None
+        bug_id = entry.get("bug_id")
+        entry["bug_id"] = str(bug_id) if bug_id is not None else None
+        near_misses.append(entry)
+    return near_misses
+
+
 def reduce_run(
     *,
     ledger_path: Path,
@@ -404,6 +470,7 @@ def reduce_run(
     report_is_stub: bool,
     mode: str | None,
     prior_coverage_path: Path | None = None,
+    recall: bool = False,
 ) -> dict[str, Any]:
     """Reduce one run's on-disk state into a schema-valid run-summary dict.
 
@@ -411,6 +478,12 @@ def reduce_run(
     compatibility with existing callers; when omitted, ``follow_up[]`` simply
     has no ``high_risk_file``/``stale_file`` entries (see
     ``_build_follow_up``).
+
+    ``recall`` (default ``False``, backward compatible; bugsweep-dxh) gates
+    ONLY the ``near_misses[]`` field — see ``_build_near_misses``. It never
+    affects ``fixed``/``quarantined``/``confirmed_unfixed``/``findings``/
+    ``counts``, which are computed from ``FINDING_EVENTS`` lines alone and
+    never see ``near_miss`` events regardless of this flag.
 
     Pure function: no subprocess, no network. Never raises on missing or
     malformed input files — this is the backstop that must produce a valid
@@ -464,6 +537,7 @@ def reduce_run(
             events=events, recon_path=recon_path, prior_coverage_path=prior_coverage_path
         ),
         "flaky": _build_flaky(events),
+        "near_misses": _build_near_misses(events, recall=recall),
     }
 
 
@@ -497,4 +571,5 @@ def reduce_run_degraded(
         "root_cause_clusters": [],
         "follow_up": [],
         "flaky": [],
+        "near_misses": [],
     }

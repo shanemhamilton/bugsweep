@@ -36,6 +36,10 @@
     "large_repo_file_threshold": 800,
     "large_repo_first_pass_batches": 40
   },
+  "recall": {
+    "_comment": "bugsweep-dxh: --recall mode. Lowers the bar ONLY for what gets reported — the Referee additionally records near-misses (confidence 50-67: genuinely plausible but not >67% CONFIRMED) to run-summary.json's near_misses[] for human review. It NEVER lowers the auto-fix threshold: near-misses are never promoted into fixed/quarantined/confirmed_unfixed/findings (enforced in bench/scorer/run_summary.py, independent of this config value). Overridable per-invocation via 'scripts/summarize.sh <RUN_DIR> <REPORT_IS_STUB> [MODE] --recall'.",
+    "enabled": false
+  },
   "analyzers": {
     "_comment": "Optional pre-hunt step (scripts/analyzers.sh): runs off-the-shelf static analyzers (semgrep, gosec, bandit, ...) to seed the Hunter with candidate locations and give the Referee a corroboration signal. Defaults to disabled — a reproducibility default: bugsweep's own findings are the audited, adversarially-reviewed output; auto-running third-party tools changes run behavior based on what happens to be installed on the machine, which would make two runs of the identical repo diverge. Opt in explicitly once you've reviewed what's installed.",
     "enabled": false,

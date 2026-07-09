@@ -19,22 +19,49 @@
 #           this tier is what keeps that true on a bare machine or after an
 #           unexpected reduction failure.
 #
-# Usage: summarize.sh <RUN_DIR> <REPORT_IS_STUB: true|false> [MODE]
+# Usage: summarize.sh <RUN_DIR> <REPORT_IS_STUB: true|false> [MODE] [--recall]
 # Prints: RUN_SUMMARY=<path to written run-summary.json>
 
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+# TEST-ONLY config redirection, same pattern as scripts/preflight.sh and
+# scripts/analyzers.sh: common.sh unconditionally sets BUGSWEEP_CONFIG to the
+# real repo config (a plain assignment, not `:=`), so this underscore-
+# prefixed hook lets tests/bats/summarize.bats exercise the .recall.enabled
+# config-knob path via a temp config, without a production-path env override.
+if [ -n "${_SUMMARIZE_TEST_CONFIG_OVERRIDE:-}" ]; then
+  # shellcheck disable=SC2034  # consumed by common.sh's cfg_get, sourced above
+  BUGSWEEP_CONFIG="$_SUMMARIZE_TEST_CONFIG_OVERRIDE"
+fi
+
 run_dir="${1:-}"
 report_is_stub="${2:-false}"
 mode="${3:-}"
-[ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: summarize.sh <RUN_DIR> <REPORT_IS_STUB> [MODE]"
+recall_flag="${4:-}"
+[ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: summarize.sh <RUN_DIR> <REPORT_IS_STUB> [MODE] [--recall]"
 run_dir="$(cd "$run_dir" && pwd)"
 
 case "$report_is_stub" in
   true|false) : ;;
-  *) die "usage: summarize.sh <RUN_DIR> <REPORT_IS_STUB: true|false> [MODE]" ;;
+  *) die "usage: summarize.sh <RUN_DIR> <REPORT_IS_STUB: true|false> [MODE] [--recall]" ;;
 esac
+
+# --recall (bugsweep-dxh): gates ONLY whether run-summary.json's near_misses[]
+# is populated from near_miss ledger events (Referee-recorded, confidence
+# 50-67 — see bench/scorer/run_summary.py's reduce_run 'recall' param). It can
+# NEVER affect fixed/quarantined/confirmed_unfixed/findings: those are
+# computed from FINDING_EVENTS, which near_miss is not a member of. An
+# explicit "--recall" 4th arg wins; otherwise falls back to the
+# .recall.enabled config knob (default false) so a caller that always invokes
+# summarize.sh the same way (e.g. finalize.sh) still honors a config change
+# without needing its own --recall wiring.
+recall_enabled="false"
+if [ "$recall_flag" = "--recall" ]; then
+  recall_enabled="true"
+else
+  recall_enabled="$(cfg_get '.recall.enabled' 'false')"
+fi
 
 summary_path="${run_dir}/run-summary.json"
 
@@ -98,7 +125,8 @@ _write_degraded_summary() {
   "findings": [],
   "root_cause_clusters": [],
   "follow_up": [],
-  "flaky": []
+  "flaky": [],
+  "near_misses": []
 }
 JSON
 }
@@ -117,6 +145,7 @@ _py_reducer="${BUGSWEEP_SCRIPT_DIR}/_run_summary_reduce.py"
 
 if have_python && [ -f "$_py_reducer" ]; then
   if ! MODE="$mode" REPORT_IS_STUB="$report_is_stub" RUN_DIR="$run_dir" \
+       RECALL="$recall_enabled" \
        BUGSWEEP_ROOT="$BUGSWEEP_ROOT" \
        python3 "$_py_reducer" "$summary_path" 2>/dev/null; then
     log "summarize: python3 reduction failed; falling back to degraded summary."

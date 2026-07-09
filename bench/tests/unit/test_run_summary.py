@@ -1216,3 +1216,242 @@ def test_flaky_tolerant_of_missing_fields(tmp_path: Path) -> None:
         {"test": "test_bar", "file": None, "reruns": None, "failures": None}
     ]
     _validate_against_schema(summary)
+
+
+# ---------------------------------------------------------------------------
+# near_misses[] (bugsweep-dxh, --recall mode): Referee-recorded "near_miss"
+# ledger events (confidence 50-67 — genuinely plausible but not >67% CONFIRMED)
+# surfaced for human review ONLY when reduce_run's `recall` kwarg is True.
+# THE SAFETY INVARIANT: `recall` must NEVER change fixed/quarantined/
+# confirmed_unfixed/findings/counts — near_misses[] is the ONLY field it
+# gates. `near_miss` is deliberately not a member of FINDING_EVENTS, so the
+# fix-eligibility computation cannot see it regardless of `recall`.
+# ---------------------------------------------------------------------------
+
+
+def test_near_misses_populated_from_ledger_events_when_recall_enabled(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "near_miss",
+                "bug_id": "BUG-NM1",
+                "severity": "medium",
+                "category": "prototype-pollution",
+                "file": "src/merge.js",
+                "line": 42,
+                "rationale": "referee 58% confident: plausible but unproven reachability",
+                "confidence": 58,
+            }
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(
+        ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix", recall=True
+    )
+
+    assert summary["near_misses"] == [
+        {
+            "bug_id": "BUG-NM1",
+            "severity": "medium",
+            "category": "prototype-pollution",
+            "file": "src/merge.js",
+            "line": 42,
+            "rationale": "referee 58% confident: plausible but unproven reachability",
+            "confidence": 58,
+        }
+    ]
+    _validate_against_schema(summary)
+
+
+def test_near_misses_empty_when_recall_disabled_even_if_events_present(tmp_path: Path) -> None:
+    """recall defaults to False (backward compatible) — near_miss events in the
+    ledger must NOT surface unless the caller explicitly opts into recall."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "near_miss",
+                "bug_id": "BUG-NM1",
+                "severity": "medium",
+                "category": "prototype-pollution",
+                "file": "src/merge.js",
+                "line": 42,
+                "rationale": "borderline",
+                "confidence": 60,
+            }
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary_default = reduce_run(
+        ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix"
+    )
+    summary_explicit_off = reduce_run(
+        ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix", recall=False
+    )
+
+    assert summary_default["near_misses"] == []
+    assert summary_explicit_off["near_misses"] == []
+    _validate_against_schema(summary_default)
+
+
+def test_near_misses_tolerant_of_missing_fields(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "near_miss", "bug_id": "BUG-NM2"}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(
+        ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix", recall=True
+    )
+
+    assert summary["near_misses"] == [
+        {
+            "bug_id": "BUG-NM2",
+            "severity": None,
+            "category": None,
+            "file": None,
+            "line": None,
+            "rationale": None,
+            "confidence": None,
+        }
+    ]
+    _validate_against_schema(summary)
+
+
+def test_near_misses_bug_id_coerced_to_string_for_int_bug_id(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "near_miss", "bug_id": 7, "confidence": 55}])
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(
+        ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix", recall=True
+    )
+
+    assert summary["near_misses"][0]["bug_id"] == "7"
+    _validate_against_schema(summary)
+
+
+def test_reduce_run_degraded_near_misses_present_and_empty() -> None:
+    """Degraded output stays schema-valid: near_misses is present as an empty
+    container, never omitted (same contract as root_cause_clusters/follow_up/
+    flaky — bugsweep-xdw)."""
+    summary = reduce_run_degraded(covered=1, total=2, report_is_stub=True, mode="detect-only")
+
+    assert summary["near_misses"] == []
+    _validate_against_schema(summary)
+
+
+def test_recall_never_changes_fix_eligibility(tmp_path: Path) -> None:
+    """THE SAFETY INVARIANT (bugsweep-dxh): --recall changes ONLY what gets
+    reported (near_misses[]). It must NEVER lower the bar for auto-fix
+    eligibility. This asserts every fix-eligibility-relevant field is
+    byte-for-byte identical whether recall is on or off, even when the ledger
+    mixes near_miss events with real fix_committed/quarantine/confirmed
+    events — a near_miss must never be promoted into fixed/quarantined/
+    confirmed_unfixed/findings regardless of the recall flag."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "fix_committed",
+                "bug_id": "BUG-1",
+                "severity": "high",
+                "category": "injection",
+                "file": "a.py",
+                "line": 10,
+                "rationale": "sql built via string concat",
+            },
+            {
+                "event": "quarantine",
+                "bug_id": "BUG-2",
+                "severity": "medium",
+                "category": "logic",
+                "file": "b.py",
+                "line": 5,
+                "rationale": "fix reverted: broke checkout flow",
+            },
+            {
+                "event": "confirmed",
+                "bug_id": "BUG-3",
+                "severity": "low",
+                "category": "style",
+                "file": "c.py",
+                "line": 1,
+                "rationale": "confirmed, below severity floor",
+            },
+            {
+                "event": "near_miss",
+                "bug_id": "BUG-NM1",
+                "severity": "medium",
+                "category": "injection",
+                "file": "d.py",
+                "line": 20,
+                "rationale": "referee 60% confident: plausible but unproven",
+                "confidence": 60,
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary_off = reduce_run(
+        ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix", recall=False
+    )
+    summary_on = reduce_run(
+        ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix", recall=True
+    )
+
+    fix_eligibility_keys = (
+        "schema_version",
+        "mode",
+        "status",
+        "stop_reason",
+        "coverage",
+        "counts",
+        "fixed",
+        "quarantined",
+        "confirmed_unfixed",
+        "findings",
+        "root_cause_clusters",
+        "follow_up",
+        "flaky",
+    )
+    off_projection = {k: summary_off[k] for k in fix_eligibility_keys}
+    on_projection = {k: summary_on[k] for k in fix_eligibility_keys}
+
+    # Byte-for-byte: canonical JSON serialization of every fix-eligibility
+    # field must be IDENTICAL between the two runs.
+    assert json.dumps(off_projection, sort_keys=True) == json.dumps(on_projection, sort_keys=True)
+
+    # The bug the near_miss event describes must never appear as fixed,
+    # quarantined, or confirmed-unfixed — under EITHER value of recall.
+    for summary in (summary_off, summary_on):
+        assert "BUG-NM1" not in summary["fixed"]
+        assert "BUG-NM1" not in summary["quarantined"]
+        assert "BUG-NM1" not in summary["confirmed_unfixed"]
+        assert all(f["bug_id"] != "BUG-NM1" for f in summary["findings"])
+
+    # near_misses[] is the ONLY field that differs.
+    assert summary_off["near_misses"] == []
+    assert summary_on["near_misses"] == [
+        {
+            "bug_id": "BUG-NM1",
+            "severity": "medium",
+            "category": "injection",
+            "file": "d.py",
+            "line": 20,
+            "rationale": "referee 60% confident: plausible but unproven",
+            "confidence": 60,
+        }
+    ]
+    _validate_against_schema(summary_off)
+    _validate_against_schema(summary_on)
