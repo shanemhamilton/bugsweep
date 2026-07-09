@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Command injection via `state.env` (bugsweep-06y).** A run started on a
+  maliciously-named git branch (e.g. `x$(...)`, which git permits) could execute
+  arbitrary shell: `preflight.sh` wrote the branch name raw into `state.env` and
+  several scripts `source` it. Values are now single-quote-escaped on write
+  (`_bsw_env_kv`), and the worktree reaper — which reads other runs' `state.env`
+  files — decodes them as pure text (`_bsw_state_env_get`, no `source`/`eval`),
+  so hostile, legacy, or tampered files are inert. The preflight ledger line is
+  JSON-escaped so a `"` in a branch name can't break it.
+
 ## [0.4.0] - 2026-07-08
 
 The overnight-orchestrator milestone: bugsweep grows from a single-run bug hunter into a
