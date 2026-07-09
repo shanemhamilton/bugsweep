@@ -874,3 +874,107 @@ teardown() {
   [ ! -d "$wt" ]
   ! _branch_exists "bugsweep/single-mapping-done"
 }
+
+# ---------------------------------------------------------------------------
+# bugsweep-gqw item 1 (secondary "positive-dead-evidence" reap path) was
+# designed and then REMOVED after an adversarial production-default repro:
+# no-lease + quiescent-ledger + worktree-mtime-past-grace + branch-contained
+# are ALL satisfiable by a genuinely LIVE run, so any such reap could delete
+# the working directory a live subagent is executing in. The pre-gqw
+# "no lease record ever -> preserve" belt (preserve-biased, correct) is
+# restored; a lingering dead worktree is an accepted disk-hygiene cost. The
+# existing MAJOR-1c preserve tests above ("worktree with no lease record and
+# age below the grace floor is preserved", "mapped worktree with NO lease
+# record ever, past the floor, is preserved") already lock that
+# preserve-biased behavior in, so no item-1 tests remain.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# bugsweep-gqw item 2: the `reap_worktrees || reap_status=$?` idiom (needed so
+# the reap lock is ALWAYS structurally released, MINOR 4) disables `set -e`
+# for the entire reap_worktrees() body. A failed mktemp (e.g. an unwritable or
+# nonexistent TMPDIR) must never be silently swallowed into a dishonest
+# "REAP_RESULT=ok" with all-zero counts.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: mktemp/infrastructure failure is reported honestly as REAP_RESULT=error, never a silent ok (item 2)" {
+  local bogus_tmpdir="${BATS_TMP}/does-not-exist/nested/nope"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main TMPDIR="$bogus_tmpdir" \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "REAP_RESULT=error"
+  ! echo "$output" | grep -q "REAP_RESULT=ok"
+}
+
+# ---------------------------------------------------------------------------
+# bugsweep-gqw item 3: LEASES_RELEASED counts every stale lease this call's
+# own state.sh lease-list reclaimed among worktrees it processed — including
+# ones that were PRESERVED (e.g. a lapsed lease whose worktree was kept alive
+# by the ledger-activity belt, MAJOR 1b). That is not "worktrees reaped".
+# LEASES_RELEASED_REAPED is the accurate subset restricted to worktrees this
+# call actually removed.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: LEASES_RELEASED_REAPED excludes a preserved worktree whose stale lease this call itself reclaimed (item 3)" {
+  _make_bugsweep_branch "bugsweep/lease-reclaimed-preserved" "long hunt, lease lapsed but ledger fresh"
+  local wt="${REPO}/.bugsweep/worktrees/lease-reclaimed-preserved"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/lease-reclaimed-preserved"
+  wt="$(cd "$wt" && pwd -P)"
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "lease-reclaimed-preserved" "bugsweep/lease-reclaimed-preserved" "$wt")"
+  # Lease lapsed past grace (dead pid + aged lease file) -> reclaimed by THIS
+  # call's own state.sh lease-list. Ledger left FRESH so the MAJOR 1b
+  # fresh-ledger belt preserves the worktree despite the reclaim.
+  _make_lease "run-lease-reclaimed-preserved" "$run_dir" 999999 old
+  printf '{"event":"batch_covered","batch":1}\n' >> "${run_dir}/ledger.jsonl"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREE_PRESERVED=${wt}"
+  echo "$output" | grep -q "LEASES_RELEASED=1"
+  echo "$output" | grep -q "LEASES_RELEASED_REAPED=0"
+  [ -d "$wt" ]
+  _branch_exists "bugsweep/lease-reclaimed-preserved"
+}
+
+@test "reap-worktrees: LEASES_RELEASED_REAPED equals LEASES_RELEASED for a worktree that was actually reaped (item 3 sanity)" {
+  _make_bugsweep_branch "bugsweep/lease-reclaimed-reaped" "genuinely dead run, actually reaped"
+  local wt="${REPO}/.bugsweep/worktrees/lease-reclaimed-reaped"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/lease-reclaimed-reaped"
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "lease-reclaimed-reaped" "bugsweep/lease-reclaimed-reaped" "$wt")"
+  _make_lease "run-lease-reclaimed-reaped" "$run_dir" 999999 old
+  _age_ledger "$run_dir"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_REMOVED=1"
+  echo "$output" | grep -q "LEASES_RELEASED=1"
+  echo "$output" | grep -q "LEASES_RELEASED_REAPED=1"
+  [ ! -d "$wt" ]
+}
+
+@test "reap-worktrees: skipped_locked path emits LEASES_RELEASED_REAPED=0 alongside the other zeroed counters (item 3 contract)" {
+  local lockdir="${REPO}/.bugsweep/.reap-worktrees.lock"
+  mkdir -p "$lockdir"
+  printf '%s' "$$" > "${lockdir}/pid"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_LOCK_TIMEOUT=1 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "REAP_RESULT=skipped_locked"
+  echo "$output" | grep -q "^LEASES_RELEASED_REAPED=0$"
+
+  rm -f "${lockdir}/pid"
+  rmdir "$lockdir" 2>/dev/null || true
+}

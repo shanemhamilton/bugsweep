@@ -567,6 +567,19 @@ reap_one_worktree() {
     # pre-reclaim snapshot) -> ambiguous -> preserve. Positive dead evidence
     # requires a lease to have existed and gone stale; "never had a lease" is
     # not that.
+    #
+    # bugsweep-gqw item 1 (secondary "positive-dead-evidence" reap path) was
+    # DESIGNED here and then REMOVED after an adversarial production-default
+    # repro: no lease + quiescent ledger + worktree mtime past grace + branch
+    # contained are ALL satisfiable by a genuinely LIVE run (worktree root
+    # mtime freezes at `git worktree add`; a single slow tool call exceeds the
+    # ledger quiescence window; an out-of-band sibling `state.sh lease-list`
+    # reclaim removes the lease and lease_touch cannot resurrect it; a branch
+    # is its own ancestor before its first fix commit). There is no
+    # mtime/quiescence proxy that separates "dead" from "alive but slow" — only
+    # a genuine per-process liveness check would, which is out of scope. So a
+    # no-lease-in-snapshot worktree stays PRESERVED: a lingering dead worktree
+    # is an accepted disk-hygiene cost, never worth risking a live run's data.
     if ! grep -qxF "$run_dir" "$snapshot_file" 2>/dev/null; then
       log "no lease record was ever found for $path ($branch) — ambiguous; preserving (reap requires a stale-past-grace lease)"
       record_worktree_preserved "$path"
@@ -636,17 +649,80 @@ reap_one_worktree() {
   fi
 }
 
+# bugsweep-gqw item 2: reap_worktrees() is invoked by its caller as
+# `reap_worktrees || reap_status=$?` so the reap lock is ALWAYS structurally
+# released (MINOR 4) even when this function fails. That `||` context
+# disables `set -e` for this function's ENTIRE body as a side effect of bash
+# semantics — a failed mktemp (unwritable or nonexistent TMPDIR) would
+# otherwise be silently swallowed: the affected variable stays empty, every
+# downstream read/write against it quietly no-ops or errors without
+# aborting, and the function still reaches the bottom and prints a dishonest
+# "REAP_RESULT=ok" with all-zero counts. Each mktemp below is explicitly
+# verified; on failure this reports the honest "REAP_RESULT=error" (with
+# every documented counter still zeroed — the existing result-line contract,
+# MINOR 3) and returns non-zero so the caller propagates a real error exit.
+_bsw_reap_infra_error() {
+  local reason="$1"
+  log "reap-worktrees: internal failure — ${reason}; aborting this pass, no worktree was touched"
+  echo "REAP_RESULT=error"
+  [ -n "$TARGET_BRANCH" ] && echo "TARGET_BRANCH=${TARGET_BRANCH}"
+  echo "WORKTREES_REMOVED=0"
+  echo "WORKTREES_PRESERVED=0"
+  echo "WORKTREES_OUT_OF_SCOPE=0"
+  echo "BRANCHES_PRUNED=0"
+  echo "LEASES_RELEASED=0"
+  echo "LEASES_RELEASED_REAPED=0"
+}
+
 reap_worktrees() {
-  local live_file leases_released line current_path current_branch
-  local seen_paths_file pre_leases_file processed_run_dirs_file this_run_dir d canon
-  live_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-live-leases.XXXXXX")"
+  local live_file leases_released leases_released_reaped line current_path current_branch
+  local seen_paths_file pre_leases_file processed_run_dirs_file reaped_run_dirs_file
+  local this_run_dir d canon canon_current
+
+  live_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-live-leases.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$live_file" ] || [ ! -f "$live_file" ]; then
+    _bsw_reap_infra_error "could not allocate a temp file (mktemp failed) for the live-lease snapshot"
+    return 1
+  fi
   : > "$live_file"
-  seen_paths_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-seen-worktrees.XXXXXX")"
+
+  seen_paths_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-seen-worktrees.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$seen_paths_file" ] || [ ! -f "$seen_paths_file" ]; then
+    _bsw_reap_infra_error "could not allocate a temp file (mktemp failed) for seen-worktree tracking"
+    rm -f "$live_file" 2>/dev/null || true
+    return 1
+  fi
   : > "$seen_paths_file"
-  pre_leases_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-pre-leases.XXXXXX")"
+
+  pre_leases_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-pre-leases.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$pre_leases_file" ] || [ ! -f "$pre_leases_file" ]; then
+    _bsw_reap_infra_error "could not allocate a temp file (mktemp failed) for the pre-reclaim lease snapshot"
+    rm -f "$live_file" "$seen_paths_file" 2>/dev/null || true
+    return 1
+  fi
   lease_run_dirs_snapshot > "$pre_leases_file" 2>/dev/null || true
-  processed_run_dirs_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-processed-rundirs.XXXXXX")"
+
+  processed_run_dirs_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-processed-rundirs.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$processed_run_dirs_file" ] || [ ! -f "$processed_run_dirs_file" ]; then
+    _bsw_reap_infra_error "could not allocate a temp file (mktemp failed) for processed-run-dir tracking"
+    rm -f "$live_file" "$seen_paths_file" "$pre_leases_file" 2>/dev/null || true
+    return 1
+  fi
   : > "$processed_run_dirs_file"
+
+  # bugsweep-gqw item 3: separately tracks run_dirs whose worktree this call
+  # ACTUALLY reaped (removed), so LEASES_RELEASED_REAPED below can never be
+  # conflated with LEASES_RELEASED (which counts every stale lease this
+  # call's own state.sh lease-list reclaimed among worktrees it merely
+  # PROCESSED — including ones that ended up PRESERVED, e.g. a lapsed lease
+  # whose worktree the fresh-ledger belt, MAJOR 1b, kept alive).
+  reaped_run_dirs_file="$(mktemp "${TMPDIR:-/tmp}/bugsweep-reaped-rundirs.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$reaped_run_dirs_file" ] || [ ! -f "$reaped_run_dirs_file" ]; then
+    _bsw_reap_infra_error "could not allocate a temp file (mktemp failed) for reaped-run-dir tracking"
+    rm -f "$live_file" "$seen_paths_file" "$pre_leases_file" "$processed_run_dirs_file" 2>/dev/null || true
+    return 1
+  fi
+  : > "$reaped_run_dirs_file"
 
   bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-list 2>/dev/null \
     | sed -n 's/^LEASE=//p' > "$live_file" || true
@@ -664,6 +740,16 @@ reap_worktrees() {
         this_run_dir="$(run_dir_for_worktree "$current_path" || true)"
         [ -n "$this_run_dir" ] && printf '%s\n' "$this_run_dir" >> "$processed_run_dirs_file"
         reap_one_worktree "$current_path" "$current_branch" "$live_file" "$pre_leases_file"
+        # bugsweep-gqw item 3: only correlate this run_dir to the "actually
+        # reaped" bookkeeping when the worktree was REMOVED this pass (i.e.
+        # its canonical path landed in WORKTREE_REMOVED_LINES) — never merely
+        # because reap_one_worktree processed it.
+        if [ -n "$this_run_dir" ]; then
+          canon_current="$(canonical_path "$current_path")"
+          if printf '%s\n' "$WORKTREE_REMOVED_LINES" | grep -qxF "$canon_current" 2>/dev/null; then
+            printf '%s\n' "$this_run_dir" >> "$reaped_run_dirs_file"
+          fi
+        fi
         ;;
     esac
   done < <(git worktree list --porcelain)
@@ -701,8 +787,21 @@ reap_worktrees() {
     done < "$processed_run_dirs_file"
   fi
 
+  # bugsweep-gqw item 3: the accurate subset of the count above whose
+  # worktree was ACTUALLY reaped this pass (see reaped_run_dirs_file).
+  leases_released_reaped=0
+  if [ -s "$reaped_run_dirs_file" ]; then
+    while IFS= read -r this_run_dir; do
+      [ -n "$this_run_dir" ] || continue
+      if grep -qxF "$this_run_dir" "$pre_leases_file" 2>/dev/null \
+        && ! grep -qxF "$this_run_dir" "$live_file" 2>/dev/null; then
+        leases_released_reaped=$(( leases_released_reaped + 1 ))
+      fi
+    done < "$reaped_run_dirs_file"
+  fi
+
   git worktree prune >/dev/null 2>&1 || true
-  rm -f "$live_file" "$seen_paths_file" "$pre_leases_file" "$processed_run_dirs_file" 2>/dev/null || true
+  rm -f "$live_file" "$seen_paths_file" "$pre_leases_file" "$processed_run_dirs_file" "$reaped_run_dirs_file" 2>/dev/null || true
 
   echo "REAP_RESULT=ok"
   # BLOCKER B observability: surface the resolved pinned target so callers
@@ -714,6 +813,13 @@ reap_worktrees() {
   echo "WORKTREES_OUT_OF_SCOPE=$(count_list "$WORKTREE_OUT_OF_SCOPE_LINES")"
   echo "BRANCHES_PRUNED=$(count_list "$BRANCH_DELETED_LINES")"
   echo "LEASES_RELEASED=${leases_released}"
+  # bugsweep-gqw item 3: LEASES_RELEASED (above) counts every stale lease
+  # this call's own state.sh lease-list reclaimed among PROCESSED worktrees,
+  # regardless of outcome — it does NOT imply "worktrees reaped" (a lapsed
+  # lease can be reclaimed for a worktree the ledger-activity belt still
+  # preserved as alive, MAJOR 1b). LEASES_RELEASED_REAPED is the accurate
+  # subset restricted to worktrees this call actually removed.
+  echo "LEASES_RELEASED_REAPED=${leases_released_reaped}"
   emit_list "WORKTREE_REMOVED" "$WORKTREE_REMOVED_LINES"
   emit_list "WORKTREE_PRESERVED" "$WORKTREE_PRESERVED_LINES"
   emit_list "WORKTREE_OUT_OF_SCOPE" "$WORKTREE_OUT_OF_SCOPE_LINES"
@@ -849,7 +955,8 @@ if [ "$REAP_WORKTREES" = "yes" ]; then
   log "reap-worktrees: lock busy or repo root unresolved — skipping this pass (non-fatal; a later preflight/finalize call will retry)."
   # MINOR 3 (dataloss re-review): AC4 requires every KEY=VALUE counter line to
   # be emitted on EVERY path, including zeros — a headless caller parsing the
-  # output must never see a counter simply vanish. Emit all five as 0 here.
+  # output must never see a counter simply vanish. Emit all six as 0 here
+  # (bugsweep-gqw item 3 added LEASES_RELEASED_REAPED to this contract).
   echo "REAP_RESULT=skipped_locked"
   [ -n "$TARGET_BRANCH" ] && echo "TARGET_BRANCH=${TARGET_BRANCH}"
   echo "WORKTREES_REMOVED=0"
@@ -857,6 +964,7 @@ if [ "$REAP_WORKTREES" = "yes" ]; then
   echo "WORKTREES_OUT_OF_SCOPE=0"
   echo "BRANCHES_PRUNED=0"
   echo "LEASES_RELEASED=0"
+  echo "LEASES_RELEASED_REAPED=0"
   exit 0
 fi
 
