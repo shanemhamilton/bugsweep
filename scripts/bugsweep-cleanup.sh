@@ -335,6 +335,31 @@ run_dir_is_live() {
   grep -qxF "$run_dir" "$live_file" 2>/dev/null
 }
 
+# bugsweep-cv0: run_dir_for_worktree() stops at the FIRST run-*/state.env
+# that names a given worktree. Every real run mints a unique run_dir, so in
+# production exactly one state.env ever maps a worktree. But if an operator
+# manually copies a .bugsweep/run-* directory, TWO state.env files can name
+# the SAME worktree — and trusting only the first match's liveness (or,
+# further down, its ".finalized" sentinel) would silently ignore a second,
+# genuinely live-leased run_dir mapping that same worktree. This scans EVERY
+# state.env naming the worktree and reports whether ANY of them is live, so
+# the DONE/.finalized reap path can never bypass a live lease just because it
+# wasn't the lexically-first match.
+any_run_dir_for_worktree_is_live() {
+  local worktree="$1" live_file="$2" state_file value candidate
+  worktree="$(canonical_path "$worktree")"
+  for state_file in "${BUGSWEEP_REPO_ROOT}/.bugsweep"/run-*/state.env; do
+    [ -f "$state_file" ] || continue
+    value="$(sed -n 's/^BUGSWEEP_WORKTREE=//p' "$state_file" | head -1)"
+    [ -n "$value" ] && value="$(canonical_path "$value")"
+    if [ "$value" = "$worktree" ]; then
+      candidate="$(dirname "$state_file")"
+      run_dir_is_live "$candidate" "$live_file" && return 0
+    fi
+  done
+  return 1
+}
+
 worktree_for_branch() {
   local branch="$1" line path=""
   while IFS= read -r line; do
@@ -504,7 +529,11 @@ reap_one_worktree() {
     return 0
   fi
 
-  if run_dir_is_live "$run_dir" "$live_file"; then
+  # bugsweep-cv0: check liveness across EVERY state.env naming this worktree
+  # (not just the single first-matched run_dir bound above) so a live lease
+  # recorded under a lexically-later run_dir is never invisible to the
+  # DONE/.finalized reap path below.
+  if any_run_dir_for_worktree_is_live "$path" "$live_file"; then
     log "preserving live leased worktree $path ($branch)"
     record_worktree_preserved "$path"
     return 0

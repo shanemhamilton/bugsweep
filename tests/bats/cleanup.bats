@@ -810,3 +810,67 @@ teardown() {
   [ ! -d "$wt" ]
   ! _branch_exists "bugsweep/finalized-run"
 }
+
+# ---------------------------------------------------------------------------
+# bugsweep-cv0: run_dir_for_worktree returns only the FIRST matching
+# run-*/state.env for a worktree and the DONE/.finalized reap path trusts
+# that single match's sentinel without checking whether any OTHER state.env
+# naming the same worktree is currently live. If an operator manually copies
+# a .bugsweep/run-* directory (the only realistic way two state.env files
+# name the same worktree — every real preflight run mints a unique run_dir),
+# a lexically-first stale/copied ".finalized" must never let the reaper
+# bypass a genuinely live lease recorded under a different (lexically later)
+# run_dir for that same worktree.
+# ---------------------------------------------------------------------------
+
+@test "reap-worktrees: a second state.env mapping the same worktree with a LIVE lease is not bypassed by a first-matched stale .finalized sentinel (bugsweep-cv0)" {
+  _make_bugsweep_branch "bugsweep/dup-mapping" "fix with duplicate state.env mapping"
+  local wt="${REPO}/.bugsweep/worktrees/dup-mapping"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/dup-mapping"
+  wt="$(cd "$wt" && pwd -P)"
+
+  # Lexically-FIRST state.env for this worktree ("run-a-decoy" sorts before
+  # "run-b-live" in the run-*/state.env glob): carries a stale/copied
+  # .finalized sentinel and has NO live lease of its own — this is what a
+  # manually-copied .bugsweep/run-* directory looks like.
+  local rd_a
+  rd_a="$(_make_run_dir_for_worktree "a-decoy" "bugsweep/dup-mapping" "$wt")"
+  _mark_finalized "$rd_a"
+
+  # Lexically-SECOND state.env naming the SAME worktree, with a genuinely
+  # LIVE lease (this test process's own pid). The reaper must never bypass
+  # this live mapping just because it wasn't the first (lexical) match.
+  local rd_b
+  rd_b="$(_make_run_dir_for_worktree "b-live" "bugsweep/dup-mapping" "$wt")"
+  _make_lease "run-dup-mapping-live" "$rd_b" "$$"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREE_PRESERVED=${wt}"
+  [ -d "$wt" ]
+  _branch_exists "bugsweep/dup-mapping"
+}
+
+@test "reap-worktrees: single state.env, .finalized, no live lease is still reaped (happy path unaffected by bugsweep-cv0 guard)" {
+  _make_bugsweep_branch "bugsweep/single-mapping-done" "genuinely finished single-mapping run"
+  _merge_branch_to_main "bugsweep/single-mapping-done"
+  local wt="${REPO}/.bugsweep/worktrees/single-mapping-done"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q "$wt" "bugsweep/single-mapping-done"
+  local run_dir
+  run_dir="$(_make_run_dir_for_worktree "single-mapping-done" "bugsweep/single-mapping-done" "$wt")"
+  _mark_finalized "$run_dir"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" --reap-worktrees
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKTREES_REMOVED=1"
+  echo "$output" | grep -q "BRANCH_PRUNED=bugsweep/single-mapping-done"
+  [ ! -d "$wt" ]
+  ! _branch_exists "bugsweep/single-mapping-done"
+}
