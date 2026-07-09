@@ -13,9 +13,12 @@
     "Pods/**", ".next/**", "coverage/**", "*.lock", "*.min.js", "**/__generated__/**"
   ],
   "adversarial": {
+    "_comment": "bugsweep-hcj: referee_votes (K) is the number of independent Referee adjudications (same rubric, varied framing) required for a severity >= high/critical finding to become fix-eligible -- it needs a STRICT MAJORITY of CONFIRMED verdicts (see prompts/referee.md and bench/scorer/run_summary.py's majority_gate). referee_votes_cap is a hard ceiling on K so a misconfigured value can't blow up adjudication cost on an unattended run -- effective K = min(referee_votes, referee_votes_cap). Severity below high (medium/low) is unaffected: single-pass adjudication, unchanged.",
     "challenge_enabled": true,
     "referee_enabled": true,
-    "referee_spotchecks_upheld": true
+    "referee_spotchecks_upheld": true,
+    "referee_votes": 3,
+    "referee_votes_cap": 5
   },
   "research": {
     "antipattern_priming": true,

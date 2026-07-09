@@ -37,6 +37,54 @@ When you see such reasoning in a DISPUTED item:
   NOT CONFIRMED on a CVE-matched finding, you need concrete evidence the specific version
   is patched or the path is unreachable — not merely that exploitation requires preconditions.
 
+## K-vote majority for severity >= high (bugsweep-hcj)
+
+A single adjudication is enough to decide a DISPUTED item or spot-check an UPHELD one at
+medium/low severity — that path is **unchanged**. But a lone CONFIRMED verdict deciding
+whether a HIGH or CRITICAL finding becomes fix-eligible (and therefore gets auto-edited) is
+not enough independent evidence; a critical bug warrants more than one read.
+
+For every finding whose severity is **high or critical**, before it can become CONFIRMED
+and fix-eligible:
+
+1. Read `config/bugsweep.config.json`'s `.adversarial.referee_votes` for K, the number of
+   independent adjudications, capped at `.adversarial.referee_votes_cap` regardless of the
+   configured value: `K = min(referee_votes, referee_votes_cap)`. A missing or malformed
+   config value falls back to a small default (3) — never skip the K-vote path because the
+   config couldn't be read.
+2. Perform K independent adjudications of the SAME finding, reusing the rubric in "How to
+   rule" above unchanged (the >67%-confidence bar, the triggering condition, real-world
+   impact) — but vary the framing/angle of each pass so they are genuinely independent
+   reads, not a repeated rubber-stamp of the first answer. For example: (a) trace forward
+   from the untrusted source to the sink, (b) trace backward from the sink to every call
+   site that reaches it, (c) actively try to disprove the finding the way the Skeptic
+   would, then see if it survives. Each pass ends in a plain **CONFIRMED** or
+   **NOT CONFIRMED** verdict per the normal >67% bar — do not soften the bar on a later
+   pass just because an earlier pass already said CONFIRMED.
+3. Record every vote to the ledger as it happens:
+   ```bash
+   echo '{"event":"referee_vote","bug_id":"<BUG-ID>","severity":"<severity>","verdict":"CONFIRMED"}' >> "<RUN_DIR>/ledger.jsonl"
+   ```
+   (or `"verdict":"NOT_CONFIRMED"` for a pass that did not clear the bar).
+4. The finding is promoted to CONFIRMED and fix-eligible ONLY on a **strict majority** of
+   CONFIRMED votes — strictly more CONFIRMED votes than every other outcome combined. A tie
+   is **NOT CONFIRMED** — conservative by design, the same "when in doubt, default to
+   NOT CONFIRMED" rule as item 4 in "How to rule" above: under-fixing is safe, auto-editing
+   on a shaky finding is not. A single lone CONFIRMED vote, or a minority of CONFIRMED
+   votes, must never promote a high/critical finding on its own. A finding that fails the
+   majority is NOT CONFIRMED — route it to the report's "needs human" section like any
+   other NOT CONFIRMED item (and, if recall mode is active and its confidence lands in the
+   50–67 band, as a near-miss per the section below).
+
+Severity **below** high (medium/low) is entirely unaffected by this section: single-pass
+adjudication, no K-vote, no `referee_vote` ledger events, no vote split recorded — exactly
+as before this rule existed. This section only ever makes the high/critical path MORE
+conservative than the prior single-pass rule, never less.
+
+The vote tally recorded above is what `run-summary.json`'s `vote_split` field (per finding,
+high/critical only) is built from at summarize time — see `bench/scorer/run_summary.py`'s
+`majority_gate` and its pure, mocked-vote unit tests.
+
 ## Output
 The final CONFIRMED bug list, severity-ordered, each with the triggering condition and a
 one-line rationale. Only this list is eligible for the Fix phase. Append to the ledger:

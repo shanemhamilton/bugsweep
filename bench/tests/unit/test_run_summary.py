@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from bench.scorer.run_summary import (  # noqa: E402
     SCHEMA_VERSION,
+    majority_gate,
     reduce_run,
     reduce_run_degraded,
 )
@@ -1455,3 +1456,343 @@ def test_recall_never_changes_fix_eligibility(tmp_path: Path) -> None:
     ]
     _validate_against_schema(summary_off)
     _validate_against_schema(summary_on)
+
+
+# ---------------------------------------------------------------------------
+# majority_gate() + vote_split (bugsweep-hcj): a SINGLE Referee adjudication
+# deciding whether a HIGH/CRITICAL finding becomes fix-eligible is too little
+# independent evidence. For severity >= high, prompts/referee.md now runs K
+# independent adjudications with varied framing; majority_gate is the pure,
+# unit-testable rule that decides eligibility from the resulting verdict list
+# ("test with mocked adjudicators" — no ledger, no I/O). reduce_run then
+# records the tally per finding as the OPTIONAL, additive `vote_split` field
+# (schema_version stays 1, same pattern as bugsweep-xdw/-dxh). Severity below
+# high (medium/low) is untouched: single-pass, no votes, no vote_split, ever.
+# ---------------------------------------------------------------------------
+
+
+def test_majority_gate_two_of_three_confirmed_is_eligible() -> None:
+    """Mocked adjudicators: 2/3 CONFIRMED is a strict majority -> eligible."""
+    result = majority_gate(["CONFIRMED", "CONFIRMED", "NOT_CONFIRMED"])
+
+    assert result == {"confirmed": 2, "total": 3, "eligible": True}
+
+
+def test_majority_gate_one_of_three_confirmed_is_not_eligible() -> None:
+    """Mocked adjudicators: 1/3 CONFIRMED is a minority -> not eligible."""
+    result = majority_gate(["CONFIRMED", "NOT_CONFIRMED", "NOT_CONFIRMED"])
+
+    assert result == {"confirmed": 1, "total": 3, "eligible": False}
+
+
+def test_majority_gate_tie_is_not_eligible() -> None:
+    """Mocked adjudicators: an even 2/4 split is a tie, not a majority — the
+    conservative default (same "when in doubt, NOT CONFIRMED" rule as
+    prompts/referee.md's single-pass path) is NOT eligible."""
+    result = majority_gate(["CONFIRMED", "CONFIRMED", "NOT_CONFIRMED", "NOT_CONFIRMED"])
+
+    assert result == {"confirmed": 2, "total": 4, "eligible": False}
+
+
+def test_majority_gate_unanimous_confirmed_is_eligible() -> None:
+    result = majority_gate(["CONFIRMED", "CONFIRMED", "CONFIRMED"])
+
+    assert result == {"confirmed": 3, "total": 3, "eligible": True}
+
+
+def test_majority_gate_empty_votes_is_not_eligible() -> None:
+    """No votes cast -> nothing was confirmed; must not default to eligible."""
+    result = majority_gate([])
+
+    assert result == {"confirmed": 0, "total": 0, "eligible": False}
+
+
+def test_majority_gate_tolerates_unknown_verdict_strings() -> None:
+    """Anything other than the literal "CONFIRMED" string counts as a
+    non-confirming vote (tolerant of "NOT_CONFIRMED", None, or malformed
+    Referee output) — never raises, never invents a confirmed vote."""
+    result = majority_gate(["CONFIRMED", "ABSTAIN", None, "CONFIRMED"])  # type: ignore[list-item]
+
+    assert result == {"confirmed": 2, "total": 4, "eligible": False}
+
+
+def test_vote_split_recorded_for_high_severity_finding_majority_confirmed(
+    tmp_path: Path,
+) -> None:
+    """2/3 CONFIRMED referee_vote events for a HIGH finding -> vote_split is
+    recorded on that finding with eligible=True."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "referee_vote", "bug_id": "BUG-1", "severity": "high", "verdict": "CONFIRMED"},
+            {"event": "referee_vote", "bug_id": "BUG-1", "severity": "high", "verdict": "CONFIRMED"},
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-1",
+                "severity": "high",
+                "verdict": "NOT_CONFIRMED",
+            },
+            {
+                "event": "fix_committed",
+                "bug_id": "BUG-1",
+                "severity": "high",
+                "category": "sql-injection",
+                "file": "a.py",
+                "line": 10,
+                "rationale": "string-concatenated SQL",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert len(summary["findings"]) == 1
+    assert summary["findings"][0]["vote_split"] == {"confirmed": 2, "total": 3, "eligible": True}
+    _validate_against_schema(summary)
+
+
+def test_vote_split_not_eligible_for_borderline_critical_minority_confirmed(
+    tmp_path: Path,
+) -> None:
+    """Acceptance criterion: a borderline CRITICAL finding with only a
+    minority of CONFIRMED votes (1/3) must be reported as NOT fix-eligible —
+    a lone/minority CONFIRMED must never look like a majority in the
+    machine-readable summary."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-2",
+                "severity": "critical",
+                "verdict": "CONFIRMED",
+            },
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-2",
+                "severity": "critical",
+                "verdict": "NOT_CONFIRMED",
+            },
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-2",
+                "severity": "critical",
+                "verdict": "NOT_CONFIRMED",
+            },
+            {
+                "event": "confirmed",
+                "bug_id": "BUG-2",
+                "severity": "critical",
+                "category": "auth-bypass",
+                "file": "auth.py",
+                "line": 42,
+                "rationale": "borderline: missing role check on one path",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    vote_split = summary["findings"][0]["vote_split"]
+    assert vote_split == {"confirmed": 1, "total": 3, "eligible": False}
+    assert vote_split["eligible"] is False
+    _validate_against_schema(summary)
+
+
+def test_vote_split_absent_for_medium_severity_low_severity_path_unchanged(
+    tmp_path: Path,
+) -> None:
+    """Low-severity path UNCHANGED: even if referee_vote events exist for a
+    MEDIUM finding (e.g. stray/legacy data), single-pass eligibility applies
+    and vote_split must never be attached."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-3",
+                "severity": "medium",
+                "verdict": "CONFIRMED",
+            },
+            {
+                "event": "quarantine",
+                "bug_id": "BUG-3",
+                "severity": "medium",
+                "category": "logic",
+                "file": "b.py",
+                "line": 5,
+                "rationale": "medium severity, single-pass",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert len(summary["findings"]) == 1
+    assert "vote_split" not in summary["findings"][0]
+    _validate_against_schema(summary)
+
+
+def test_vote_split_absent_when_no_votes_recorded_for_high_finding(tmp_path: Path) -> None:
+    """Backward compatible: a HIGH/CRITICAL finding with no referee_vote
+    events at all (e.g. an older ledger predating K-vote adjudication) must
+    not have a vote_split invented — the key is simply absent."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "fix_committed",
+                "bug_id": "BUG-4",
+                "severity": "high",
+                "category": "xss",
+                "file": "c.py",
+                "line": 3,
+                "rationale": "unescaped output",
+            }
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert "vote_split" not in summary["findings"][0]
+    _validate_against_schema(summary)
+
+
+def test_vote_split_int_bug_id_matches_str_coerced_vote_events(tmp_path: Path) -> None:
+    """bug_id coercion is consistent between FINDING_EVENTS and referee_vote
+    events: an integer bug_id on either side must still match."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {"event": "referee_vote", "bug_id": 5, "severity": "high", "verdict": "CONFIRMED"},
+            {"event": "referee_vote", "bug_id": 5, "severity": "high", "verdict": "CONFIRMED"},
+            {
+                "event": "fix_committed",
+                "bug_id": 5,
+                "severity": "high",
+                "category": "xss",
+                "file": "d.py",
+                "line": 1,
+                "rationale": "r",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["findings"][0]["bug_id"] == "5"
+    assert summary["findings"][0]["vote_split"] == {"confirmed": 2, "total": 2, "eligible": True}
+    _validate_against_schema(summary)
+
+
+def test_vote_split_ignores_votes_for_other_bug_ids_and_missing_bug_id(tmp_path: Path) -> None:
+    """A referee_vote event for a DIFFERENT bug_id, or with no bug_id at all,
+    must not leak into this finding's vote_split — isolation per bug_id."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            # Votes for a different bug — must not count toward BUG-6.
+            {"event": "referee_vote", "bug_id": "BUG-OTHER", "severity": "high", "verdict": "CONFIRMED"},
+            {"event": "referee_vote", "bug_id": "BUG-OTHER", "severity": "high", "verdict": "CONFIRMED"},
+            # A vote event with no bug_id at all — must be skipped, not guessed.
+            {"event": "referee_vote", "severity": "high", "verdict": "CONFIRMED"},
+            {"event": "referee_vote", "bug_id": "BUG-6", "severity": "high", "verdict": "CONFIRMED"},
+            {"event": "referee_vote", "bug_id": "BUG-6", "severity": "high", "verdict": "NOT_CONFIRMED"},
+            {
+                "event": "fix_committed",
+                "bug_id": "BUG-6",
+                "severity": "high",
+                "category": "xss",
+                "file": "f.py",
+                "line": 1,
+                "rationale": "r",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert len(summary["findings"]) == 1
+    assert summary["findings"][0]["bug_id"] == "BUG-6"
+    assert summary["findings"][0]["vote_split"] == {"confirmed": 1, "total": 2, "eligible": False}
+    _validate_against_schema(summary)
+
+
+def test_vote_split_never_changes_fix_eligibility_lists(tmp_path: Path) -> None:
+    """Scope guard: recording vote_split is reporting-only. reduce_run does
+    not retroactively remove a bug from fixed/quarantined/confirmed_unfixed
+    based on vote_split.eligible — those lists reflect what already happened
+    on disk (the ledger event name), driven by the live Referee/orchestrator
+    honoring the majority gate in prompts/referee.md BEFORE writing the
+    fix_committed/quarantine/confirmed event, not by this reducer re-deciding
+    eligibility after the fact. This test locks that scope: a minority-vote
+    finding recorded as `confirmed` still appears in confirmed_unfixed
+    (reflecting the ledger), with its vote_split available for audit."""
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-5",
+                "severity": "critical",
+                "verdict": "NOT_CONFIRMED",
+            },
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-5",
+                "severity": "critical",
+                "verdict": "NOT_CONFIRMED",
+            },
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-5",
+                "severity": "critical",
+                "verdict": "CONFIRMED",
+            },
+            {
+                "event": "confirmed",
+                "bug_id": "BUG-5",
+                "severity": "critical",
+                "category": "auth-bypass",
+                "file": "e.py",
+                "line": 1,
+                "rationale": "r",
+            },
+        ],
+    )
+    recon = tmp_path / "recon.json"
+    _write_recon(recon, batch_count=1, covered=[1])
+
+    summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
+
+    assert summary["confirmed_unfixed"] == ["BUG-5"]
+    assert summary["findings"][0]["vote_split"]["eligible"] is False
+    _validate_against_schema(summary)
+
+
+def test_reduce_run_degraded_findings_stay_empty_no_vote_split(tmp_path: Path) -> None:
+    """Degraded mode never fabricates findings, so there is nothing to attach
+    a vote_split to — findings stays an empty list, same as before."""
+    summary = reduce_run_degraded(covered=1, total=2, report_is_stub=True, mode="detect-only")
+
+    assert summary["findings"] == []
+    _validate_against_schema(summary)

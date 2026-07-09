@@ -113,6 +113,42 @@ the bugsweep-xdw fields above).
   property is asserted directly by
   ``test_recall_never_changes_fix_eligibility`` in
   ``bench/tests/unit/test_run_summary.py``.
+
+``vote_split`` on high/critical findings (bugsweep-hcj)
+---------------------------------------------------------
+Additive, OPTIONAL field on each ``findings[]`` entry (schema_version stays 1
+— same versioning rule as the fields above).
+
+* A SINGLE Referee adjudication is not enough independent evidence to decide
+  whether a HIGH/CRITICAL finding becomes fix-eligible (and therefore gets
+  auto-edited). Per ``prompts/referee.md``'s K-vote majority section, for
+  severity >= high the Referee performs K independent adjudications with
+  varied framing and records each vote to the ledger as
+  ``{"event": "referee_vote", "bug_id", "severity", "verdict"}`` where
+  ``verdict`` is the literal string ``"CONFIRMED"`` or ``"NOT_CONFIRMED"``.
+* ``majority_gate()`` is the pure, unit-testable rule (no ledger, no I/O)
+  that turns a raw verdict list into ``{"confirmed", "total", "eligible"}``:
+  ``eligible`` requires a STRICT MAJORITY of ``"CONFIRMED"`` votes — more
+  confirmed than every other outcome combined. A tie is NOT eligible
+  (conservative by design: a lone or non-majority CONFIRMED must never
+  promote a high/critical finding).
+* ``reduce_run`` attaches ``vote_split`` to a ``findings[]`` entry ONLY when
+  BOTH: (a) the finding's severity is ``"high"`` or ``"critical"``, and (b)
+  at least one matching ``referee_vote`` event exists in the ledger for that
+  finding's ``bug_id`` (str()-coerced the same way finding-level ``bug_id``
+  is). Otherwise the key is simply absent — never invented, never a guessed
+  default.
+* **Low-severity path UNCHANGED**: a ``medium``/``low`` finding never gets a
+  ``vote_split``, even if stray ``referee_vote`` events happen to reference
+  its ``bug_id`` — single-pass eligibility, exactly as before this field
+  existed.
+* **Scope**: this field is reporting-only. It never retroactively removes a
+  bug_id from ``fixed``/``quarantined``/``confirmed_unfixed`` — those already
+  reflect what the live Referee/orchestrator wrote to the ledger, which is
+  where the majority gate is actually enforced (before the
+  ``fix_committed``/``quarantine``/``confirmed`` event is ever written; see
+  ``prompts/referee.md``). ``vote_split`` makes that decision auditable
+  after the fact in the machine-readable summary.
 """
 
 from __future__ import annotations
@@ -171,6 +207,25 @@ _FLAKY_FIELDS = ("test", "file", "reruns", "failures")
 #: is responsible for only emitting near_miss events inside it; the reducer's
 #: job is tolerant surfacing, not re-validating upstream judgment.
 _NEAR_MISS_FIELDS = ("bug_id", "severity", "category", "file", "line", "rationale", "confidence")
+
+#: Ledger event recording a single Referee K-vote adjudication (bugsweep-hcj).
+#: Deliberately NOT a member of FINDING_EVENTS — same isolation pattern as
+#: ``near_miss`` — so a vote can never itself contribute to fixed/
+#: quarantined/confirmed_unfixed/counts; it only informs the ``vote_split``
+#: attached to a finding that already came from a real FINDING_EVENTS line.
+_VOTE_EVENT = "referee_vote"
+
+#: The literal verdict string a referee_vote event must carry to count as a
+#: confirming vote in majority_gate(). Anything else (including the
+#: "NOT_CONFIRMED" string, None, or a malformed/unexpected value) counts
+#: against the majority — tolerant, never invented.
+_VOTE_CONFIRMED = "CONFIRMED"
+
+#: Severities for which reduce_run looks for referee_vote events and attaches
+#: vote_split. Per prompts/referee.md (bugsweep-hcj), only severity >= high
+#: runs K independent adjudications; medium/low stay single-pass and never
+#: get a vote_split (see module docstring).
+_VOTE_ELIGIBLE_SEVERITIES = frozenset({"critical", "high"})
 
 
 def _iter_ledger_events(ledger_path: Path) -> list[dict[str, Any]]:
@@ -242,6 +297,52 @@ def _finding_from_event(event: dict[str, Any], *, fixed: bool) -> dict[str, Any]
 
 def _empty_counts() -> dict[str, int]:
     return {"critical": 0, "high": 0, "medium": 0, "low": 0, "architectural": 0}
+
+
+def majority_gate(verdicts: list[str]) -> dict[str, Any]:
+    """Pure majority-vote gate for K independent Referee adjudications
+    (bugsweep-hcj).
+
+    A high/critical finding becomes fix-eligible ONLY on a STRICT MAJORITY of
+    ``verdicts`` equal to the literal string ``"CONFIRMED"`` — strictly more
+    confirmed votes than every other outcome combined. A tie is NOT eligible:
+    deliberately conservative, mirroring ``prompts/referee.md``'s existing
+    "when in doubt, default to NOT CONFIRMED" rule — a single lone CONFIRMED
+    vote, or an even split, must never promote a critical/high finding.
+
+    ``verdicts`` is the raw per-adjudication verdict list (e.g.
+    ``["CONFIRMED", "CONFIRMED", "NOT_CONFIRMED"]``). Any value other than the
+    literal string ``"CONFIRMED"`` counts as a non-confirming vote — tolerant
+    of ``"NOT_CONFIRMED"``, ``None``, or any other value; never raises.
+
+    Returns ``{"confirmed": <n>, "total": <k>, "eligible": <bool>}``. An empty
+    vote list is never eligible (``0/0`` — no votes cast means nothing was
+    confirmed).
+
+    Pure function: no I/O, no ledger access. This is what
+    ``bench/tests/unit/test_run_summary.py`` exercises directly with MOCKED
+    vote sets (2/3 -> eligible, 1/3 -> not eligible, ties -> not eligible).
+    """
+    total = len(verdicts)
+    confirmed = sum(1 for v in verdicts if v == _VOTE_CONFIRMED)
+    eligible = total > 0 and confirmed * 2 > total
+    return {"confirmed": confirmed, "total": total, "eligible": eligible}
+
+
+def _votes_for_bug(events: list[dict[str, Any]], bug_id: str) -> list[str]:
+    """Raw ``verdict`` values from every ``referee_vote`` ledger event whose
+    ``bug_id`` (str()-coerced, same contract as ``_finding_from_event``)
+    matches ``bug_id``. Order follows ledger order; malformed/absent
+    ``bug_id`` on a vote event is skipped rather than guessed."""
+    votes: list[str] = []
+    for event in events:
+        if event.get("event") != _VOTE_EVENT:
+            continue
+        event_bug_id = event.get("bug_id")
+        if event_bug_id is None or str(event_bug_id) != bug_id:
+            continue
+        votes.append(event.get("verdict"))
+    return votes
 
 
 def _cluster_key(event: dict[str, Any]) -> str | None:
@@ -520,6 +621,16 @@ def reduce_run(
             counts[severity] += 1
         if finding["category"] == _ARCHITECTURAL_CATEGORY:
             counts[_ARCHITECTURAL_CATEGORY] += 1
+
+        # vote_split (bugsweep-hcj): additive, OPTIONAL — attached ONLY for
+        # severity >= high AND only when referee_vote events actually exist
+        # for this bug_id. Low/medium severity is never touched (single-pass,
+        # unchanged); a high/critical finding with no recorded votes simply
+        # has no vote_split key (never invented). See module docstring.
+        if bug_id and severity in _VOTE_ELIGIBLE_SEVERITIES:
+            votes = _votes_for_bug(events, bug_id)
+            if votes:
+                finding["vote_split"] = majority_gate(votes)
 
     return {
         "schema_version": SCHEMA_VERSION,

@@ -90,7 +90,18 @@
           "file": {"type": ["string", "null"]},
           "line": {"type": ["integer", "null"]},
           "fixed": {"type": "boolean"},
-          "rationale": {"type": ["string", "null"]}
+          "rationale": {"type": ["string", "null"]},
+          "vote_split": {
+            "type": "object",
+            "description": "OPTIONAL (bugsweep-hcj). Present only for severity >= high/critical findings for which the Referee recorded K independent-adjudication referee_vote ledger events (see prompts/referee.md and bench/scorer/run_summary.py's majority_gate). Absent for medium/low findings (single-pass, unchanged) and for high/critical findings with no recorded votes.",
+            "additionalProperties": false,
+            "required": ["confirmed", "total", "eligible"],
+            "properties": {
+              "confirmed": {"type": "integer", "minimum": 0},
+              "total": {"type": "integer", "minimum": 0},
+              "eligible": {"type": "boolean"}
+            }
+          }
         }
       }
     },
