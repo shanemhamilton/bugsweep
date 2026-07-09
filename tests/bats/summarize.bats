@@ -392,6 +392,118 @@ assert d['status'] == 'stalled', 'expected stalled via anchored fallback, got %s
 "
 }
 
+# bugsweep-je8 residual 1: the anchored content fallback must not evaluate on
+# EVERY real report forever — once a run_dir's real-report status is
+# established (the ".report-is-real" discriminator, set by an earlier
+# finalize call), a RETRIED finalize must trust the discriminator outright
+# and never re-grep report.md's prose. Without this, a genuine report that
+# quotes the stub's exact warning line verbatim (bold, column 0, before any
+# heading) — plausible on a bugsweep-on-bugsweep run describing this very
+# bug — misclassifies as partial/stalled on every retry.
+@test "finalize.sh: real report quoting the marker verbatim stays complete once the discriminator is set" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  cat > "${RUN_DIR}/report.md" <<'REPORT'
+# bugsweep report — 2099
+**Branch:** bugsweep/x   **Mode:** fix   **Iterations:** 1
+
+**WARNING: INCOMPLETE RUN** — this exact banner text is what scripts/finalize.sh's
+stub path emits; documented here verbatim as context for BUG-1 below.
+
+## Summary
+- Confirmed bugs: 1 (high 1)
+- Coverage: 5/5 batches COMPLETE
+
+## Confirmed but not fixed (detect-only or below severity floor)
+- BUG-1 · high · logic · scripts/finalize.sh:75 · stub path prints "WARNING: INCOMPLETE RUN" banner verbatim even when the run is fully complete, misclassifying the report.
+
+## How to review
+git diff main..bugsweep/x
+REPORT
+  # Discriminator already established (e.g. by an earlier finalize call on
+  # this run_dir) — the content fallback must be retired outright, not
+  # re-evaluated against this report's prose.
+  : > "${RUN_DIR}/.report-is-real"
+
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  python3 -c "
+import json
+d = json.load(open('${RUN_DIR}/run-summary.json'))
+assert d['status'] == 'complete', 'expected complete (discriminator retires the fallback), got %s' % d['status']
+"
+}
+
+# bugsweep-je8 residual 2: nothing cleared ".report-is-stub" if a resumed
+# session wrote a real report.md AFTER an earlier finalize call had already
+# emitted the stub sentinel — such a run classified stalled despite having a
+# real report. The stale stub sentinel must be superseded once report.md's
+# content no longer looks like the stub.
+@test "finalize.sh: resumed run's real report.md supersedes a stale stub sentinel" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 0 10
+
+  # First finalize: no report.md ever written -> stub emitted + sentinel set.
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+  [ -f "${RUN_DIR}/.report-is-stub" ]
+  python3 -c "
+import json
+d = json.load(open('${RUN_DIR}/run-summary.json'))
+assert d['status'] == 'stalled', 'first finalize: expected stalled, got %s' % d['status']
+"
+
+  # Simulate a resumed session completing the run: it writes a real report.md
+  # over the stub, but nothing has touched the stale .report-is-stub sentinel.
+  cat > "${RUN_DIR}/report.md" <<'REPORT'
+# bugsweep report — 2099
+**Branch:** bugsweep/x   **Mode:** detect-only   **Iterations:** 1
+
+## Summary
+- Confirmed bugs: 0
+- Coverage: 10/10 batches COMPLETE
+
+## Confirmed but not fixed (detect-only or below severity floor)
+
+## How to review
+git diff main..bugsweep/x
+REPORT
+  _make_recon_json "$RUN_DIR" 10 10
+
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  # The stale sentinel must be cleared — a real report now exists.
+  [ ! -f "${RUN_DIR}/.report-is-stub" ]
+
+  python3 -c "
+import json
+d = json.load(open('${RUN_DIR}/run-summary.json'))
+assert d['status'] == 'complete', 'resumed run: expected complete, got %s' % d['status']
+"
+}
+
+# Guard against over-retiring: a genuinely-stub report must still classify
+# stalled even in the presence of a stale/bogus ".report-is-real" marker
+# (e.g. left over from an imagined earlier state). Fail-noisy safety requires
+# ".report-is-stub" to win whenever both sentinels are present.
+@test "finalize.sh: genuinely-stub report stays stalled despite a stale .report-is-real marker" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 0 10
+  : > "${RUN_DIR}/.report-is-real"
+
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  [ -f "${RUN_DIR}/.report-is-stub" ]
+  python3 -c "
+import json
+d = json.load(open('${RUN_DIR}/run-summary.json'))
+assert d['status'] == 'stalled', 'expected stalled despite stale .report-is-real marker, got %s' % d['status']
+"
+}
+
 # Degraded-path JSON must stay parseable for ANY mode string: `tr '"' "'"` alone
 # does not escape backslashes or control chars, so MODE='back\slash"quote' used to
 # produce invalid JSON (Invalid \escape) on the no-python3 path.

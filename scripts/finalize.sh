@@ -30,13 +30,40 @@ else
 fi
 bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-release "$run_dir" >/dev/null 2>&1 || true  # bugsweep-p74: release this run's lease (best-effort, non-fatal)
 
+# Anchored, region-restricted stub-content check shared by _emit_stub_report's
+# stale-sentinel invalidation (bugsweep-je8 residual 2) and the classification
+# fallback below (bugsweep-je8 residual 1's pre-sentinel legacy path). Matches
+# only the stub template's exact '**WARNING: INCOMPLETE RUN**' line form, and
+# only in the region of report.md BEFORE the script-appended
+# '## Findings (machine-readable)' heading — so a real report's own appended
+# machine block (which may embed marker-quoting finding rationales from the
+# ledger) can never match.
+_report_content_looks_like_stub() {
+  local report="${run_dir}/report.md"
+  [ -f "$report" ] || return 1
+  sed '/^## Findings (machine-readable)$/,$d' "$report" 2>/dev/null \
+    | grep -q '^\*\*WARNING: INCOMPLETE RUN\*\*'
+}
+
 # Emit a stub report when report.md was never written (silent-failure backstop).
 # A large-repo run may stall during context-build or the architectural hunt before
 # the model ever reaches the report template. This backstop ensures the user always
 # gets a coverage summary from on-disk state, regardless of where execution stopped.
 _emit_stub_report() {
   local report="${run_dir}/report.md"
-  [ -f "$report" ] && return 0          # real report exists — do not overwrite
+  if [ -f "$report" ]; then
+    # bugsweep-je8 residual 2: a resumed session may write a REAL report.md
+    # AFTER an earlier finalize call already emitted the stub + sentinel.
+    # If report.md's content no longer looks like the stub, the sentinel is
+    # stale — clear it so classification isn't pinned to a superseded stub.
+    # An unrelated RETRIED finalize on an UNCHANGED stub must keep the
+    # sentinel (and keep classifying stalled) — only clear when the content
+    # actually changed underneath it.
+    if [ -f "${run_dir}/.report-is-stub" ] && ! _report_content_looks_like_stub; then
+      rm -f "${run_dir}/.report-is-stub" 2>/dev/null || true
+    fi
+    return 0                            # real report exists — do not overwrite
+  fi
 
   local covered=0 total=0
   if [ -f "${run_dir}/recon.json" ]; then
@@ -93,21 +120,39 @@ _emit_stub_report
 #   1. Sentinel file .report-is-stub — written by _emit_stub_report alongside the
 #      stub. Content-independent, so a REAL report whose prose merely QUOTES the
 #      stub's warning text (routine on bugsweep-on-bugsweep runs) can never be
-#      misclassified, and a retried finalize stays stable.
-#   2. Fallback for PRE-SENTINEL run dirs only (stub written by an older finalize
-#      that had no sentinel): grep for the stub template's exact warning-line form
-#      (the line the heredoc above starts with '**WARNING: INCOMPLETE RUN**'),
-#      restricted to the region of report.md BEFORE the script-appended
-#      '## Findings (machine-readable)' heading — so our own appended block, which
-#      may embed marker-quoting finding rationales from the ledger, can never
-#      trigger it on a retry.
+#      misclassified, and a retried finalize stays stable. _emit_stub_report
+#      clears this sentinel above if report.md's content no longer looks like
+#      the stub (bugsweep-je8 residual 2: a resumed session overwrote it).
+#   2. Sentinel file .report-is-real — a memoized "not stub" determination,
+#      written below once established for this run_dir. Content-independent
+#      and checked BEFORE the fallback grep, so once a run_dir's real-report
+#      status is known, a RETRIED finalize never re-evaluates report.md's
+#      prose again — retiring the fallback below for sentinel-era run dirs
+#      (bugsweep-je8 residual 1: the fallback must not evaluate forever).
+#   3. Fallback for run dirs with NEITHER sentinel yet (first-ever finalize
+#      call on a run_dir, or a genuinely PRE-SENTINEL run dir whose stub was
+#      written by an older finalize): grep for the stub template's exact
+#      warning-line form (the line the heredoc above starts with
+#      '**WARNING: INCOMPLETE RUN**'), restricted to the region of report.md
+#      BEFORE the script-appended '## Findings (machine-readable)' heading —
+#      see _report_content_looks_like_stub.
 _bugsweep_report_was_stub=false
 if [ -f "${run_dir}/.report-is-stub" ]; then
   _bugsweep_report_was_stub=true
-elif [ -f "${run_dir}/report.md" ] \
-  && sed '/^## Findings (machine-readable)$/,$d' "${run_dir}/report.md" 2>/dev/null \
-     | grep -q '^\*\*WARNING: INCOMPLETE RUN\*\*'; then
+elif [ -f "${run_dir}/.report-is-real" ]; then
+  _bugsweep_report_was_stub=false
+elif _report_content_looks_like_stub; then
   _bugsweep_report_was_stub=true
+fi
+
+# Memoize a "not stub" determination (bugsweep-je8 residual 1): once real-report
+# status is established for this run_dir — by the sentinel-absent default above,
+# or by the fallback grep finding no match — persist it so a RETRIED finalize
+# never re-greps report.md's prose again. A genuine stub can never masquerade as
+# real afterward: _emit_stub_report's stub-emission path (report.md missing)
+# always (re)writes .report-is-stub, which is checked with priority above.
+if [ "$_bugsweep_report_was_stub" = false ] && [ -f "${run_dir}/report.md" ]; then
+  : > "${run_dir}/.report-is-real"
 fi
 
 # Reduce ledger.jsonl + recon.json into run-summary.json UNCONDITIONALLY — on both
