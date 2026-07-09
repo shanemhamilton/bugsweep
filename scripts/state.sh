@@ -242,13 +242,29 @@ prime() {
   top_n="$(cfg_get '.context.high_risk_top_n' '25')"
   recheck="$(cfg_get '.context.recheck_audited_after_runs' '5')"
 
+  # bugsweep-t6e: bounded git-history risk signal (commit frequency, recency,
+  # fix-commit density from scripts/git-history-risk.sh), folded into the risk
+  # score below with a hard-capped weight (HISTORY_MAX_WEIGHT in the python
+  # fold) so it can only break ties among files with equal existing signal or
+  # nudge close scores -- it can never let churn alone outrank a file with a
+  # genuine confirmed/quarantine/fix_committed finding (see HISTORY_MAX_WEIGHT's
+  # comment for the bound proof). Best-effort: any failure here (no git repo,
+  # no python3, helper missing) just yields zero history signal, never a
+  # failed prime() -- matches this file's coverage-first "never fail" contract.
+  local history_log_output=""
+  if have_python && [ -f "${BUGSWEEP_SCRIPT_DIR}/git-history-risk.sh" ]; then
+    history_log_output="$(bash "${BUGSWEEP_SCRIPT_DIR}/git-history-risk.sh" \
+      "${BUGSWEEP_REPO_ROOT:-$run_dir}" 2>/dev/null || true)"
+  fi
+
   if have_python; then
-    AUDIT_LOG="$AUDIT_LOG" RISK_LOG="$RISK_LOG" META="$META" \
+    AUDIT_LOG="$AUDIT_LOG" RISK_LOG="$RISK_LOG" META="$META" HISTORY_LOG_OUTPUT="$history_log_output" \
     python3 - "$cat_v" "$decay" "$top_n" "$recheck" "$out_path" <<'PY' 2>/dev/null && return 0
 import json, os, sys
 cat_v, decay, top_n, recheck, out_path = sys.argv[1:6]
 decay = float(decay); top_n = int(top_n); recheck = int(recheck)
 audit_log, risk_log, meta = os.environ["AUDIT_LOG"], os.environ["RISK_LOG"], os.environ["META"]
+history_log_output = os.environ.get("HISTORY_LOG_OUTPUT", "")
 
 runs = 0
 if os.path.exists(meta):
@@ -317,6 +333,39 @@ if os.path.exists(risk_log):
         w = WEIGHTS.get(e.get("event"), 0)
         age = max(0, current - int(e.get("run", current)))
         score[f] = score.get(f, 0.0) + w * (decay ** age)
+
+# bugsweep-t6e: bounded fold of the git-history signal (scripts/git-history-risk.sh).
+# HISTORY_MAX_WEIGHT (0.5) is deliberately smaller than the smallest gap between
+# any two WEIGHTS tiers above (fix_committed=3, quarantine=2, confirmed=1,
+# false_positive=-1 -> every adjacent gap is >= 1). That means a maxed-out
+# history contribution (history_score == 1.0 -> +0.5) can NEVER let a file
+# overtake another file whose existing score is even one weight-tier higher at
+# the same decay age -- history can only break ties among files with EQUAL
+# existing signal (including two files with none at all) or nudge scores
+# within the same tier. The existing sink/coverage-derived signal always wins
+# a genuine gap; history only reprioritizes among otherwise-equal files.
+HISTORY_MAX_WEIGHT = 0.5
+for line in history_log_output.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    f = e.get("file")
+    if not f:
+        continue
+    try:
+        h = float(e.get("history_score", 0.0))
+    except (TypeError, ValueError):
+        continue
+    # Defensive re-clamp: git-history-risk.sh already bounds history_score to
+    # [0, 1], but a hand-edited or corrupted line must never be able to smuggle
+    # an out-of-range value past the bound this fold exists to guarantee.
+    h = max(0.0, min(1.0, h))
+    score[f] = score.get(f, 0.0) + HISTORY_MAX_WEIGHT * h
+
 high = sorted(((f, round(max(0.0, s), 3)) for f, s in score.items() if s > 0),
              key=lambda x: -x[1])[:top_n]
 
