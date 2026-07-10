@@ -58,17 +58,24 @@ _tree_hash() {
       | shasum | awk '{print $1}' )
 }
 
-# Seeds a distinct, single-batch/single-file recon.json + a fix_committed
+# Seeds a distinct, single-batch/single-file recon.json + completed-hunt and fix_committed
 # ledger event into an existing (preflight-produced) run dir, so a later
 # `state.sh persist` call has something concrete to harvest into
 # audit-log.jsonl / risk.jsonl. Same fixture shape as
 # tests/bats/state-concurrency.bats's _make_run_dir.
 _seed_recon_and_finding() {
-  local run_dir="$1" file="$2"
+  local run_dir="$1" file="$2" worktree="$3"
+  printf '%s\n' "$file" > "${worktree}/${file}"
+  git -C "$worktree" add -- "$file"
+  git -C "$worktree" commit -q -m "test: seed ${file}"
   cat > "${run_dir}/recon.json" <<JSON
-{"batches":[{"id":1,"files":["${file}"]}],"covered":[1]}
+{"batches":[{"id":1,"files":["${file}"]}],"modeled":[1],"covered":[1]}
 JSON
+  printf '{"event":"batch_covered","batch":1}\n' >> "${run_dir}/ledger.jsonl"
   printf '{"event":"fix_committed","file":"%s","severity":"high"}\n' "$file" >> "${run_dir}/ledger.jsonl"
+  printf '{"schema":1,"batch":1,"file":"%s","head":"%s","blob_oid":"%s"}\n' \
+    "$file" "$(git -C "$worktree" rev-parse HEAD)" \
+    "$(git -C "$worktree" rev-parse "HEAD:${file}")" > "${run_dir}/audit-snapshots.jsonl"
 }
 
 # Asserts `git worktree list` has zero entries under the bugsweep worktrees
@@ -203,7 +210,7 @@ PY
     branches="${branches}${br}"$'\n'
 
     # Give each run's persist something concrete (and distinct) to harvest.
-    _seed_recon_and_finding "$rd" "concurrency-file-${i}.txt"
+    _seed_recon_and_finding "$rd" "concurrency-file-${i}.txt" "$wt"
   done
 
   local uniq_rd uniq_wt uniq_br

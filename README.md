@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/github/license/shanemhamilton/bugsweep?color=2563eb)](LICENSE)
 [![Works with Claude Code](https://img.shields.io/badge/Claude%20Code-skill-d97757)](https://claude.ai/code)
 [![Works with Codex](https://img.shields.io/badge/Codex-skill-412991)](https://github.com/openai/codex)
-[![Dependencies: none](https://img.shields.io/badge/dependencies-none-2563eb)](#configure)
+[![Python 3: exact audit checkpoints](https://img.shields.io/badge/Python%203-exact%20audit%20checkpoints-2563eb)](#configure)
 
 > **An autonomous, adversarial AI code-review and bug-fixing skill for [Claude Code](https://claude.ai/code) and [Codex](https://github.com/openai/codex).** It finds real security vulnerabilities, logic errors, race conditions, and data-integrity bugs across your whole repository — then, when you let it, fixes them on a throwaway git branch you fully control. Safe enough to run unattended overnight.
 
@@ -14,7 +14,7 @@ to run unattended, even fully autonomously overnight. It hunts for real runtime 
 issues), and when you let it, fixes them on a throwaway branch with automatic revert if a
 fix breaks anything.
 
-It does four things that make it effective on real, large codebases:
+It does five things that make it effective on real, large codebases:
 - **Whole-repo context.** Before hunting, it builds a distilled model of your
   architecture — trust boundaries, sensitive sinks, and the call chains into them — so it
   catches *large* cross-file bugs (like a missing authorization check on one path into a
@@ -25,6 +25,12 @@ It does four things that make it effective on real, large codebases:
 - **Adversarial review.** Every finding runs a gauntlet — a Hunter finds it, a Skeptic
   tries to disprove it, and a neutral Referee makes the final call — so false positives
   rarely reach the fix stage.
+- **Priority intelligence.** Before the hunt, it combines recent code changes, completed-hunt
+  content drift, fix/revert clusters, failing checks, runtime reachability, prior findings,
+  and fresh, provenanced project signals into an explainable "why now" queue. Independent
+  batch and file budgets prevent one signal from pulling an unbounded subtree into the run;
+  every tracked file in the configured scope remains eligible and every finding keeps the same
+  adversarial proof gate.
 - **Context continuity.** All progress is written to disk, so on a long run it can reset
   its working memory and keep going without losing findings, fixes, or coverage.
 
@@ -52,6 +58,7 @@ flowchart TD
     subgraph scripts ["⚙️ Shell scripts — deterministic, auditable"]
         B["preflight.sh\ncut bugsweep/&lt;timestamp&gt; branch\nstash uncommitted work\nwrite RUN_DIR + ledger"]
         C["run_checks.sh baseline\nrecord test / build / lint state"]
+        PI["priority-context.sh\nlocal why-now evidence\ntracked changes · failures · recurrence"]
         L["run_checks.sh verify\ndiff against baseline"]
         Q["guard.sh\ncheck iteration / time / fix caps"]
         FIN["finalize.sh\nrestore original branch\npop stash\npersist audit coverage\nwrite handoff JSON"]
@@ -66,7 +73,7 @@ flowchart TD
         K["fix.md\nsurgical minimal patch\none commit per confirmed bug"]
     end
 
-    B --> C --> D --> E --> F --> G --> H
+    B --> C --> PI --> D --> E --> F --> G --> H
     H --> |detect-only| RPT["📄 write report\nno code changes"]
     H --> |fix / approve / autonomous| K
     K --> L
@@ -106,9 +113,9 @@ bugsweep is not a diff scanner. Every file in the repo is always in scope. Cross
 ```mermaid
 flowchart TD
     subgraph state ["📁 .bugsweep/state/  (persists across runs)"]
-        AL["audit-log.jsonl\nper-file: last-audited run, catalog version"]
+        AL["audit-log.jsonl\nper-file: completed-hunt content fingerprint"]
         RJ["risk.jsonl\nrisk scores per file"]
-        MJ["meta.json\ncurrent catalog version"]
+        MJ["meta.json\nrun count + last finalized commit"]
     end
 
     P["preflight.sh\n→ state.sh prime"] -->|reads state| PC["prior-coverage.json\nbatch priority plan"]
@@ -122,6 +129,38 @@ flowchart TD
     HUNT --> FIN["finalize.sh\n→ state.sh persist\nupdate audit-log + risk\nwrite handoff JSON"]
     FIN -->|next run| P
 ```
+
+### Priority intelligence — what matters right now
+
+After baseline checks, Bugsweep writes a schema-valid
+[`priority-context.json`](schemas/priority-context.schema.json). It brings together current
+tracked files changed since the last run, files whose content moved since their last completed
+adversarial hunt, fix/hotfix/revert history, mapped failing checks, prior Bugsweep outcomes,
+variant and reopened-conclusion evidence, sink reachability, local bug records, and explicit
+project priorities. Worktree-isolated runs read repository-local Beads context from the common
+project root. Every target includes a lane, a capped score breakdown, closed reason codes, and
+a plain-language `why_now` explanation; signal-health counters expose stale, malformed,
+over-broad, and not-yet-mapped context. A deleted path cannot itself become a target because it
+is absent from the current tracked-file scope; deletion-aware caller/dependency mapping is not
+yet implemented, while all surviving tracked files remain in the whole-repo plan.
+
+This is prioritization, not proof. The deterministic applier verifies that it preserves the
+exact recon-plan scope and honors both promoted-batch and promoted-file budgets, then writes
+[`priority-application.json`](schemas/priority-application.schema.json) with the batches and
+files actually promoted plus candidates already in budget or skipped. Free-text commit subjects
+and signal titles are omitted from the model-facing artifact, and a target still must pass Hunter
+→ Skeptic → Referee before it can be reported or fixed. External incident/product systems
+can feed fresh aggregate read-only facts through `.bugsweep/priority-signals.jsonl`; Bugsweep's
+priority collector itself stays offline.
+
+Across runs, Bugsweep records append-only signal-to-outcome observations and reports aggregate
+yield—how often a reason was investigated, explicitly attributed to a confirmed/rejected result,
+or produced no finding. Same-file findings without an explicit closed reason-code link remain
+`unattributed`; coincidence is never credited as signal effectiveness. This is transparent
+evidence, not self-modification: production outcomes do not tune the live score, and rankings
+and safety thresholds remain fixed until a human-reviewed, held-out-benchmark-validated
+code/config change. See
+[`references/priority-intelligence.md`](references/priority-intelligence.md).
 
 ## Install
 
@@ -231,9 +270,12 @@ fleet of concurrent runs can drive without a human watching:
   against [`schemas/run-summary.schema.json`](schemas/run-summary.schema.json): `status`
   (`complete` / `partial` / `stalled`), severity `counts`, `fixed` / `quarantined` /
   `confirmed_unfixed`, and per-finding detail — so a scheduler can branch on JSON instead of
-  parsing model output. If the full reduction can't run (no `python3`, or it fails for any
-  reason), a minimal schema-valid summary with `"degraded": true` is emitted instead.
-  Either way, `run-summary.json` exists after every finalize.
+  parsing model output. The full reducer also adds deterministic `priority` data—actual applied
+  promotions, top-target outcomes, signal health, unmapped signals, and attributed historical
+  yield—which `finalize.sh` renders as `## Priority focus (deterministic)`. If the full reduction
+  can't run (no `python3`, or it fails for any reason), a minimal schema-valid summary with
+  `"degraded": true` is emitted instead; that degraded summary does not claim verified coverage
+  or priority outcomes. Either way, `run-summary.json` exists after every finalize.
 - **Worktree isolation for concurrency.** `preflight.sh --worktree` checks the run out into
   an isolated linked git worktree instead of the user's tree, so a fleet of sibling
   subagents can hunt the same repo at the same time without colliding on one branch, index,
@@ -281,6 +323,12 @@ re-verification after each merge, and planning follow-up coverage — see
 [`references/orchestrator.md`](references/orchestrator.md).
 
 ## Configure
+
+Python 3 is strongly recommended and is required to publish exact completed-hunt coverage.
+Without it, Bugsweep still runs its shell fallbacks and produces an incomplete report plus a
+degraded summary, but it finalizes at the first audit checkpoint instead of claiming
+unverifiable coverage. The degraded summary underreports coverage as zero; when finalize had to
+create a stub report, its machine status is `stalled` because no batch is verifiably complete.
 
 Edit `config/bugsweep.config.json` to set limits (how long it runs, how many fixes),
 exclude folders, or specify your test/build commands if auto-detect misses them. See
@@ -340,6 +388,9 @@ Both. The installer sets up whichever you have (`--claude`, `--codex`, or `--all
 - `config/bugsweep.config.json` — your settings (caps, excludes, commands, and the
   adversarial / research / session toggles).
 
-No third-party dependencies, no network calls (unless you opt into web research), no
-telemetry. Read `scripts/` and `references/safety-rationale.md` before trusting it — that's
-the whole point of owning it.
+No third-party packages, no network calls (unless you opt into web research), and no telemetry.
+Python 3 is required for exact audit checkpoints and the full deterministic priority report;
+without it, Bugsweep finalizes with incomplete output at the first unverifiable audit checkpoint
+and reports zero verified coverage. Read
+`scripts/` and `references/safety-rationale.md` before trusting it — that's the whole point of
+owning it.

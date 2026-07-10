@@ -86,11 +86,19 @@ high/critical only) is built from at summarize time — see `bench/scorer/run_su
 `majority_gate` and its pure, mocked-vote unit tests.
 
 ## Output
-The final CONFIRMED bug list, severity-ordered, each with the triggering condition and a
-one-line rationale. Only this list is eligible for the Fix phase. Append to the ledger:
+The final CONFIRMED bug list, severity-ordered, each with the triggering condition, its
+unchanged `priority_reason_codes`, and a one-line rationale. Only this list is eligible for the
+Fix phase. A reason may be credited later only when this closed-code list survives into the
+finding's `confirmed`, `fix_committed`, or `quarantine` ledger event. Never add a reason after
+adjudication merely because the file was prioritized. Append to the ledger:
 `{"event":"iteration","confirmed":<n>,"new_bugs":<n_new_this_iteration>}` so the loop's
 no-progress detection and session checkpoints stay accurate. Put NOT-CONFIRMED items in
 the report's "needs human" section so nothing is lost.
+
+For a final CONFIRMED item that will not enter the Fix phase (detect-only mode or below the
+configured fix floor), append a `confirmed` ledger event carrying its normal finding fields and
+the preserved `priority_reason_codes`. Fix-eligible items carry the same list later on their
+`fix_committed` or `quarantine` event; do not emit a duplicate `confirmed` event for those.
 
 ## Recall mode: record near-misses for human review (bugsweep-dxh)
 

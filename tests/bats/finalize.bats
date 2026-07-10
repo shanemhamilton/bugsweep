@@ -42,20 +42,39 @@ ENV
 _make_recon_json() {
   local run_dir="$1" covered="$2" total="$3"
   # Build covered array from count
-  local covered_arr="[]"
+  local covered_arr="[]" batches_arr="[]"
+  if [ "$total" -gt 0 ]; then
+    local batches="" path
+    mkdir -p "${REPO}/audit-fixtures"
+    for i in $(seq 1 "$total"); do
+      path="audit-fixtures/batch-${i}.txt"
+      printf 'batch %s\n' "$i" > "${REPO}/${path}"
+      batches="${batches}${batches:+,}{\"id\":${i},\"tier\":\"normal\",\"files\":[\"${path}\"]}"
+    done
+    batches_arr="[${batches}]"
+    git -C "$REPO" add audit-fixtures
+    git -C "$REPO" commit -q -m "test: seed audit batches"
+  fi
   if [ "$covered" -gt 0 ]; then
     local items=""
     for i in $(seq 1 "$covered"); do
       items="${items}${items:+,}$i"
     done
     covered_arr="[${items}]"
+    for i in $(seq 1 "$covered"); do
+      printf '{"event":"batch_covered","batch":%s}\n' "$i" >> "${run_dir}/ledger.jsonl"
+      printf '{"schema":1,"batch":%s,"file":"audit-fixtures/batch-%s.txt","head":"%s","blob_oid":"%s"}\n' \
+        "$i" "$i" "$(git -C "$REPO" rev-parse HEAD)" \
+        "$(git -C "$REPO" rev-parse "HEAD:audit-fixtures/batch-${i}.txt")" \
+        >> "${run_dir}/audit-snapshots.jsonl"
+    done
   fi
 
   cat > "${run_dir}/recon.json" <<JSON
 {
-  "files_in_scope": 42,
+  "files_in_scope": ${total},
   "batch_count": ${total},
-  "batches": [],
+  "batches": ${batches_arr},
   "architectural_targets": [],
   "covered": ${covered_arr}
 }
@@ -120,7 +139,7 @@ teardown() {
   grep -qi "INCOMPLETE" "${RUN_DIR}/report.md"
 }
 
-@test "finalize: stub report includes coverage fraction from recon.json" {
+@test "finalize: stub report includes exact verifier-backed coverage" {
   _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
   _make_recon_json "$RUN_DIR" 3 10
 
@@ -129,6 +148,31 @@ teardown() {
 
   [ -f "${RUN_DIR}/report.md" ]
   grep -q "3/10" "${RUN_DIR}/report.md"
+}
+
+@test "finalize: stub report rejects forged recon-only coverage" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 3 10
+
+  # Preserve the model-writable recon.covered receipt but remove both exact
+  # prerequisites. The stub must agree with run-summary.json's fail-closed
+  # verifier rather than displaying the raw three-element covered array.
+  : > "${RUN_DIR}/ledger.jsonl"
+  rm -f "${RUN_DIR}/audit-snapshots.jsonl"
+
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+
+  grep -q "Coverage: 0/10 batches" "${RUN_DIR}/report.md"
+  ! grep -q "Coverage: 3/10 batches" "${RUN_DIR}/report.md"
+  python3 - "${RUN_DIR}/run-summary.json" <<'PY'
+import json
+import sys
+
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+assert summary["coverage"] == {"covered": 0, "total": 10}, summary["coverage"]
+assert summary["status"] == "stalled", summary["status"]
+PY
 }
 
 @test "finalize: does NOT overwrite an existing report.md" {
@@ -152,6 +196,8 @@ teardown() {
     "$before"*) : ;;
     *) echo "original report.md content was not preserved as a prefix" >&2; return 1 ;;
   esac
+  [ "$(grep -c '^## Priority focus (deterministic)$' "${RUN_DIR}/report.md")" -eq 1 ]
+  grep -q '^- Unavailable: priority_context_missing\.$' "${RUN_DIR}/report.md"
 }
 
 @test "finalize: stub report includes branch names" {
@@ -376,10 +422,12 @@ PY
   # summarize.sh ALSO degrades under BUGSWEEP_NO_PYTHON=1 (it has no jq tier
   # of its own), so run-summary.json comes out as the minimal degraded shape
   # (counts/fixed/quarantined/confirmed_unfixed all zero/empty) — this test
-  # asserts the grep/awk tier reads that real degraded shape correctly
+  # asserts the grep/awk tier reads that real degraded shape correctly. Exact
+  # Git-object coverage cannot be verified without Python, so the summary
+  # deliberately underreports covered batches as zero.
   # (notably: an EMPTY array must count as 0, not 1 — the original bug
   # miscounted the JSON key name itself as an array element).
-  local expected="20991231T000000Z ${repo_name} bugsweep/20991231T000000Z - confirmed 0/0/0/0 - fixed 0 quarantined 0 - coverage 5/5 - complete - ACTION: discard (${RUN_DIR}/report.md)"
+  local expected="20991231T000000Z ${repo_name} bugsweep/20991231T000000Z - confirmed 0/0/0/0 - fixed 0 quarantined 0 - coverage 0/5 - complete - ACTION: discard (${RUN_DIR}/report.md)"
   local actual
   actual="$(cat "$rollup")"
   [ "$actual" = "$expected" ]

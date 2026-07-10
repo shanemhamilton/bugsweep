@@ -78,6 +78,14 @@ teardown() {
   echo "$output" | grep -qE '^WORKTREE='
   echo "$output" | grep -qE '^BRANCH=bugsweep/'
   echo "$output" | grep -q "PREFLIGHT_OK"
+
+  local run_dir branch run_id
+  run_dir="$(echo "$output" | sed -n 's/^RUN_DIR=//p')"
+  branch="$(echo "$output" | sed -n 's/^BRANCH=//p')"
+  run_id="$(sed -n "s/^BUGSWEEP_RUN_ID='\([^']*\)'$/\1/p" "${run_dir}/state.env")"
+  [ -n "$run_id" ]
+  [ "$run_id" = "${run_dir##*/run-}" ]
+  [ "$branch" = "bugsweep/${run_id}" ]
 }
 
 @test "preflight --worktree: does not touch the user's current branch" {

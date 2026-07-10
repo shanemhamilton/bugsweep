@@ -22,6 +22,10 @@ _make_git_repo() {
 _make_run_dir() {
   local run_dir="$1" ts="$2" file="$3"
   mkdir -p "$run_dir"
+  mkdir -p "$(dirname "${REPO}/${file}")"
+  printf '%s\n' "$ts" > "${REPO}/${file}"
+  git -C "$REPO" add -- "$file"
+  git -C "$REPO" commit -q -m "test: seed ${file}"
   cat > "${run_dir}/state.env" <<ENV
 BUGSWEEP_TS=${ts}
 BUGSWEEP_RUN_DIR=${run_dir}
@@ -35,6 +39,9 @@ JSON
 {"event":"batch_covered","batch":1}
 {"event":"fix_committed","file":"${file}","severity":"high"}
 LEDGER
+  cat > "${run_dir}/audit-snapshots.jsonl" <<SNAPSHOT
+{"schema":1,"batch":1,"file":"${file}","head":"$(git -C "$REPO" rev-parse HEAD)","blob_oid":"$(git -C "$REPO" rev-parse "HEAD:${file}")"}
+SNAPSHOT
 }
 
 setup() {

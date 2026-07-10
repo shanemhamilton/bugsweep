@@ -212,6 +212,15 @@ JSON
   score="$(_score_of "${run_dir}/prior-coverage.json" "src/onlyHistory.py")"
   [ -n "$score" ]
   python3 -c "import sys; assert float(sys.argv[1]) > 0.0" "$score"
+  python3 - "${run_dir}/prior-coverage.json" <<'PY'
+import json, sys
+entry = next(
+    item for item in json.load(open(sys.argv[1]))["high_risk_files"]
+    if item["file"] == "src/onlyHistory.py"
+)
+assert entry["event_score"] == 0.0, entry
+assert entry["history_score"] > 0.0, entry
+PY
 }
 
 @test "prime: bounded history weight -- higher existing risk score still outranks a low-risk/high-churn file" {

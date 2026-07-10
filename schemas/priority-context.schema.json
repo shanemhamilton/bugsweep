@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/schemas/priority-context.schema.json",
+  "title": "bugsweep priority context",
+  "description": "Deterministic, bounded investigation-order evidence. This artifact may reorder work but never confirms a finding, changes fix eligibility, or narrows the whole-repository scope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scope_contract",
+    "generated_from",
+    "source_status",
+    "project_signals",
+    "recent_repairs",
+    "promotion_budget",
+    "promotion_candidates",
+    "targets",
+    "truncated"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "degraded": {"type": "boolean"},
+    "scope_contract": {
+      "type": "string",
+      "const": "priority_only_whole_repo_remains_in_scope"
+    },
+    "generated_from": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["head", "previous_run_head", "prior_runs"],
+      "properties": {
+        "head": {"type": ["string", "null"], "maxLength": 40},
+        "previous_run_head": {"type": ["string", "null"], "maxLength": 40},
+        "prior_runs": {"type": "integer", "minimum": 0}
+      }
+    },
+    "source_status": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "maxLength": 80}
+    },
+    "project_signals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "failing_checks",
+        "baseline_stability",
+        "no_checks",
+        "mapped_local_issue_count",
+        "external_signal_count",
+        "overmatched_globs",
+        "signal_health",
+        "unmapped_focus_signals",
+        "signal_yield"
+      ],
+      "properties": {
+        "failing_checks": {
+          "type": "array",
+          "items": {"type": "string", "maxLength": 40},
+          "uniqueItems": true
+        },
+        "baseline_stability": {
+          "type": "string",
+          "enum": ["unknown", "not_applicable"]
+        },
+        "no_checks": {"type": "boolean"},
+        "mapped_local_issue_count": {"type": "integer", "minimum": 0},
+        "external_signal_count": {"type": "integer", "minimum": 0},
+        "overmatched_globs": {
+          "type": "array",
+          "items": {"type": "string", "maxLength": 200}
+        },
+        "signal_health": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "accepted": {"type": "integer", "minimum": 0},
+            "inactive": {"type": "integer", "minimum": 0},
+            "expired": {"type": "integer", "minimum": 0},
+            "malformed": {"type": "integer", "minimum": 0},
+            "unmapped": {"type": "integer", "minimum": 0},
+            "overmatched": {"type": "integer", "minimum": 0}
+          }
+        },
+        "unmapped_focus_signals": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {"$ref": "#/$defs/unmappedSignal"}
+        },
+        "signal_yield": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {"$ref": "#/$defs/signalYield"}
+        }
+      }
+    },
+    "recent_repairs": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["commit", "kind", "files"],
+        "properties": {
+          "commit": {"type": "string", "maxLength": 40},
+          "kind": {"type": "string", "enum": ["fix", "hotfix", "revert"]},
+          "files": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/repoPath"},
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "promotion_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_batches", "max_files"],
+      "properties": {
+        "max_batches": {"type": "integer", "minimum": 0, "maximum": 20},
+        "max_files": {"type": "integer", "minimum": 0, "maximum": 1000}
+      }
+    },
+    "promotion_candidates": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {"$ref": "#/$defs/repoPath"},
+      "uniqueItems": true
+    },
+    "targets": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file",
+          "lane",
+          "priority_score",
+          "breakdown",
+          "attribution_reason_codes",
+          "reasons",
+          "why_now",
+          "promotion_candidate"
+        ],
+        "properties": {
+          "file": {"$ref": "#/$defs/repoPath"},
+          "lane": {"type": "string", "enum": ["must_focus", "high", "elevated", "normal"]},
+          "priority_score": {"type": "integer", "minimum": 0, "maximum": 100},
+          "breakdown": {"$ref": "#/$defs/breakdown"},
+          "attribution_reason_codes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {"$ref": "#/$defs/reason/properties/code"},
+            "uniqueItems": true
+          },
+          "reasons": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {"$ref": "#/$defs/reason"}
+          },
+          "why_now": {"type": "string", "maxLength": 700},
+          "promotion_candidate": {"type": "boolean"}
+        }
+      }
+    },
+    "truncated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targets_omitted", "reasons_omitted"],
+      "properties": {
+        "targets_omitted": {"type": "integer", "minimum": 0},
+        "reasons_omitted": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "repoPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "breakdown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "impact_value",
+        "active_evidence",
+        "change_likelihood",
+        "reachability",
+        "recurrence_learning",
+        "audit_staleness"
+      ],
+      "properties": {
+        "impact_value": {"type": "integer", "minimum": 0, "maximum": 30},
+        "active_evidence": {"type": "integer", "minimum": 0, "maximum": 25},
+        "change_likelihood": {"type": "integer", "minimum": 0, "maximum": 15},
+        "reachability": {"type": "integer", "minimum": 0, "maximum": 15},
+        "recurrence_learning": {"type": "integer", "minimum": 0, "maximum": 10},
+        "audit_staleness": {"type": "integer", "minimum": 0, "maximum": 5}
+      }
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "category", "contribution", "source", "evidence"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "baseline_failure",
+            "active_incident",
+            "release_blocker",
+            "reopened_conclusion",
+            "content_changed_since_audit",
+            "changed_since_last_run",
+            "live_sink",
+            "variant_match",
+            "critical_path",
+            "user_impact",
+            "local_bug_issue",
+            "project_priority",
+            "revert_history",
+            "fix_history",
+            "prior_bug_history",
+            "git_history",
+            "stale_audit",
+            "runtime_without_test_change",
+            "maybe_sink",
+            "cold_sink"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "impact_value",
+            "active_evidence",
+            "change_likelihood",
+            "reachability",
+            "recurrence_learning",
+            "audit_staleness"
+          ]
+        },
+        "contribution": {"type": "integer", "minimum": 0, "maximum": 30},
+        "source": {"type": "string", "maxLength": 80},
+        "evidence": {"type": "object"}
+      }
+    },
+    "unmappedSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source",
+        "kind",
+        "severity",
+        "confidence",
+        "observed_at",
+        "expires_at",
+        "environment",
+        "release",
+        "component",
+        "flow",
+        "affected_users",
+        "occurrence_count"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 80},
+        "source": {"type": "string", "minLength": 1, "maxLength": 80},
+        "kind": {
+          "type": "string",
+          "enum": ["runtime_incident", "incident", "release_blocker", "regression", "project_priority"]
+        },
+        "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+        "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+        "observed_at": {"type": ["integer", "null"], "minimum": 1},
+        "expires_at": {"type": ["integer", "null"], "minimum": 1},
+        "environment": {"type": "string", "maxLength": 80},
+        "release": {"type": "string", "maxLength": 80},
+        "component": {"type": "string", "maxLength": 80},
+        "flow": {"type": "string", "maxLength": 80},
+        "affected_users": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "occurrence_count": {"type": "integer", "minimum": 0, "maximum": 1000000000}
+      }
+    },
+    "signalYield": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "observed",
+        "investigated",
+        "attributed",
+        "confirmed",
+        "rejected",
+        "no_finding",
+        "unattributed",
+        "confirmation_rate"
+      ],
+      "properties": {
+        "reason": {"type": "string", "minLength": 1, "maxLength": 80},
+        "observed": {"type": "integer", "minimum": 0},
+        "investigated": {"type": "integer", "minimum": 0},
+        "attributed": {"type": "integer", "minimum": 0},
+        "confirmed": {"type": "integer", "minimum": 0},
+        "rejected": {"type": "integer", "minimum": 0},
+        "no_finding": {"type": "integer", "minimum": 0},
+        "unattributed": {"type": "integer", "minimum": 0},
+        "confirmation_rate": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  }
+}

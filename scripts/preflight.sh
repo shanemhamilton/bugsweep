@@ -192,6 +192,10 @@ _bsw_persist_run_state_and_lease() {
   # call about which values could ever carry unsafe content.
   {
     _bsw_env_kv BUGSWEEP_TS "$ts"
+    # Collision-free durable identity for cross-run learning. BUGSWEEP_TS is
+    # intentionally human-readable but only has second resolution; concurrent
+    # worktree runs use bs_id so their outcome episodes can never collapse.
+    _bsw_env_kv BUGSWEEP_RUN_ID "$bs_id"
     _bsw_env_kv BUGSWEEP_RUN_DIR "$run_dir"
     _bsw_env_kv BUGSWEEP_BRANCH "$branch"
     _bsw_env_kv BUGSWEEP_ORIG_BRANCH "$orig_branch"

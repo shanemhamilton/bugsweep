@@ -57,15 +57,29 @@ ENV
 
 _make_recon_json() {
   local run_dir="$1"
+  local batches="" i path
+  mkdir -p "${REPO}/audit-fixtures"
+  for i in 1 2 3 4; do
+    path="audit-fixtures/batch-${i}.txt"
+    printf 'batch %s\n' "$i" > "${REPO}/${path}"
+    batches="${batches}${batches:+,}{\"id\":${i},\"tier\":\"normal\",\"files\":[\"${path}\"]}"
+  done
+  git -C "$REPO" add audit-fixtures
+  git -C "$REPO" commit -q -m "test: seed audit batches"
   cat > "${run_dir}/recon.json" <<JSON
 {
-  "files_in_scope": 12,
+  "files_in_scope": 4,
   "batch_count": 4,
-  "batches": [],
+  "batches": [${batches}],
   "architectural_targets": [],
   "covered": [1]
 }
 JSON
+  printf '{"event":"batch_covered","batch":1}\n' >> "${run_dir}/ledger.jsonl"
+  printf '{"schema":1,"batch":1,"file":"audit-fixtures/batch-1.txt","head":"%s","blob_oid":"%s"}\n' \
+    "$(git -C "$REPO" rev-parse HEAD)" \
+    "$(git -C "$REPO" rev-parse 'HEAD:audit-fixtures/batch-1.txt')" \
+    > "${run_dir}/audit-snapshots.jsonl"
 }
 
 setup() {

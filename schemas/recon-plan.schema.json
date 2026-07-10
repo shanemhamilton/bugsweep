@@ -55,6 +55,11 @@
     "covered": {
       "type": "array",
       "items": {}
+    },
+    "modeled": {
+      "type": "array",
+      "description": "Optional in run-scoped recon.json: architecture-modeling progress. Distinct from covered, which is reserved for completed Hunter-Skeptic-Referee review.",
+      "items": {}
     }
   }
 }

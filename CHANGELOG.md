@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Local-first priority intelligence.** A deterministic `priority-context.json` combines
+  current tracked-file changes, completed-hunt content drift, repair/revert history, mapped
+  baseline failures, reachability, prior Bugsweep evidence, common-root local bug records,
+  configured critical paths, and an optional provider-neutral signal inbox. External signals
+  require stable provenance and freshness, report health/unmapped counts, and may contribute
+  only bounded structured user-impact facts. Every target carries a factor breakdown and
+  `why_now`; signals change investigation order only and never confirmation/fix authority or
+  the configured tracked-file scope.
+- **Auditable priority application and reporting.** `priority-application.json` records actual
+  promoted batches/files and skipped candidates after scope and budget verification. The full
+  reducer carries that receipt, target outcomes, signal health, unmapped context, and attributed
+  yield into `run-summary.json.priority`; `finalize.sh` renders the same data as a deterministic
+  report section rather than model-authored prose.
+- **Priority outcome observability.** Append-only `priority-outcomes.jsonl` episodes and bounded
+  `signal_yield` aggregates connect reason codes to investigated/confirmed/rejected/no-finding
+  outcomes only when finding events explicitly cite the closed reason code. Unlinked same-file
+  outcomes remain `unattributed`, preventing coincident bugs from inflating a signal's yield.
+  These observations never automatically change weights, proof thresholds, or permissions.
+
+### Changed
+
+- **Modeling and audit coverage are distinct.** Architecture context progress now lives in
+  `recon.json.modeled`; `covered` and durable content fingerprints are written only after a
+  batch completes Hunter → Skeptic → Referee. This prevents context modeling from being
+  mistaken for a completed bug audit and makes changed-since-hunt learning truthful.
+- **Priority promotions are work-budgeted.** Newly promoted deferred work must fit both a batch
+  cap and a total-file cap, and the existing critical coverage frontier stays ahead of promoted
+  work. Explanation-length tuning no longer changes a target's score.
+- **Exact coverage fails closed without Python 3.** The audit checkpoint leaves coverage
+  untouched and finalizes with incomplete output; the degraded summary remains schema-valid,
+  underreports coverage as zero, and does not claim full priority outcomes.
+
 ### Security
 
 - **Command injection via `state.env` (bugsweep-06y).** A run started on a

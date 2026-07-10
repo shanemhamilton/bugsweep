@@ -140,3 +140,19 @@ def test_prompt_notes_degraded_path_lacks_full_tier_ranking_is_addressed() -> No
         or "without python" in text
         or "both paths" in text
     ), "prompt must acknowledge the degraded path or assert both-path tiering"
+
+
+def test_context_modeling_uses_modeled_not_covered() -> None:
+    """Architecture modeling is not an adversarial hunt and must not create
+    false durable audit coverage."""
+    text = _text()
+    assert "`modeled`" in text
+    assert "Hunter → Skeptic → Referee" in text
+    assert "must not add" in text.lower() and "`covered`" in text
+
+
+def test_priority_context_is_applied_without_scope_narrowing() -> None:
+    text = _text()
+    assert "priority-context.json" in text
+    assert "priority-context.sh apply" in text
+    assert "never remove" in text.lower() or "never removes" in text.lower()

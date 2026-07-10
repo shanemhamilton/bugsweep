@@ -59,9 +59,12 @@ code path is genuinely unreachable. Absent that evidence, mark **DISPUTED**.
      can't fully verify; OR your only grounds for rejection are the weak patterns listed
      above. Send to the Referee rather than guessing.
 5. Dedupe candidates that share a root cause.
+6. Preserve each candidate's `priority_reason_codes` unchanged. For every REJECTED candidate,
+   append a `false_positive` ledger event with its file, bug id, and that exact closed-code list.
+   Do not add a reason code retrospectively.
 
 ## Output
-For each: verdict, reason, confidence (0–100), and (if UPHELD/DISPUTED) a finalized
+For each: verdict, reason, confidence (0–100), preserved `priority_reason_codes`, and (if UPHELD/DISPUTED) a finalized
 severity by real-world impact. Pass UPHELD and DISPUTED items to the Referee. Record the
 counts in the ledger. Never silently drop a DISPUTED item — uncertainty goes to the
 Referee, not the trash.

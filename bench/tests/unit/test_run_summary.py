@@ -68,7 +68,14 @@ def _write_ledger(path: Path, events: list[dict]) -> None:
 
 def _write_recon(path: Path, *, batch_count: int, covered: list) -> None:
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"batch_count": batch_count, "batches": [], "covered": covered}, f)
+        json.dump(
+            {
+                "batch_count": batch_count,
+                "batches": [{"id": index} for index in range(1, batch_count + 1)],
+                "covered": covered,
+            },
+            f,
+        )
 
 
 def _validate_against_schema(summary: dict) -> None:
@@ -330,7 +337,10 @@ def test_recon_json_without_batch_count_falls_back_to_len_batches(
     tmp_path: Path,
 ) -> None:
     ledger = tmp_path / "ledger.jsonl"
-    _write_ledger(ledger, [{"event": "preflight"}])
+    _write_ledger(
+        ledger,
+        [{"event": "preflight"}, {"event": "batch_covered", "batch": 1}],
+    )
     recon = tmp_path / "recon.json"
     recon.write_text(
         json.dumps({"batches": [{"id": 1}, {"id": 2}], "covered": [1]}),
@@ -684,11 +694,11 @@ def test_root_cause_clusters_ignore_findings_without_category(tmp_path: Path) ->
 # ---------------------------------------------------------------------------
 # follow_up[] (bugsweep-xdw): the "where to look next" handoff, derived from
 # prior-coverage.json (schema: scripts/state.sh's `prime` writer) plus
-# recon.json batches NOT in `covered`, plus quarantined findings. Deterministic
-# order: uncovered_batch (batch id asc) -> high_risk_file (score desc) ->
-# stale_file (alpha) -> quarantined (bug_id alpha). Capped at FOLLOW_UP_CAP
-# (documented on the constant) so a huge stale-file backlog can't blow up
-# run-summary.json.
+# recon.json batches outside the recon/ledger coverage intersection, plus
+# quarantined findings. Deterministic order: uncovered_batch (batch id asc) ->
+# high_risk_file (score desc) -> stale_file (alpha) -> quarantined (bug_id
+# alpha). Capped at FOLLOW_UP_CAP (documented on the constant) so a huge
+# stale-file backlog can't blow up run-summary.json.
 # ---------------------------------------------------------------------------
 
 
@@ -725,9 +735,83 @@ def _write_recon_with_batches(path: Path, *, batches, covered) -> None:
     )
 
 
-def test_follow_up_includes_uncovered_batches(tmp_path: Path) -> None:
+def test_coverage_handshake_recon_only_stays_uncovered(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.jsonl"
     _write_ledger(ledger, [{"event": "preflight"}])
+    recon = tmp_path / "recon.json"
+    _write_recon_with_batches(
+        recon,
+        batches=[{"id": 1, "tier": "critical", "files": ["a.py"]}],
+        covered=[1],
+    )
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode="detect-only",
+    )
+
+    assert summary["coverage"] == {"covered": 0, "total": 1}
+    assert summary["status"] == "stalled"
+    assert {"kind": "uncovered_batch", "ref": "1", "detail": "critical"} in summary["follow_up"]
+    _validate_against_schema(summary)
+
+
+def test_coverage_handshake_ledger_only_stays_uncovered(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "batch_covered", "batch": 1}])
+    recon = tmp_path / "recon.json"
+    _write_recon_with_batches(
+        recon,
+        batches=[{"id": 1, "tier": "critical", "files": ["a.py"]}],
+        covered=[],
+    )
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode="detect-only",
+    )
+
+    assert summary["coverage"] == {"covered": 0, "total": 1}
+    assert summary["status"] == "stalled"
+    assert {"kind": "uncovered_batch", "ref": "1", "detail": "critical"} in summary["follow_up"]
+    _validate_against_schema(summary)
+
+
+def test_coverage_handshake_both_surfaces_confirm_coverage(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, [{"event": "batch_covered", "id": 1}])
+    recon = tmp_path / "recon.json"
+    _write_recon_with_batches(
+        recon,
+        batches=[{"id": 1, "tier": "critical", "files": ["a.py"]}],
+        covered=[1],
+    )
+
+    summary = reduce_run(
+        ledger_path=ledger,
+        recon_path=recon,
+        report_is_stub=True,
+        mode="detect-only",
+    )
+
+    assert summary["coverage"] == {"covered": 1, "total": 1}
+    assert summary["status"] == "partial"
+    assert not any(
+        item["kind"] == "uncovered_batch" and item["ref"] == "1" for item in summary["follow_up"]
+    )
+    _validate_against_schema(summary)
+
+
+def test_follow_up_includes_uncovered_batches(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger,
+        [{"event": "preflight"}, {"event": "batch_covered", "batch": 1}],
+    )
     recon = tmp_path / "recon.json"
     _write_recon_with_batches(
         recon,
@@ -914,7 +998,9 @@ def test_follow_up_malformed_prior_coverage_does_not_raise(tmp_path: Path) -> No
         prior_coverage_path=prior,
     )
 
-    assert summary["follow_up"] == []
+    # The malformed prior file contributes no high-risk/stale entries, while
+    # recon-only coverage still correctly leaves the concrete batch uncovered.
+    assert summary["follow_up"] == [{"kind": "uncovered_batch", "ref": "1", "detail": None}]
     _validate_against_schema(summary)
 
 
@@ -953,7 +1039,9 @@ def test_follow_up_default_prior_coverage_path_is_none(tmp_path: Path) -> None:
 
     summary = reduce_run(ledger_path=ledger, recon_path=recon, report_is_stub=False, mode="fix")
 
-    assert summary["follow_up"] == []
+    # Omitting prior_coverage_path is still tolerated. The concrete batch is
+    # uncovered because no matching batch_covered ledger event exists.
+    assert summary["follow_up"] == [{"kind": "uncovered_batch", "ref": "1", "detail": None}]
     _validate_against_schema(summary)
 
 
@@ -1526,8 +1614,18 @@ def test_vote_split_recorded_for_high_severity_finding_majority_confirmed(
     _write_ledger(
         ledger,
         [
-            {"event": "referee_vote", "bug_id": "BUG-1", "severity": "high", "verdict": "CONFIRMED"},
-            {"event": "referee_vote", "bug_id": "BUG-1", "severity": "high", "verdict": "CONFIRMED"},
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-1",
+                "severity": "high",
+                "verdict": "CONFIRMED",
+            },
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-1",
+                "severity": "high",
+                "verdict": "CONFIRMED",
+            },
             {
                 "event": "referee_vote",
                 "bug_id": "BUG-1",
@@ -1709,12 +1807,32 @@ def test_vote_split_ignores_votes_for_other_bug_ids_and_missing_bug_id(tmp_path:
         ledger,
         [
             # Votes for a different bug — must not count toward BUG-6.
-            {"event": "referee_vote", "bug_id": "BUG-OTHER", "severity": "high", "verdict": "CONFIRMED"},
-            {"event": "referee_vote", "bug_id": "BUG-OTHER", "severity": "high", "verdict": "CONFIRMED"},
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-OTHER",
+                "severity": "high",
+                "verdict": "CONFIRMED",
+            },
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-OTHER",
+                "severity": "high",
+                "verdict": "CONFIRMED",
+            },
             # A vote event with no bug_id at all — must be skipped, not guessed.
             {"event": "referee_vote", "severity": "high", "verdict": "CONFIRMED"},
-            {"event": "referee_vote", "bug_id": "BUG-6", "severity": "high", "verdict": "CONFIRMED"},
-            {"event": "referee_vote", "bug_id": "BUG-6", "severity": "high", "verdict": "NOT_CONFIRMED"},
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-6",
+                "severity": "high",
+                "verdict": "CONFIRMED",
+            },
+            {
+                "event": "referee_vote",
+                "bug_id": "BUG-6",
+                "severity": "high",
+                "verdict": "NOT_CONFIRMED",
+            },
             {
                 "event": "fix_committed",
                 "bug_id": "BUG-6",

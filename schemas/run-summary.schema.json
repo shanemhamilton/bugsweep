@@ -160,6 +160,106 @@
         }
       }
     },
+    "priority": {
+      "type": "object",
+      "description": "OPTIONAL deterministic why-now report emitted by the full Python reducer. Application counts come from priority-application.json and target outcomes require explicit attribution or verified audit coverage; degraded summaries may omit this object.",
+      "additionalProperties": false,
+      "required": ["available", "degraded_reason", "application_available", "application_reason", "top_targets", "signal_health", "unmapped_focus_signals", "signal_yield", "application"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "degraded_reason": {
+          "type": ["string", "null"],
+          "maxLength": 80,
+          "description": "Null for a validated priority artifact; otherwise the bounded reason priority context was missing, invalid, or degraded."
+        },
+        "application_available": {"type": "boolean"},
+        "application_reason": {
+          "type": ["string", "null"],
+          "maxLength": 80,
+          "description": "Null only when priority-application.json passed its deterministic receipt checks; otherwise why applied counts are unavailable."
+        },
+        "top_targets": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "lane", "priority_score", "reason_codes", "investigated", "outcome"],
+            "properties": {
+              "file": {"type": "string"},
+              "lane": {"type": "string", "enum": ["must_focus", "high", "elevated", "normal"]},
+              "priority_score": {"type": "integer", "minimum": 0, "maximum": 100},
+              "reason_codes": {"type": "array", "maxItems": 20, "items": {"type": "string"}, "uniqueItems": true},
+              "investigated": {"type": "boolean"},
+              "outcome": {"type": "string", "enum": ["confirmed", "rejected", "no_finding", "unattributed", "not_reviewed"]}
+            }
+          }
+        },
+        "signal_health": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["accepted", "expired", "inactive", "malformed", "unmapped", "overmatched"],
+          "properties": {
+            "accepted": {"type": "integer", "minimum": 0},
+            "expired": {"type": "integer", "minimum": 0},
+            "inactive": {"type": "integer", "minimum": 0},
+            "malformed": {"type": "integer", "minimum": 0},
+            "unmapped": {"type": "integer", "minimum": 0},
+            "overmatched": {"type": "integer", "minimum": 0}
+          }
+        },
+        "unmapped_focus_signals": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "source", "kind", "severity", "component", "flow"],
+            "properties": {
+              "id": {"type": "string", "maxLength": 80},
+              "source": {"type": "string", "maxLength": 80},
+              "kind": {"type": "string", "maxLength": 80},
+              "severity": {"type": "string", "maxLength": 80},
+              "component": {"type": "string", "maxLength": 80},
+              "flow": {"type": "string", "maxLength": 80}
+            }
+          }
+        },
+        "signal_yield": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason", "observed", "investigated", "attributed", "confirmed", "rejected", "no_finding", "unattributed", "confirmation_rate"],
+            "properties": {
+              "reason": {"type": "string", "maxLength": 80},
+              "observed": {"type": "integer", "minimum": 0},
+              "investigated": {"type": "integer", "minimum": 0},
+              "attributed": {"type": "integer", "minimum": 0},
+              "confirmed": {"type": "integer", "minimum": 0},
+              "rejected": {"type": "integer", "minimum": 0},
+              "no_finding": {"type": "integer", "minimum": 0},
+              "unattributed": {"type": "integer", "minimum": 0},
+              "confirmation_rate": {"type": "number", "minimum": 0, "maximum": 1}
+            }
+          }
+        },
+        "application": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["candidate_count", "promoted_batches", "promoted_batch_count", "added_file_count", "already_in_budget_count", "skipped_candidate_count"],
+          "properties": {
+            "candidate_count": {"type": "integer", "minimum": 0, "maximum": 200},
+            "promoted_batches": {"type": "array", "maxItems": 20, "items": {"type": "string"}, "uniqueItems": true},
+            "promoted_batch_count": {"type": "integer", "minimum": 0, "maximum": 20},
+            "added_file_count": {"type": "integer", "minimum": 0, "maximum": 1000},
+            "already_in_budget_count": {"type": "integer", "minimum": 0, "maximum": 200},
+            "skipped_candidate_count": {"type": "integer", "minimum": 0, "maximum": 200}
+          }
+        }
+      }
+    },
     "near_misses": {
       "type": "array",
       "description": "OPTIONAL (bugsweep-dxh, --recall mode). Referee near-miss verdicts (confidence 50-67 — genuinely plausible but not >67% CONFIRMED) surfaced for human review. Populated ONLY when reduce_run's 'recall' parameter is true (see bench/scorer/run_summary.py); empty otherwise, even if near_miss ledger events exist. This field is reporting-only: near-misses are NEVER eligible for auto-fix and never appear in fixed/quarantined/confirmed_unfixed/findings, regardless of recall.",

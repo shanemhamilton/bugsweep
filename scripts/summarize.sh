@@ -64,6 +64,10 @@ else
 fi
 
 summary_path="${run_dir}/run-summary.json"
+verify_repo="$(_bsw_state_env_get "${run_dir}/state.env" BUGSWEEP_WORKTREE)"
+if [ -z "$verify_repo" ] || [ ! -d "$verify_repo" ]; then
+  verify_repo="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+fi
 
 # --- Tier 2 helpers: grep-able coverage extraction, no python3 required -------
 _degraded_coverage() {
@@ -137,6 +141,9 @@ _run_degraded() {
   # shellcheck disable=SC2046
   set -- $(_degraded_coverage)
   cov="${1:-0}"; tot="${2:-0}"
+  # Without the exact-Git Python verifier, underreport rather than trusting
+  # forgeable recon/ledger JSON as proof of completed audit coverage.
+  cov=0
   _write_degraded_summary "$cov" "$tot"
 }
 
@@ -147,6 +154,7 @@ if have_python && [ -f "$_py_reducer" ]; then
   if ! MODE="$mode" REPORT_IS_STUB="$report_is_stub" RUN_DIR="$run_dir" \
        RECALL="$recall_enabled" \
        BUGSWEEP_ROOT="$BUGSWEEP_ROOT" \
+       BUGSWEEP_VERIFY_REPO="$verify_repo" \
        python3 "$_py_reducer" "$summary_path" 2>/dev/null; then
     log "summarize: python3 reduction failed; falling back to degraded summary."
     _run_degraded
