@@ -62,13 +62,13 @@ def test_prompt_states_coverage_first_promotion_clears_deferred() -> None:
     text = _text().lower()
     # The re-tiering section must explicitly reconcile promotion with the
     # deferred flag: a promoted/critical batch becomes in-budget.
-    assert "deferred: false" in text or "deferred:false" in text, (
-        "prompt must state that a coverage-first promotion sets deferred:false"
-    )
+    assert (
+        "deferred: false" in text or "deferred:false" in text
+    ), "prompt must state that a coverage-first promotion sets deferred:false"
     # Anchor the statement to the promotion/critical concept so it isn't just
     # the loop-scope mention above.
-    assert (
-        "promot" in text and ("deferred" in text)
+    assert "promot" in text and (
+        "deferred" in text
     ), "prompt must tie promotion to clearing the deferred flag"
 
 
@@ -81,17 +81,17 @@ def test_prompt_has_a_per_batch_deadline_checkpoint() -> None:
     run-summary.json at all (the exact silent-failure shape bead 2e5 fixed for
     the pre-modeling Step 0, but which this loop itself never enforced)."""
     text = _text()
-    assert "scripts/guard.sh" in text, (
-        "the per-batch loop must invoke scripts/guard.sh as a deadline checkpoint"
-    )
-    assert "scripts/finalize.sh" in text, (
-        "the per-batch loop must route a STOP result through scripts/finalize.sh"
-    )
+    assert (
+        "scripts/guard.sh" in text
+    ), "the per-batch loop must invoke scripts/guard.sh as a deadline checkpoint"
+    assert (
+        "scripts/finalize.sh" in text
+    ), "the per-batch loop must route a STOP result through scripts/finalize.sh"
     # The literal bash idiom used elsewhere in SKILL.md for the STOP->finalize
     # handoff, not just a prose description of it.
-    assert "STOP*)" in text and "finalize.sh" in text.split("STOP*)", 1)[1][:80], (
-        "expected the literal `STOP*) bash scripts/finalize.sh ...` case-arm idiom"
-    )
+    assert (
+        "STOP*)" in text and "finalize.sh" in text.split("STOP*)", 1)[1][:80]
+    ), "expected the literal `STOP*) bash scripts/finalize.sh ...` case-arm idiom"
 
 
 def test_prompt_ties_deadline_checkpoint_to_the_batch_loop_not_just_a_paragraph() -> None:
@@ -119,8 +119,7 @@ def test_prompt_states_any_stop_result_not_only_runtime_cap_ends_the_run() -> No
     must be treated the same way."""
     text = _text().lower()
     assert "any `stop*`" in text or "any stop*" in text, (
-        "prompt must say ANY STOP* result triggers finalize, not just the "
-        "runtime-cap example"
+        "prompt must say ANY STOP* result triggers finalize, not just the " "runtime-cap example"
     )
 
 
@@ -135,10 +134,7 @@ def test_prompt_notes_degraded_path_lacks_full_tier_ranking_is_addressed() -> No
     # fallback tiering. Accept a mention of the degraded/no-python path OR an
     # explicit statement that tiering holds on both paths.
     assert (
-        "degrad" in text
-        or "no python" in text
-        or "without python" in text
-        or "both paths" in text
+        "degrad" in text or "no python" in text or "without python" in text or "both paths" in text
     ), "prompt must acknowledge the degraded path or assert both-path tiering"
 
 

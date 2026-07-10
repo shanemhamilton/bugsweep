@@ -4,18 +4,18 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>bugsweep — the bug hunt that runs all night</title>
-<meta name="description" content="bugsweep is an autonomous, adversarial AI bug-hunting skill for Claude Code and Codex. It builds a whole-repo architecture model, hunts real security, logic, and data-integrity bugs through a Hunter→Skeptic→Referee gauntlet, and fixes them on a throwaway branch — safe enough to leave running overnight. The worst case is a branch you delete." />
+<meta name="description" content="bugsweep is a priority-aware, adversarial AI bug-hunting skill for Claude Code and Codex. It uses current repository evidence to start where risk is moving, then proves every finding through a Hunter→Skeptic→Referee gauntlet." />
 <meta property="og:title" content="bugsweep — the bug hunt that runs all night" />
-<meta property="og:description" content="An autonomous, adversarial bug-hunting fleet for Claude Code and Codex. A 9-rule trust contract, a Hunter→Skeptic→Referee gauntlet, and an overnight orchestrator built for unattended runs. The worst case is a branch you delete." />
+<meta property="og:description" content="Priority-aware, adversarial bug hunting for Claude Code and Codex. Recent changes, failing checks, incidents, and prior outcomes decide where the hunt starts—never what counts as proof." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://shanemhamilton.github.io/bugsweep/" />
 <meta property="og:image" content="https://shanemhamilton.github.io/bugsweep/og-image.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:image:alt" content="bugsweep — It hunts the bugs while you sleep. An adversarial AI bug-hunting and auto-fix fleet for Claude Code and Codex." />
+<meta property="og:image:alt" content="bugsweep — It hunts the bugs while you sleep. An adversarial AI bug-hunting fleet for Claude Code and Codex." />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="bugsweep — the bug hunt that runs all night" />
-<meta name="twitter:description" content="An autonomous, adversarial bug-hunting fleet for Claude Code and Codex. The worst case is a branch you delete." />
+<meta name="twitter:description" content="Priority-aware, adversarial bug hunting that starts where risk is moving and keeps the whole repository in scope." />
 <meta name="twitter:image" content="https://shanemhamilton.github.io/bugsweep/og-image.png" />
 <meta name="theme-color" content="#0B1020" />
 <style>
@@ -267,9 +267,9 @@
   .cmd{
     margin:2rem auto 0;max-width:720px;display:flex;align-items:center;gap:1rem;
     border:1px solid var(--haze);border-radius:12px;background:var(--panel-2);
-    padding:1rem 1.1rem;font-family:var(--mono);font-size:.86rem;text-align:left;overflow-x:auto;
+    padding:1rem 1.1rem;font-family:var(--mono);font-size:.86rem;text-align:left;overflow:hidden;
   }
-  .cmd code{color:var(--ink);white-space:nowrap}
+  .cmd code{color:var(--ink);white-space:nowrap;display:block;min-width:0;overflow-x:auto}
   .cmd .prompt{color:var(--brass)}
   .copy{margin-left:auto;flex:none;border:1px solid var(--haze);background:transparent;color:var(--muted);
     font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;padding:.5em .8em;border-radius:7px;cursor:pointer;transition:.15s}
@@ -312,14 +312,15 @@
   <div class="hero-scrim"></div>
   <div class="hero-inner">
     <div class="wrap">
-      <span class="eyebrow">Night shift · autonomous, adversarial code review</span>
+      <span class="eyebrow">Night shift · priority-aware, adversarial code review</span>
       <h1>It hunts the bugs <em>while you sleep.</em></h1>
       <p class="hero-sub">
         <b>bugsweep</b> is an autonomous, adversarial bug-hunting fleet for Claude Code and
         Codex. It models your whole repo, hunts real security, logic, and data-integrity bugs
         through a Hunter → Skeptic → Referee gauntlet, and — only when you ask — fixes them on
-        a throwaway branch with auto-revert. <b>The worst case for any run is a branch you
-        delete. You are always the merge gate.</b>
+        a throwaway branch with auto-revert. Before the hunt, it uses current repository
+        evidence to decide where risk is moving and where to start. <b>The worst case for any
+        run is a branch you delete. You are always the merge gate.</b>
       </p>
       <div class="cta-row">
         <a class="btn btn-primary" href="https://github.com/shanemhamilton/bugsweep">
@@ -330,7 +331,7 @@
       </div>
       <div class="badges">
         <span class="badge"><span class="dot brass"></span>Claude Code &amp; Codex</span>
-        <span class="badge"><span class="dot safe"></span>Zero dependencies</span>
+        <span class="badge"><span class="dot safe"></span>v0.5 · priority intelligence</span>
         <span class="badge"><span class="dot safe"></span>No telemetry</span>
         <span class="badge"><span class="dot safe"></span>MIT licensed</span>
       </div>
@@ -424,6 +425,57 @@
 
 <hr class="rule" />
 
+<!-- ============ PRIORITY INTELLIGENCE ============ -->
+<section id="priority" aria-labelledby="priority-h2">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Priority intelligence · why now</span>
+      <h2 id="priority-h2">It starts where the risk is moving.</h2>
+      <p class="lede">Recent changes matter. So do failing checks, reachable sensitive code,
+        repeated repairs, active incidents, user impact, and what earlier hunts actually found.
+        Bugsweep combines those signals into an explainable queue—<b>without turning the whole-repo
+        hunt into a diff scan.</b></p>
+    </div>
+
+    <div class="readout-grid">
+      <div class="term reveal" aria-label="Schematic priority-context.json showing bounded investigation lanes and their reasons.">
+        <div class="term-bar">
+          <span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>
+          <span class="ttitle">priority-context.json — schematic, not sample results</span>
+        </div>
+        <div class="term-body">
+<pre><span class="c-crit">MUST FOCUS</span>  payments/checkout.ts
+            <span class="c-muted">release blocker · affected users · live sink</span>
+
+<span class="c-hi">HIGH</span>        auth/session.py
+            <span class="c-muted">changed since hunt · repeated repairs</span>
+
+<span class="c-brass">ELEVATED</span>    api/webhooks.go
+            <span class="c-muted">recent change · stale audit</span>
+
+<span class="c-safe">SCOPE LOCK</span>   <span class="c-muted">every tracked file stays eligible</span>
+<span class="c-safe">PROOF LOCK</span>   <span class="c-muted">Hunter → Skeptic → Referee unchanged</span></pre>
+        </div>
+      </div>
+
+      <div class="story reveal">
+        <h3>Value instincts, with receipts.</h3>
+        <p>The collector reads only bounded local evidence: same-branch Git changes, completed-hunt
+          fingerprints, baseline failures, reachability, repository-local bugs, and durable prior
+          outcomes. Fresh incident, release, product, or support facts can enter through a
+          provider-neutral local inbox—<b>Bugsweep itself never calls those remote systems.</b></p>
+        <p>Hard-focus evidence may promote a whole batch, but only inside explicit batch and file
+          budgets. The application receipt records what was actually promoted or skipped. Later
+          runs credit a signal only when a finding explicitly carries that reason code; coincidence
+          stays unattributed, and <b>weights never silently rewrite themselves.</b></p>
+        <span class="tag">◆ signal → target → tribunal → attributed outcome</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="rule" />
+
 <!-- ============ OVERNIGHT ORCHESTRATOR ============ -->
 <section aria-labelledby="orch-h2">
   <div class="wrap">
@@ -440,9 +492,9 @@
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6"/></svg>
         <h3>A contract a scheduler can read</h3>
         <p>Every run reduces its ledger into a schema-valid <code class="kbd">run-summary.json</code> —
-          status, coverage, severity counts, fixed/quarantined/confirmed-unfixed findings, and where to
-          look next. It always exists after finalize; if full reduction can't run, a minimal summary
-          ships instead, flagged <code class="kbd">degraded: true</code>.</p>
+          status, coverage, severity counts, fixed/quarantined/confirmed-unfixed findings, deterministic
+          priority outcomes, and where to look next. It always exists after finalize; if full reduction
+          can't run, a minimal summary ships instead, flagged <code class="kbd">degraded: true</code>.</p>
       </div>
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/></svg>
@@ -506,7 +558,7 @@
     </div>
 
     <div class="readout-grid">
-      <div class="term reveal" role="img" aria-label="Schematic excerpt of run-summary.json, bugsweep's machine-readable result contract.">
+      <div class="term reveal" aria-label="Schematic excerpt of run-summary.json, bugsweep's machine-readable result contract.">
         <div class="term-bar">
           <span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>
           <span class="ttitle">run-summary.json — the machine-readable contract</span>
@@ -520,6 +572,7 @@
   <span class="c-brass">"findings"</span>: [ <span class="c-muted">{ evidence trail per bug }</span> ],
   <span class="c-brass">"fixed"</span> / <span class="c-brass">"quarantined"</span> / <span class="c-brass">"confirmed_unfixed"</span>: […],
   <span class="c-brass">"root_cause_clusters"</span>: […],
+  <span class="c-brass">"priority"</span>: { <span class="c-muted">targets, signal_health, application, yield</span> },
   <span class="c-brass">"follow_up"</span>: <span class="c-muted">"where to look next"</span>
 }
 
@@ -552,9 +605,10 @@
       <span class="eyebrow">Coverage-first · not a diff scanner</span>
       <h2 id="deepen-h2">It gets deeper every night.</h2>
       <p class="lede">The whole repo is always in scope. <code class="kbd">.bugsweep/state/</code> persists an
-        audit log, a risk map, and the anti-pattern catalog version across runs, and each run reprioritizes
-        toward the never-audited, the stale, the content-changed, and the high-risk. <b>The repo is never
-        permanently "done" while a frontier remains.</b></p>
+        audit log, a risk map, attributed signal outcomes, and the anti-pattern catalog version across
+        runs. Each run reprioritizes toward the never-audited, stale, content-changed, high-risk, and
+        actively impacted—while fixed weights keep production outcomes from silently changing policy.
+        <b>The repo is never permanently "done" while a frontier remains.</b></p>
     </div>
 
     <div class="deepen-grid">
@@ -597,10 +651,10 @@
       </div>
 
       <ul class="nights reveal">
-        <li><span class="when">Night 1</span><span class="what">Builds the architecture model, sweeps the highest-risk sinks, <b>lands the first fixes.</b></span></li>
-        <li><span class="when">Night 2</span><span class="what">Skips what's fresh, pushes the frontier into <b>never-audited</b> modules.</span></li>
-        <li><span class="when">Night 3</span><span class="what">Replays <b>variant queries</b> from earlier finds — hunts the whole repo for siblings of confirmed bugs.</span></li>
-        <li><span class="when">Ongoing</span><span class="what">Re-checks stale files as the anti-pattern catalog gains detector classes. Survives context resets — all progress lives on disk, aggregated across runs.</span></li>
+        <li><span class="when">Night 1</span><span class="what">Starts with changed code, failing checks, live sinks, and explicit project priorities—then <b>records exact completed-hunt fingerprints.</b></span></li>
+        <li><span class="when">Night 2</span><span class="what">Distinguishes fresh work from content that moved since its last real hunt and pushes into <b>never-audited</b> modules.</span></li>
+        <li><span class="when">Night 3</span><span class="what">Replays <b>variant queries</b> and revisits reasons that produced explicitly attributed outcomes.</span></li>
+        <li><span class="when">Ongoing</span><span class="what">Re-checks stale files as the catalog evolves. Evidence compounds across runs; weights and safety gates change only through reviewed code.</span></li>
       </ul>
     </div>
   </div>
@@ -673,15 +727,17 @@
 <section class="install" id="install" aria-labelledby="install-h2">
   <div class="wrap">
     <span class="eyebrow" style="justify-content:center">Get started</span>
-    <h2 id="install-h2" style="margin-top:.9rem">One command. No dependencies.</h2>
+    <h2 id="install-h2" style="margin-top:.9rem">One command. No package install.</h2>
     <p>Installs as a skill for Claude Code and Codex — auto-detects <code class="kbd">~/.claude</code> and
       <code class="kbd">~/.codex</code>. Then just ask it to <em>find bugs</em>, or run
-      <code class="kbd">/bugsweep --autonomous</code> for the overnight hunt.</p>
+      <code class="kbd">/bugsweep --autonomous</code> for the overnight hunt. Python 3 enables
+      exact audit checkpoints and the full deterministic priority report; without it, coverage
+      fails closed and the run emits explicit degraded output.</p>
 
     <div class="cmd">
       <span class="prompt">$</span>
       <code id="installcmd">curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash</code>
-      <button class="copy" id="copybtn" type="button" aria-label="Copy install command">COPY</button>
+      <button class="copy" id="copybtn" type="button" aria-label="Copy install command" aria-live="polite">COPY</button>
     </div>
 
     <div class="sub-cmds">
@@ -706,6 +762,7 @@
       <a href="https://github.com/shanemhamilton/bugsweep">GitHub</a>
       <a href="https://github.com/shanemhamilton/bugsweep/releases">Releases</a>
       <a href="https://github.com/shanemhamilton/bugsweep/blob/main/SECURITY.md">Security</a>
+      <a href="#priority">Priority</a>
       <a href="#install">Install</a>
     </nav>
     <div class="fine">An autonomous, adversarial bug-hunting skill · MIT licensed · the worst case is a branch you delete.</div>
@@ -731,9 +788,11 @@
   if (btn){
     btn.addEventListener("click", function(){
       var txt = document.getElementById("installcmd").textContent;
-      var done = function(){ btn.textContent="COPIED"; setTimeout(function(){ btn.textContent="COPY"; },1600); };
-      if (navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(done, done); }
-      else { done(); }
+      var reset = function(){ setTimeout(function(){ btn.textContent="COPY"; },1600); };
+      var done = function(){ btn.textContent="COPIED"; reset(); };
+      var fail = function(){ btn.textContent="COPY FAILED"; reset(); };
+      if (navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(done, fail); }
+      else { fail(); }
     });
   }
 

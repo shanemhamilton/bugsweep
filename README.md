@@ -8,11 +8,11 @@
 
 > **An autonomous, adversarial AI code-review and bug-fixing skill for [Claude Code](https://claude.ai/code) and [Codex](https://github.com/openai/codex).** It finds real security vulnerabilities, logic errors, race conditions, and data-integrity bugs across your whole repository — then, when you let it, fixes them on a throwaway git branch you fully control. Safe enough to run unattended overnight.
 
-A Claude Code and Codex skill that finds and fixes bugs in your codebase — safely enough
-to run unattended, even fully autonomously overnight. It hunts for real runtime bugs
-(security holes, logic errors, race conditions, bad error handling, data-integrity
-issues), and when you let it, fixes them on a throwaway branch with automatic revert if a
-fix breaks anything.
+> **New in v0.5.0 — priority intelligence.** Bugsweep now uses current code changes, failing
+> checks, runtime reachability, repeated repairs, prior findings, and fresh local project signals
+> to decide where to investigate first—then records which explicitly attributed reasons actually
+> led to bugs. [See the project site](https://shanemhamilton.github.io/bugsweep/) or read the
+> [full priority contract](references/priority-intelligence.md).
 
 It does five things that make it effective on real, large codebases:
 - **Whole-repo context.** Before hunting, it builds a distilled model of your
@@ -189,7 +189,7 @@ curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/instal
 **Pin to a specific release** (instead of tracking the latest `main`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash -s -- --version v0.5.0
 ```
 
 Re-running the installer with `--version` checks out that release tag; re-running without

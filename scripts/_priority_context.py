@@ -82,8 +82,7 @@ _PRIORITY_REASON_CODES = {
     "variant_match",
 }
 _PATH_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])(?:\./)?[A-Za-z0-9_@+.-]+"
-    r"(?:/[A-Za-z0-9_@+.-]+)*\.[A-Za-z0-9_+.-]+"
+    r"(?<![A-Za-z0-9_.-])(?:\./)?[A-Za-z0-9_@+.-]+" r"(?:/[A-Za-z0-9_@+.-]+)*\.[A-Za-z0-9_+.-]+"
 )
 
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-09
+
+The priority-intelligence milestone: Bugsweep now combines live repository evidence with
+durable outcome history to decide where an adversarial hunt should start, while preserving
+whole-repository scope and the same Hunter → Skeptic → Referee proof gate. This release also
+hardens multi-agent execution, verification, teardown, and the public documentation surface.
+
 ### Added
 
 - **Local-first priority intelligence.** A deterministic `priority-context.json` combines
@@ -27,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outcomes only when finding events explicitly cite the closed reason code. Unlinked same-file
   outcomes remain `unattributed`, preventing coincident bugs from inflating a signal's yield.
   These observations never automatically change weights, proof thresholds, or permissions.
+- **Stronger detection evidence.** Recall mode surfaces plausible near-misses without making them
+  fix-eligible; high/critical findings can use K-vote majority adjudication; executable repros
+  are additive evidence for fix gating rather than a shortcut around adversarial confirmation.
+- **Concurrent frontier ownership.** An atomic claim registry partitions batches across isolated
+  subagents, while collision-free run IDs keep their durable coverage and learning episodes
+  distinct.
+- **Operator and NightShift contracts.** Per-run rollup digests, deterministic nightshift
+  guardrails, and the multi-subagent playbook give schedulers a bounded, machine-readable way to
+  coordinate repeated runs.
+- **Git-history risk priors.** Bounded churn, repair, and revert history can break ties inside the
+  coverage frontier without outranking confirmed Bugsweep evidence.
 
 ### Changed
 
@@ -40,6 +58,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Exact coverage fails closed without Python 3.** The audit checkpoint leaves coverage
   untouched and finalizes with incomplete output; the degraded summary remains schema-valid,
   underreports coverage as zero, and does not claim full priority outcomes.
+- **Verification is isolated and failure-aware.** Flaky reruns execute from isolated snapshots,
+  and per-check failure counts prevent an existing failure from masking a new regression with the
+  same check name.
+
+### Fixed
+
+- **Finalize and teardown stay honest under degraded conditions.** No-Python handoffs remain valid
+  JSON, real reports cannot be mistaken for stale stubs, live leases are checked across all runs,
+  and cleanup reports infrastructure failures instead of claiming a successful reap.
+- **GitHub Pages deploys only the public site artifact.** A dedicated workflow skips malformed
+  benchmark gitlinks and publishes `docs/` directly, replacing the legacy recursive-submodule
+  checkout that left the project page at 404.
 
 ### Security
 
@@ -214,7 +244,8 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.2.0...v0.3.0
