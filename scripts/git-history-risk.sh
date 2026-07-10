@@ -35,6 +35,9 @@
 # that gating rather than adding a parallel shell implementation).
 
 set -euo pipefail
+export GIT_NO_LAZY_FETCH=1
+export GIT_TERMINAL_PROMPT=0
+export GIT_OPTIONAL_LOCKS=0
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 repo_root="${1:-}"
@@ -58,16 +61,19 @@ have_python || exit 0
 # `@@BSW@@` marker is a delimiter unlikely to collide with a real commit
 # subject; per-commit file lists follow each marker line until the next one.
 #
-# Captured into a variable and handed to python via an env var (the same
-# FILES_RAW pattern recon-plan.sh uses), NOT piped directly into `python3 -
-# <<PY`: a heredoc redirect on a command overrides that command's stdin, so a
-# pipe feeding the SAME command would be silently discarded (its writer gets
-# SIGPIPE) rather than reaching the script -- there is no way to combine an
-# input pipe with a heredoc-supplied program on one command.
-git_log_output="$(git -C "$repo_root" log -n "$depth_cap" --name-only --no-color \
-  --pretty=format:'@@BSW@@%x09%s' -- . 2>/dev/null || true)"
+# Stream into a hard-capped temp file instead of a shell variable/environment
+# value. A commit-count cap bounds history depth but not the number/length of
+# touched paths; without this byte cap a hostile giant commit could OOM the
+# shell or exceed execve's environment limit before Python ever starts.
+git_log_path="$(mktemp "${TMPDIR:-/tmp}/bugsweep-git-history.XXXXXX")" || exit 0
+_git_history_cleanup() { rm -f -- "$git_log_path"; }
+trap _git_history_cleanup EXIT
+( GIT_NO_LAZY_FETCH=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 \
+    git -C "$repo_root" log -n "$depth_cap" --name-only --no-color \
+      --pretty=format:'@@BSW@@%x09%s' -- . 2>/dev/null || true ) \
+  | dd of="$git_log_path" bs=65536 count=128 2>/dev/null || true
 
-DEPTH_CAP="$depth_cap" GIT_LOG_OUTPUT="$git_log_output" python3 - <<'PY'
+DEPTH_CAP="$depth_cap" GIT_LOG_PATH="$git_log_path" python3 - <<'PY'
 from __future__ import annotations
 
 import json
@@ -92,7 +98,12 @@ MARKER = "@@BSW@@\t"
 commits = []  # [(subject, [files touched]), ...], HEAD-most first (git log order)
 subject = None
 files: list[str] = []
-for line in os.environ.get("GIT_LOG_OUTPUT", "").split("\n"):
+try:
+    git_lines = open(os.environ["GIT_LOG_PATH"], encoding="utf-8", errors="replace")
+except OSError:
+    git_lines = ()
+for raw_line in git_lines:
+    line = raw_line.rstrip("\n")
     if line.startswith(MARKER):
         if subject is not None:
             commits.append((subject, files))
@@ -102,6 +113,10 @@ for line in os.environ.get("GIT_LOG_OUTPUT", "").split("\n"):
         files.append(line)
 if subject is not None:
     commits.append((subject, files))
+try:
+    git_lines.close()
+except AttributeError:
+    pass
 
 # Per-file raw features. `rank` is the ORDINAL position of a file's most
 # recent touch within the capped window (0 = the newest commit in the

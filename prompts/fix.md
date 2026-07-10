@@ -41,12 +41,14 @@ anything. One bug at a time. If you cannot fix it safely, quarantine it — do n
    - Step 3 printed `OK` / `NO_CHECKS` with no new failures, AND (step 3b was not run, OR
      step 3b printed `REPRO=confirmed`) → commit exactly this one fix:
      `git add -A && git commit -m "fix(bugsweep): BUG-<n> <short title>"`
-     Append a `fix_committed` event to the ledger with the bug id, file, and commit sha.
+     Append a `fix_committed` event to the ledger with the bug id, file, commit sha, and the
+     Referee-preserved `priority_reason_codes` list (empty when the candidate had no priority seed).
    - Step 3 printed `REGRESSION`, OR step 3b printed `REPRO=failed` → revert your changes
      immediately:
      - uncommitted: `git checkout -- . && git clean -fd -- <only files you touched>`
      - already committed: `git revert --no-edit HEAD`
-     Then append the bug to the ledger `quarantine` list with the failure detail (cite
+     Then append the bug to the ledger `quarantine` list with the failure detail and the same
+     Referee-preserved `priority_reason_codes` (cite
      `repro_failed` when step 3b is what triggered the revert, so a human can tell the two
      apart). Move on.
 5. **In `--approve` mode**, show the user the diff and the bug explanation, and wait for

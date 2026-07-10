@@ -40,6 +40,7 @@ BUGSWEEP_STASH_REF="none"
 BUGSWEEP_START_EPOCH="$(date +%s)"
 BUGSWEEP_SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts"
 BUGSWEEP_MODE="detect-only"
+BUGSWEEP_WORKTREE="${repo}"
 ENV
 
   touch "${run_dir}/ledger.jsonl"
@@ -47,20 +48,41 @@ ENV
 
 _make_recon_json() {
   local run_dir="$1" covered="$2" total="$3"
-  local covered_arr="[]"
+  local covered_arr="[]" batches_arr="[]"
+  if [ "$total" -gt 0 ]; then
+    local batches="" path
+    mkdir -p "${REPO}/audit-fixtures"
+    for i in $(seq 1 "$total"); do
+      path="audit-fixtures/batch-${i}.txt"
+      printf 'batch %s\n' "$i" > "${REPO}/${path}"
+      batches="${batches}${batches:+,}{\"id\":${i},\"tier\":\"normal\",\"files\":[\"${path}\"]}"
+    done
+    batches_arr="[${batches}]"
+    git -C "$REPO" add audit-fixtures
+    if ! git -C "$REPO" diff --cached --quiet; then
+      git -C "$REPO" commit -q -m "test: seed audit batches"
+    fi
+  fi
   if [ "$covered" -gt 0 ]; then
     local items=""
     for i in $(seq 1 "$covered"); do
       items="${items}${items:+,}$i"
     done
     covered_arr="[${items}]"
+    for i in $(seq 1 "$covered"); do
+      printf '{"event":"batch_covered","batch":%s}\n' "$i" >> "${run_dir}/ledger.jsonl"
+      printf '{"schema":1,"batch":%s,"file":"audit-fixtures/batch-%s.txt","head":"%s","blob_oid":"%s"}\n' \
+        "$i" "$i" "$(git -C "$REPO" rev-parse HEAD)" \
+        "$(git -C "$REPO" rev-parse "HEAD:audit-fixtures/batch-${i}.txt")" \
+        >> "${run_dir}/audit-snapshots.jsonl"
+    done
   fi
 
   cat > "${run_dir}/recon.json" <<JSON
 {
-  "files_in_scope": 42,
+  "files_in_scope": ${total},
   "batch_count": ${total},
-  "batches": [],
+  "batches": ${batches_arr},
   "architectural_targets": [],
   "covered": ${covered_arr}
 }
@@ -110,6 +132,8 @@ assert d['status'] == 'complete', d['status']
 assert d['coverage'] == {'covered': 3, 'total': 3}, d['coverage']
 assert d['mode'] == 'fix'
 assert d['schema_version'] >= 1
+assert d['priority']['available'] is False
+assert d['priority']['application']['promoted_batch_count'] == 0
 "
 }
 
@@ -150,6 +174,7 @@ assert d['coverage'] == {'covered': 0, 'total': 10}, d['coverage']
   [ -f "$summary" ]
   grep -q '"degraded": *true' "$summary" || grep -q '"degraded":true' "$summary"
   grep -q '"findings": *\[\]' "$summary" || grep -q '"findings":\[\]' "$summary"
+  ! grep -q '"priority"' "$summary"
 }
 
 # ---------------------------------------------------------------------------
@@ -537,7 +562,9 @@ d = json.load(open(sys.argv[1], encoding="utf-8"))
 assert d["degraded"] is True, d
 expected = 'back\\slash"quote'  # one literal backslash, one literal double-quote
 assert d["mode"] == expected, (d["mode"], expected)
-assert d["status"] == "partial", d["status"]
+# A no-Python run cannot execute the exact-Git snapshot verifier, so coverage
+# fails closed and the stub run is classified as stalled rather than partial.
+assert d["status"] == "stalled", d["status"]
 PY
 }
 

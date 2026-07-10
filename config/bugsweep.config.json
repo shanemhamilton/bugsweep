@@ -37,7 +37,20 @@
     "variant_overmatch_min_files": 2,
     "variant_retire_after_nonmatch_runs": 10,
     "large_repo_file_threshold": 800,
-    "large_repo_first_pass_batches": 40
+    "large_repo_first_pass_batches": 40,
+    "history_depth_commits": 500
+  },
+  "priority": {
+    "_comment": "Local-only, deterministic why-now evidence. Signals reorder investigation but never confirm a finding, relax fix gates, or narrow whole-repo scope. Fresh, provenanced project snapshots may be written to .bugsweep/priority-signals.jsonl; Bugsweep never calls their remote services itself. Signal outcomes are observed for yield reporting only and never mutate weights automatically.",
+    "recent_commit_count": 50,
+    "max_targets": 50,
+    "max_reasons_per_file": 5,
+    "promotion_limit": 8,
+    "max_promoted_files": 200,
+    "max_glob_matches": 25,
+    "max_signal_age_hours": 168,
+    "critical_globs": [],
+    "signal_files": [".bugsweep/priority-signals.jsonl"]
   },
   "recall": {
     "_comment": "bugsweep-dxh: --recall mode. Lowers the bar ONLY for what gets reported — the Referee additionally records near-misses (confidence 50-67: genuinely plausible but not >67% CONFIRMED) to run-summary.json's near_misses[] for human review. It NEVER lowers the auto-fix threshold: near-misses are never promoted into fixed/quarantined/confirmed_unfixed/findings (enforced in bench/scorer/run_summary.py, independent of this config value). Overridable per-invocation via 'scripts/summarize.sh <RUN_DIR> <REPORT_IS_STUB> [MODE] --recall'.",

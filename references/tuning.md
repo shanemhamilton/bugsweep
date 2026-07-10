@@ -83,6 +83,37 @@ To tune for large repos:
 If a run stalls completely (no report written), `finalize.sh` will emit a stub from
 `recon.json` coverage counts and the ledger. Check `ledger.jsonl` to see where it stopped.
 
+## Priority intelligence
+
+- `priority.recent_commit_count` — bounded first-run/fallback Git window. Exact changes since
+  the last finalized run take precedence when that commit is available.
+- `priority.max_targets` — maximum ranked files written to `priority-context.json` (hard cap
+  200).
+- `priority.max_reasons_per_file` — maximum independent reason records retained per file
+  (hard cap 8). This is display-only; lowering it does not change the score or rank.
+- `priority.promotion_limit` — maximum deferred **batches** that `must_focus`/`high` candidates
+  may promote into this run (hard cap 20). Already non-deferred work consumes no budget.
+- `priority.max_promoted_files` — maximum total files contained by newly promoted batches
+  (hard cap 1,000). A candidate cannot partially promote a batch; an oversized batch remains
+  deferred.
+- `priority.max_glob_matches` — an explicit critical/signal glob matching more files than
+  this is treated as over-broad and does not promote them (hard cap 100).
+- `priority.max_signal_age_hours` — freshness limit for a project signal that omits
+  `expires_at` (default 168 hours; hard cap one year). Expired signals are counted but do not
+  rank work.
+- `priority.critical_globs` — explicit business-critical tracked paths. Prefer the
+  project-local signal inbox when one Bugsweep installation scans several different repos.
+- `priority.signal_files` — bounded repository-local JSONL inputs. The default is
+  `.bugsweep/priority-signals.jsonl`; no remote service is contacted.
+
+Priority outcomes are append-only observations in
+`.bugsweep/state/priority-outcomes.jsonl`. Their `signal_yield` aggregates never tune these
+values automatically; changing ranking weights remains a reviewed and benchmarked code/config
+decision.
+
+See `references/priority-intelligence.md` for the inbox schema, score categories, and trust
+boundaries.
+
 ## Session continuity (new)
 
 - `session.checkpoint_every_iterations` — how often to refresh `SESSION.md` and recommend a

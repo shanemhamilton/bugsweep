@@ -15,9 +15,9 @@ guard.sh, preflight.sh, SKILL.md, prompts/referee.md, prompts/fix.md)
 * ``preflight``                  -> run start marker; not otherwise reduced.
 * ``iteration``                  -> Referee checkpoint (``confirmed``,
   ``new_bugs``); contributes to "was there progress" but not to findings.
-* ``batch_covered``               -> counted only via recon.json's ``covered``
-  list (the ledger event doesn't carry a stable id we can dedupe against
-  reliably outside recon; recon.json is the source of truth for coverage).
+* ``batch_covered``               -> coverage handshake: a batch counts only
+  when its id appears in both this ledger event and recon.json's ``covered``
+  list. Either surface alone is treated as an incomplete checkpoint.
 * ``fix_committed``               -> one finding, ``fixed: true``. Any of
   ``bug_id``/``severity``/``category``/``file``/``line``/``rationale`` may be
   absent (the ``scripts/state.sh`` fallback persist path only guarantees
@@ -35,8 +35,8 @@ guard.sh, preflight.sh, SKILL.md, prompts/referee.md, prompts/fix.md)
 ``status`` derivation
 ----------------------
 * ``complete``  — the real report.md was written (``report_is_stub=False``).
-* ``partial``   — the report was a stub AND some progress was made (recon
-  coverage > 0).
+* ``partial``   — the report was a stub AND some progress was confirmed by the
+  recon/ledger coverage handshake (covered > 0).
 * ``stalled``   — the report was a stub AND no coverage progress was recorded
   (covered == 0, including when recon.json is missing/malformed).
 
@@ -66,7 +66,8 @@ bump schema_version; new optional fields never do).
   built from three sources (never invented, absent -> that source
   contributes nothing):
     1. ``uncovered_batch`` — ``recon.json``'s ``batches[]`` whose ``id`` is
-       NOT in ``covered``; ``detail`` is the batch's ``tier`` if present.
+       not in the intersection of ``recon.covered`` and ledger
+       ``batch_covered`` events; ``detail`` is the batch's ``tier`` if present.
     2. ``high_risk_file`` / ``stale_file`` — read from ``prior-coverage.json``
        (schema: ``scripts/state.sh``'s ``prime`` writer): ``high_risk_files``
        (``[{file, score}]``) and ``files_audited_stale_catalog`` (``[file,
@@ -201,7 +202,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 SCHEMA_VERSION = 1
 
@@ -318,10 +319,40 @@ def _iter_ledger_events(ledger_path: Path) -> list[dict[str, Any]]:
     return events
 
 
-def _read_recon_coverage(recon_path: Path) -> tuple[int, int]:
-    """Return ``(covered, total)`` from ``recon.json``, or ``(0, 0)`` on any
-    absence/parse failure (never raises — a broken/missing recon file must
-    never fail the reduction, only report zero coverage)."""
+def _batch_ids(values: object) -> set[int]:
+    """Return valid positive integer batch IDs from an array-like field."""
+    if not isinstance(values, list):
+        return set()
+    ids: set[int] = set()
+    for value in values:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            ids.add(value)
+    return ids
+
+
+def _ledger_covered_ids(events: list[dict[str, Any]]) -> set[int]:
+    """Return deduplicated batch ids from valid ``batch_covered`` events."""
+    ids: set[int] = set()
+    for event in events:
+        if event.get("event") != "batch_covered":
+            continue
+        batch_id = event.get("batch", event.get("id"))
+        if isinstance(batch_id, int) and not isinstance(batch_id, bool) and batch_id > 0:
+            ids.add(batch_id)
+    return ids
+
+
+def _read_recon_coverage(
+    recon_path: Path,
+    ledger_covered_ids: set[int],
+    verified_covered_ids: set[int] | None = None,
+) -> tuple[int, int]:
+    """Return handshake-confirmed ``(covered, total)`` from ``recon.json``.
+
+    A batch counts only when its id is present in both ``recon.covered`` and a
+    parsed ledger ``batch_covered`` event. Absence or parse failure returns
+    ``(0, 0)``; malformed state never raises.
+    """
     if not recon_path.is_file():
         return (0, 0)
     try:
@@ -330,12 +361,27 @@ def _read_recon_coverage(recon_path: Path) -> tuple[int, int]:
         return (0, 0)
     if not isinstance(data, dict):
         return (0, 0)
-    covered_list = data.get("covered") or []
-    covered = len(covered_list) if isinstance(covered_list, list) else 0
-    total = data.get("batch_count")
-    if not isinstance(total, int):
-        batches = data.get("batches") or []
-        total = len(batches) if isinstance(batches, list) else 0
+    raw_batches = data.get("batches") or []
+    batch_ids = (
+        {
+            batch["id"]
+            for batch in raw_batches
+            if isinstance(batch, dict)
+            and isinstance(batch.get("id"), int)
+            and not isinstance(batch.get("id"), bool)
+            and batch["id"] > 0
+        }
+        if isinstance(raw_batches, list)
+        else set()
+    )
+    covered_ids = _batch_ids(data.get("covered") or []) & ledger_covered_ids & batch_ids
+    if verified_covered_ids is not None:
+        covered_ids &= verified_covered_ids
+    covered = len(covered_ids)
+    # Concrete, valid batch IDs are the only coverage denominator. A malformed
+    # or inconsistent batch_count (including bool, which is an int subclass)
+    # must not produce an impossible or schema-invalid summary.
+    total = len(batch_ids)
     return (covered, total)
 
 
@@ -438,7 +484,7 @@ def _votes_for_bug(events: list[dict[str, Any]], bug_id: str) -> list[str]:
         event_bug_id = event.get("bug_id")
         if event_bug_id is None or str(event_bug_id) != bug_id:
             continue
-        votes.append(event.get("verdict"))
+        votes.append(cast(str, event.get("verdict")))
     return votes
 
 
@@ -512,9 +558,12 @@ def _read_prior_coverage(prior_coverage_path: Path | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _uncovered_batch_entries(recon_path: Path) -> list[dict[str, Any]]:
-    """``uncovered_batch`` follow_up entries: recon.json's ``batches[]`` whose
-    ``id`` is not in ``covered``, ordered by batch id ascending."""
+def _uncovered_batch_entries(
+    recon_path: Path,
+    ledger_covered_ids: set[int],
+    verified_covered_ids: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Return batches outside the two-surface coverage intersection."""
     if not recon_path.is_file():
         return []
     try:
@@ -527,7 +576,9 @@ def _uncovered_batch_entries(recon_path: Path) -> list[dict[str, Any]]:
     batches = data.get("batches") or []
     if not isinstance(batches, list):
         return []
-    covered_ids = set(data.get("covered") or [])
+    covered_ids = _batch_ids(data.get("covered") or []) & ledger_covered_ids
+    if verified_covered_ids is not None:
+        covered_ids &= verified_covered_ids
 
     entries = []
     for batch in batches:
@@ -565,9 +616,7 @@ def _high_risk_file_entries(prior_coverage: dict[str, Any]) -> list[dict[str, An
     # Primary: score descending. Secondary: file ascending — so files tied on
     # score have a stable order regardless of prior-coverage.json's list order
     # (review MAJOR 4).
-    rows.sort(
-        key=lambda pair: (-(pair[1] if isinstance(pair[1], (int, float)) else 0), pair[0])
-    )
+    rows.sort(key=lambda pair: (-(pair[1] if isinstance(pair[1], (int, float)) else 0), pair[0]))
     return [
         {
             "kind": "high_risk_file",
@@ -610,12 +659,14 @@ def _build_follow_up(
     events: list[dict[str, Any]],
     recon_path: Path,
     prior_coverage_path: Path | None,
+    ledger_covered_ids: set[int],
+    verified_covered_ids: set[int] | None,
 ) -> list[dict[str, Any]]:
     """Assemble the ``follow_up[]`` handoff in deterministic priority order
     (see module docstring), then apply FOLLOW_UP_CAP."""
     prior_coverage = _read_prior_coverage(prior_coverage_path)
     follow_up = (
-        _uncovered_batch_entries(recon_path)
+        _uncovered_batch_entries(recon_path, ledger_covered_ids, verified_covered_ids)
         + _high_risk_file_entries(prior_coverage)
         + _stale_file_entries(prior_coverage)
         + _quarantined_entries(events)
@@ -669,6 +720,7 @@ def reduce_run(
     mode: str | None,
     prior_coverage_path: Path | None = None,
     recall: bool = False,
+    verified_covered_ids: set[int] | None = None,
 ) -> dict[str, Any]:
     """Reduce one run's on-disk state into a schema-valid run-summary dict.
 
@@ -688,7 +740,8 @@ def reduce_run(
     ``run-summary.json`` even for a run that stalled before writing anything.
     """
     events = _iter_ledger_events(ledger_path)
-    covered, total = _read_recon_coverage(recon_path)
+    ledger_covered_ids = _ledger_covered_ids(events)
+    covered, total = _read_recon_coverage(recon_path, ledger_covered_ids, verified_covered_ids)
     status, stop_reason = _derive_status(report_is_stub=report_is_stub, covered=covered)
 
     findings: list[dict[str, Any]] = []
@@ -748,7 +801,11 @@ def reduce_run(
         "findings": findings,
         "root_cause_clusters": _build_root_cause_clusters(events),
         "follow_up": _build_follow_up(
-            events=events, recon_path=recon_path, prior_coverage_path=prior_coverage_path
+            events=events,
+            recon_path=recon_path,
+            prior_coverage_path=prior_coverage_path,
+            ledger_covered_ids=ledger_covered_ids,
+            verified_covered_ids=verified_covered_ids,
         ),
         "flaky": _build_flaky(events),
         "near_misses": _build_near_misses(events, recall=recall),

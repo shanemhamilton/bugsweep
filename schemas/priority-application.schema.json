@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/schemas/priority-application.schema.json",
+  "title": "bugsweep priority application",
+  "description": "Deterministic receipt of priority candidates actually applied to recon.json after exact scope and promotion-budget verification; ranked candidates alone are not evidence of application.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scope_contract",
+    "candidate_count",
+    "promoted_batches",
+    "promoted_batch_count",
+    "added_file_count",
+    "already_in_budget_candidates",
+    "skipped_candidates"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "scope_contract": {"const": "priority_only_whole_repo_remains_in_scope"},
+    "candidate_count": {"type": "integer", "minimum": 0, "maximum": 200},
+    "promoted_batches": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"type": "string", "minLength": 1, "maxLength": 80},
+      "uniqueItems": true
+    },
+    "promoted_batch_count": {"type": "integer", "minimum": 0, "maximum": 20},
+    "added_file_count": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "already_in_budget_candidates": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {"$ref": "#/$defs/repoPath"},
+      "uniqueItems": true
+    },
+    "skipped_candidates": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "reason"],
+        "properties": {
+          "file": {"$ref": "#/$defs/repoPath"},
+          "reason": {"type": "string", "enum": ["outside_recon", "budget_limited"]}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "repoPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    }
+  }
+}

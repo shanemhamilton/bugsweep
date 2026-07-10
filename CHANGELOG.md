@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-09
+
+The priority-intelligence milestone: Bugsweep now combines live repository evidence with
+durable outcome history to decide where an adversarial hunt should start, while preserving
+whole-repository scope and the same Hunter → Skeptic → Referee proof gate. This release also
+hardens multi-agent execution, verification, teardown, and the public documentation surface.
+
+### Added
+
+- **Local-first priority intelligence.** A deterministic `priority-context.json` combines
+  current tracked-file changes, completed-hunt content drift, repair/revert history, mapped
+  baseline failures, reachability, prior Bugsweep evidence, common-root local bug records,
+  configured critical paths, and an optional provider-neutral signal inbox. External signals
+  require stable provenance and freshness, report health/unmapped counts, and may contribute
+  only bounded structured user-impact facts. Every target carries a factor breakdown and
+  `why_now`; signals change investigation order only and never confirmation/fix authority or
+  the configured tracked-file scope.
+- **Auditable priority application and reporting.** `priority-application.json` records actual
+  promoted batches/files and skipped candidates after scope and budget verification. The full
+  reducer carries that receipt, target outcomes, signal health, unmapped context, and attributed
+  yield into `run-summary.json.priority`; `finalize.sh` renders the same data as a deterministic
+  report section rather than model-authored prose.
+- **Priority outcome observability.** Append-only `priority-outcomes.jsonl` episodes and bounded
+  `signal_yield` aggregates connect reason codes to investigated/confirmed/rejected/no-finding
+  outcomes only when finding events explicitly cite the closed reason code. Unlinked same-file
+  outcomes remain `unattributed`, preventing coincident bugs from inflating a signal's yield.
+  These observations never automatically change weights, proof thresholds, or permissions.
+- **Stronger detection evidence.** Recall mode surfaces plausible near-misses without making them
+  fix-eligible; high/critical findings can use K-vote majority adjudication; executable repros
+  are additive evidence for fix gating rather than a shortcut around adversarial confirmation.
+- **Concurrent frontier ownership.** An atomic claim registry partitions batches across isolated
+  subagents, while collision-free run IDs keep their durable coverage and learning episodes
+  distinct.
+- **Operator and NightShift contracts.** Per-run rollup digests, deterministic nightshift
+  guardrails, and the multi-subagent playbook give schedulers a bounded, machine-readable way to
+  coordinate repeated runs.
+- **Git-history risk priors.** Bounded churn, repair, and revert history can break ties inside the
+  coverage frontier without outranking confirmed Bugsweep evidence.
+
+### Changed
+
+- **Modeling and audit coverage are distinct.** Architecture context progress now lives in
+  `recon.json.modeled`; `covered` and durable content fingerprints are written only after a
+  batch completes Hunter → Skeptic → Referee. This prevents context modeling from being
+  mistaken for a completed bug audit and makes changed-since-hunt learning truthful.
+- **Priority promotions are work-budgeted.** Newly promoted deferred work must fit both a batch
+  cap and a total-file cap, and the existing critical coverage frontier stays ahead of promoted
+  work. Explanation-length tuning no longer changes a target's score.
+- **Exact coverage fails closed without Python 3.** The audit checkpoint leaves coverage
+  untouched and finalizes with incomplete output; the degraded summary remains schema-valid,
+  underreports coverage as zero, and does not claim full priority outcomes.
+- **Verification is isolated and failure-aware.** Flaky reruns execute from isolated snapshots,
+  and per-check failure counts prevent an existing failure from masking a new regression with the
+  same check name.
+
+### Fixed
+
+- **Finalize and teardown stay honest under degraded conditions.** No-Python handoffs remain valid
+  JSON, real reports cannot be mistaken for stale stubs, live leases are checked across all runs,
+  and cleanup reports infrastructure failures instead of claiming a successful reap.
+- **GitHub Pages deploys only the public site artifact.** A dedicated workflow skips malformed
+  benchmark gitlinks and publishes `docs/` directly, replacing the legacy recursive-submodule
+  checkout that left the project page at 404.
+
 ### Security
 
 - **Command injection via `state.env` (bugsweep-06y).** A run started on a
@@ -180,7 +244,8 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.2.0...v0.3.0

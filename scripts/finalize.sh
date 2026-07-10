@@ -65,18 +65,43 @@ _emit_stub_report() {
     return 0                            # real report exists — do not overwrite
   fi
 
-  local covered=0 total=0
+  local covered=0 total=0 verify_repo="" verified_covered=""
   if [ -f "${run_dir}/recon.json" ]; then
     if command -v jq >/dev/null 2>&1; then
-      covered="$(jq -r '.covered | length'         "${run_dir}/recon.json" 2>/dev/null || printf '0')"
       total="$(  jq -r '.batch_count // (.batches | length)' "${run_dir}/recon.json" 2>/dev/null || printf '0')"
     elif have_python; then
-      covered="$(python3 -c \
-        'import json,sys; d=json.load(open(sys.argv[1])); print(len(d.get("covered",[])))' \
-        "${run_dir}/recon.json" 2>/dev/null || printf '0')"
       total="$(python3 -c \
         'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("batch_count",len(d.get("batches",[]))))' \
         "${run_dir}/recon.json" 2>/dev/null || printf '0')"
+    fi
+  fi
+  # Human-facing stub coverage must use the same exact Git-object verifier as
+  # run-summary.json and cross-run state. recon.covered is a model-writable
+  # receipt, not proof by itself: a batch counts only when recon + ledger + the
+  # complete schema-1 snapshot set agree with objects in this local worktree.
+  # If Python, the verifier, or its repository is unavailable, fail closed at
+  # zero rather than displaying forgeable progress.
+  if have_python && [ -f "${BUGSWEEP_SCRIPT_DIR}/_mark_batch_covered.py" ]; then
+    verify_repo="${BUGSWEEP_WORKTREE:-}"
+    if [ -z "$verify_repo" ] || [ ! -d "$verify_repo" ]; then
+      verify_repo="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    fi
+    if [ -n "$verify_repo" ]; then
+      verified_covered="$(
+        BUGSWEEP_VERIFY_SCRIPT_DIR="$BUGSWEEP_SCRIPT_DIR" \
+          python3 - "$run_dir" "$verify_repo" <<'PY' 2>/dev/null || printf '0'
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, os.environ["BUGSWEEP_VERIFY_SCRIPT_DIR"])
+from _mark_batch_covered import verify_run_coverage
+
+records = verify_run_coverage(Path(sys.argv[1]), Path(sys.argv[2]))
+print(len({int(record["batch"]) for record in records}))
+PY
+      )"
+      covered="$verified_covered"
     fi
   fi
   # Sanitise: accept only digits so arithmetic below never sees garbage.
@@ -169,6 +194,19 @@ _write_run_summary_and_machine_block() {
   fi
   _bugsweep_run_summary_path="${summary_out#RUN_SUMMARY=}"
   [ -f "$_bugsweep_run_summary_path" ] || { log "WARNING: summarize.sh reported success but ${_bugsweep_run_summary_path} is missing."; return 0; }
+
+  # Priority focus is script-rendered from the same deterministic run summary,
+  # after state persistence and coverage verification. The model never guesses
+  # current outcomes or actual promotion counts.
+  if [ -f "$report" ] \
+    && ! grep -q '^## Priority focus (deterministic)$' "$report" 2>/dev/null \
+    && have_python \
+    && [ -f "${BUGSWEEP_SCRIPT_DIR}/_priority_report.py" ]; then
+    {
+      printf '\n'
+      python3 "${BUGSWEEP_SCRIPT_DIR}/_priority_report.py" "$_bugsweep_run_summary_path" 2>/dev/null || true
+    } >> "$report"
+  fi
 
   # Generate the report's "Findings (machine-readable)" block FROM run-summary.json
   # so prose and JSON never diverge (SKILL.md's report template no longer asks the

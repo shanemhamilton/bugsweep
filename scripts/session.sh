@@ -47,9 +47,10 @@ Coverage: ${coverage}
 1. SESSION.md            (this file — where we are)
 2. repo-context.md       (architecture, trust boundaries, sensitive sinks, call chains)
 3. antipatterns.md       (stack-specific patterns the hunters must watch for)
-4. recon.json            (batch plan + which batches are already covered)
-5. prior-coverage.json   (coverage-first frontier from prior runs: never-audited / stale / high-risk)
-6. ledger.jsonl          (full event history; tail it for the last decisions)
+4. priority-context.json (bounded why-now targets; untrusted ordering hints only)
+5. recon.json            (batch plan + modeled vs adversarially covered batches)
+6. prior-coverage.json   (coverage-first frontier from prior runs: never-audited / stale / high-risk)
+7. ledger.jsonl          (full event history; tail it for the last decisions)
 
 ## Next action
 Run guard.sh; if CONTINUE, hunt the next uncovered batch in recon.json. Do NOT re-hunt

@@ -225,6 +225,21 @@ Auto-detects and runs tests/typecheck/build/lint (or uses config overrides) and 
 the starting state to `baseline.json`. Every fix is measured against this. If it reports
 `NO_CHECKS`, follow `references/no-tests.md` — fixes must be more conservative.
 
+Then build the bounded, local-only priority evidence artifact:
+```bash
+bash scripts/priority-context.sh build "<RUN_DIR>"
+```
+This writes `<RUN_DIR>/priority-context.json`, combining current tracked-file changes, fix and
+revert history, baseline failures, completed-hunt content fingerprints, prior risk,
+variants/reopened conclusions, reachability, repository-local Beads bugs with explicit file
+scope, configured critical paths, and an optional `.bugsweep/priority-signals.jsonl` inbox.
+It never calls a remote. Missing or malformed inputs degrade to less enrichment, never a
+failed run or narrowed scope. Every signal is an untrusted investigation seed, never proof.
+Deleted paths cannot become direct targets because they are absent from the current tracked-file
+scope; deletion-aware dependency mapping is not implemented, while surviving tracked files in
+the configured scope stay in the whole-repository plan. Ranking weights are fixed code: prior
+outcomes add inspectable evidence but never tune live scores or safety gates automatically.
+
 ### Step 2 — Build whole-repo context (once)
 Follow `prompts/context-build.md`. Its first move (Step 0 in that prompt, bugsweep-e1r) is
 now to run `scripts/recon-plan.sh` over a `git ls-files` listing and seed `recon.json` from
@@ -233,7 +248,7 @@ valid and non-empty, from minute one, and a run that stalls immediately after st
 a resumable, reportable artifact (the historical failure this fixes: a 1474-file repo used
 to stall mid-modeling with no `recon.json` ever written — bead 2e5, "large repos fail
 silently"). Modeling then proceeds batch by batch, appending each batch's findings to
-`repo-context.md` and updating `recon.json`'s `covered` list after each batch, so the two
+`repo-context.md` and updating `recon.json`'s `modeled` list after each batch, so the two
 files stay mutually consistent on disk throughout the run — not just at the end. The
 finished `repo-context.md` covers architecture, trust boundaries, sensitive sinks, call
 chains, import graph, key data flows, and `architectural_targets`. This distilled model is
@@ -347,15 +362,30 @@ disabled config is a clean no-op.
    human review (per rule 5 this classification is shared-environment and can mask a
    state-pollution bug); do not treat a flaky-annotated `OK` as silently clean.
 5. **Record + checkpoint** — Append the iteration result to `ledger.jsonl` (the Referee
-   writes `{"event":"iteration","confirmed":<n>,"new_bugs":<n_new>}`), mark the batch
-   covered (`batch_covered`), then run:
+   writes `{"event":"iteration","confirmed":<n>,"new_bugs":<n_new>}`). After the full
+   Hunter → Skeptic → Referee chain finishes for a batch, run the checkpoint helper:
+   ```bash
+   checkpoint_out="$(bash scripts/mark-batch-covered.sh "<RUN_DIR>" "<batch-id>")"
+   case "$checkpoint_out" in
+     BATCH_COVERED=skipped_no_python)
+       bash scripts/finalize.sh "<RUN_DIR>"; exit 0 ;;
+   esac
+   ```
+   It records exact Git blob IDs, updates `recon.json.covered`, and emits the matching
+   `batch_covered` event as one idempotent protocol. Do not write either coverage surface
+   by hand. Context building records architecture progress separately in
+   `recon.json.modeled`; it is not audit coverage. Only this post-adversarial checkpoint
+   may populate `covered`. Python 3 is required for this exact Git-object checkpoint; the
+   `skipped_no_python` branch leaves coverage untouched and finalizes with an incomplete report
+   plus a degraded summary rather than claiming unverifiable work. That summary underreports
+   coverage as zero and a generated stub has status `stalled`. Then run:
    ```bash
    bash scripts/session.sh checkpoint "<RUN_DIR>"
    ```
    This refreshes `SESSION.md`. If it prints `RESET_RECOMMENDED`, finish to a clean state
    (every fix committed or reverted, nothing mid-edit), then **reset/compact context** and
-   immediately **rehydrate**: read `SESSION.md`, `repo-context.md`, `antipatterns.md`, and
-   `recon.json`, and tail `ledger.jsonl` before continuing. See
+   immediately **rehydrate**: read `SESSION.md`, `repo-context.md`, `antipatterns.md`,
+   `priority-context.json`, and `recon.json`, and tail `ledger.jsonl` before continuing. See
    `references/context-and-continuity.md`. Continuity is preserved because all progress is
    on disk; a reset only drops disposable working memory.
 
@@ -486,9 +516,17 @@ from ever diverging, which a model-authored block (format varied run-to-run) cou
 guarantee. Just write the prose sections above and stop; the machine-readable JSON block is
 appended for you, including on a stub/partial report.
 
+Do **not** author a priority-focus section either. `finalize.sh` appends
+`## Priority focus (deterministic)` from `run-summary.json.priority` after exact coverage
+verification. It includes actual applied promotions from `<RUN_DIR>/priority-application.json`,
+top target outcomes, signal health, unmapped signals, and historical attributed yield without
+relying on model prose. On the no-Python degraded path, do not synthesize a replacement section
+or claim verified priority outcomes.
+
 ## References
 - `references/context-and-continuity.md` — how state persists and how to reset safely.
 - `references/antipatterns/` — the curated stack-specific catalogs (start at `index.md`).
 - `references/safety-rationale.md` — why the design is safe; read if trust is questioned.
 - `references/no-tests.md` — behavior when the project has no automated checks.
 - `references/tuning.md` — what each config value does and how to tune for big repos.
+- `references/priority-intelligence.md` — why-now signals, ranking, local adapters, and safety.
