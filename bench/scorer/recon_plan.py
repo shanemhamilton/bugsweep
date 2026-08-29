@@ -1,4 +1,4 @@
-"""Deterministic batch-planner for bugsweep's whole-repo context-build step.
+"""Deterministic batch-planner for bugsweep's frozen-scope context-build step.
 
 Why this exists (bugsweep-e1r): ``prompts/context-build.md`` used to build
 ``repo-context.md`` + ``recon.json`` in a single, un-checkpointed pass. On a
@@ -47,7 +47,7 @@ Design
   ``scripts/state.sh``) picks them up on a later run. Deferred batches are
   NEVER dropped from the plan — every in-scope file still appears in exactly
   one batch, satisfying context-build.md's coverage-first contract ("the
-  whole repo is always in scope").
+  frozen selected scope is always in scope").
 
 No network, no subprocess: everything here is a pure function over an
 in-memory file list, mirroring ``bench/scorer/run_summary.py``'s style so

@@ -1,34 +1,31 @@
 #!/usr/bin/env bash
-# bugsweep-cleanup.sh — OPTIONAL post-run merge gate (not part of the core hunt loop).
+# bugsweep-cleanup.sh — exact-branch post-run merge/discard gate.
 #
-# The bugsweep skill still stops at the human merge gate. This companion runs only after
-# finalize, when the user or scheduler has approved the continuation. It can merge the
-# preserved bugsweep branch, re-run a configured check, and delete branches that are proven
-# contained in the target branch. It never force-pushes, never force-removes worktrees, and
-# never deletes dirty worktrees.
+# The skill calls this during mandatory closeout. It can merge the exact run branch,
+# re-run a configured check, and delete it after containment proof. Uncontained discard is
+# owned exclusively by closeout.sh, which verifies recovery, tracker, and review receipts.
+# It never force-pushes, never force-removes worktrees, and never deletes dirty worktrees.
 #
 # Usage:
-#   bash bugsweep-cleanup.sh [specific-bugsweep-branch]
+#   bash bugsweep-cleanup.sh <specific-bugsweep-branch>
 #   bash bugsweep-cleanup.sh --reap-worktrees
 #
 # Settings (override via environment variables):
 #   BUGSWEEP_TARGET           branch to merge fixes into (default: current branch)
-#   BUGSWEEP_POLICY           merge | discard | keep   (default: merge)
+#   BUGSWEEP_POLICY           merge | keep   (default: merge)
 #   BUGSWEEP_TEST_CMD         optional re-verify before merge, e.g. "npm test"
-#   BUGSWEEP_RETENTION_DAYS   retained for compatibility; unmerged branches are preserved
 #   BUGSWEEP_ALLOW_PROTECTED  set to 1 to allow merging into main/master/etc.
 #
-# --reap-worktrees is the non-merge safety reaper used by preflight/finalize:
+# --reap-worktrees is a manual crash-recovery reaper, not the normal closeout path:
 # it removes only bugsweep-managed linked worktrees under .bugsweep/worktrees,
-# skips live leased siblings, commits dirty worktree content to its own branch
-# before removal, prunes only contained branch refs, and never touches remotes.
+# skips live leased siblings, preserves every dirty worktree, prunes only contained
+# branch refs, and never touches remotes.
 
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 POLICY="${BUGSWEEP_POLICY:-merge}"
 TEST_CMD="${BUGSWEEP_TEST_CMD:-}"
-RETENTION_DAYS="${BUGSWEEP_RETENTION_DAYS:-7}"
 PROTECTED="main master develop production prod release"
 SWEEP_ARG="${1:-}"
 TARGET_BRANCH=""
@@ -176,9 +173,9 @@ branch_contained_in_target() {
 # BLOCKER B fix: resolve a containment target that is completely independent
 # of the CALLER's cwd/checkout. Unlike merge-mode's deliberate "default to
 # whatever branch I'm on" (a human explicitly runs this script from their
-# intended target), --reap-worktrees runs unattended from preflight/finalize,
-# invoked from whatever branch or linked worktree the calling shell happens
-# to be sitting in. Resolving TARGET_BRANCH from `git rev-parse --abbrev-ref
+# intended target), the manual --reap-worktrees crash-recovery path may be
+# invoked from any branch or linked worktree. Resolving TARGET_BRANCH from
+# `git rev-parse --abbrev-ref
 # HEAD` in that context can prove containment against the wrong branch
 # entirely (e.g. a sibling worktree's own feature branch that happens to
 # descend from an unreviewed bugsweep branch) and delete a fix that was never
@@ -412,43 +409,18 @@ worktree_is_clean() {
   # MAJOR E fix (bugsweep-8d0 dataloss review): `ls-files --others
   # --exclude-standard` (above) respects .gitignore, so gitignored-but-present
   # content (build output, node_modules, debug logs) was previously invisible
-  # to this clean-check — and to the `git add -A` commit-before-remove path
-  # below, which ALSO respects .gitignore — so it got silently deleted by
-  # `git worktree remove` with no commit, no warning, no trace. Treat it as
-  # dirty too.
+  # to this clean-check, so it could be silently deleted by `git worktree
+  # remove`. Treat it as dirty too; cleanup now preserves all dirty worktrees.
   ignored="$(git -C "$path" ls-files --others --ignored --exclude-standard)"
   [ -z "$ignored" ]
 }
 
 ensure_worktree_clean_or_committed() {
-  local path="$1" branch="$2" ignored
+  local path="$1" branch="$2"
   if worktree_is_clean "$path"; then
     return 0
   fi
-
-  log "$branch has dirty worktree content; committing it before removal"
-  if git -C "$path" add -A >/dev/null 2>&1 \
-    && git -C "$path" commit -m "chore(bugsweep): preserve dirty worktree before cleanup" >/dev/null 2>&1; then
-    # MAJOR E fix: `git add -A` respects .gitignore just like the dirty-check
-    # does, so a successful commit here NEVER captures gitignored content —
-    # it may have committed OTHER (tracked/non-ignored) changes just fine
-    # while ignored content remains uncommitted. Re-check and refuse to let
-    # the caller proceed to `git worktree remove` if any remains, instead of
-    # silently discarding it.
-    ignored="$(git -C "$path" ls-files --others --ignored --exclude-standard 2>/dev/null || true)"
-    if [ -n "$ignored" ]; then
-      log "$branch worktree still has gitignored content that cannot be committed — preserving instead of removing: $(printf '%s' "$ignored" | tr '\n' ' ')"
-      return 1
-    fi
-    return 0
-  fi
-
-  ignored="$(git -C "$path" ls-files --others --ignored --exclude-standard 2>/dev/null || true)"
-  if [ -n "$ignored" ]; then
-    log "$branch has gitignored content that git cannot commit — preserving worktree so nothing is silently discarded: $(printf '%s' "$ignored" | tr '\n' ' ')"
-  else
-    log "could not commit dirty content in $path — preserving worktree"
-  fi
+  log "$branch has dirty worktree content — preserving it; normal closeout never broad-stages or deletes dirt"
   return 1
 }
 
@@ -566,8 +538,8 @@ reap_one_worktree() {
     return 0
   fi
 
-  # Positive DONE evidence: the owning run finalized (durable sentinel written
-  # by finalize.sh). This is the deterministic teardown path — reap regardless
+  # Positive DONE evidence from a legacy Bugsweep version: the owning run wrote
+  # a durable .finalized sentinel. Current runs use exact closeout.sh instead.
   # of lease/ledger/age, since the run is provably over.
   if [ -n "$run_dir" ] && [ -f "${run_dir}/.finalized" ]; then
     finalized="yes"
@@ -1004,43 +976,6 @@ delete_contained_branch() {
   return 1
 }
 
-discard_branch() {
-  local branch="$1" linked=""
-
-  if ! branch_exists "$branch"; then
-    log "$branch no longer exists"
-    return 0
-  fi
-
-  linked="$(worktree_for_branch "$branch" || true)"
-  if [ -n "$linked" ]; then
-    log "$branch is checked out in linked worktree: $linked"
-    if ! worktree_is_clean "$linked"; then
-      log "linked worktree is dirty — preserving $branch and $linked"
-      record_preserved "$branch"
-      return 1
-    fi
-    if git worktree remove "$linked" >/dev/null 2>&1; then
-      log "removed clean linked worktree $linked"
-      record_worktree_removed "$linked"
-    else
-      log "git worktree remove failed for $linked — preserving $branch"
-      record_preserved "$branch"
-      return 1
-    fi
-  fi
-
-  if git branch -D "$branch" >/dev/null 2>&1; then
-    log "discarded $branch by explicit policy"
-    record_deleted "$branch"
-    return 0
-  fi
-
-  log "could not discard $branch — preserving"
-  record_preserved "$branch"
-  return 1
-}
-
 if [ "$REAP_WORKTREES" = "yes" ]; then
   TARGET_BRANCH="$(resolve_pinned_target_branch)"
 
@@ -1052,7 +987,7 @@ if [ "$REAP_WORKTREES" = "yes" ]; then
   # already did it) and then log a stale "preserved" line for a branch that
   # was, in fact, already correctly deleted. If the lock is busy, skip this
   # pass entirely rather than proceeding unlocked: a skipped pass is harmless
-  # (the next preflight/finalize call reaps it), which is a better trade than
+  # (a later explicit crash-recovery call can retry), which is a better trade than
   # ever emitting untrustworthy output.
   reap_lock="${BUGSWEEP_REPO_ROOT:+${BUGSWEEP_REPO_ROOT}/.bugsweep/.reap-worktrees.lock}"
   # bugsweep_lock_acquire does a plain `mkdir "$lockdir"` (no -p) — its parent
@@ -1075,7 +1010,7 @@ if [ "$REAP_WORKTREES" = "yes" ]; then
     bugsweep_lock_release "$reap_lock"
     exit "$reap_status"
   fi
-  log "reap-worktrees: lock busy or repo root unresolved — skipping this pass (non-fatal; a later preflight/finalize call will retry)."
+  log "reap-worktrees: lock busy or repo root unresolved — skipping this pass (non-fatal; retry the explicit crash-recovery call later)."
   # MINOR 3 (dataloss re-review): AC4 requires every KEY=VALUE counter line to
   # be emitted on EVERY path, including zeros — a headless caller parsing the
   # output must never see a counter simply vanish. Emit all six as 0 here
@@ -1107,21 +1042,12 @@ if ! git checkout -q "$TARGET_BRANCH"; then
   fail_preserved "could not check out target branch '$TARGET_BRANCH'"
 fi
 
-# Collect bugsweep branches, newest commit first.
-# Use a read loop so macOS Bash 3.2 can run this script.
-SWEEPS=()
-while IFS= read -r sweep_branch; do
-  [ -n "$sweep_branch" ] && SWEEPS+=("$sweep_branch")
-done < <(git for-each-ref --sort=-committerdate \
-  --format='%(refname:short)' 'refs/heads/bugsweep/*' 2>/dev/null || true)
+# Cleanup ownership must be explicit. Inferring "the latest" from a
+# bugsweep/* prefix can select a user-created or concurrent run's branch.
+[ -n "$SWEEP_ARG" ] \
+  || fail_preserved "an exact bugsweep branch is required; refusing prefix-wide cleanup"
 
-if [ "${#SWEEPS[@]}" -eq 0 ]; then
-  log "no bugsweep/* branches found; nothing to do"
-  RESULT="kept_for_review"
-  finish 0
-fi
-
-LATEST="${SWEEP_ARG:-${SWEEPS[0]}}"
+LATEST="$SWEEP_ARG"
 if ! branch_exists "$LATEST"; then
   fail_preserved "bugsweep branch not found: $LATEST" "$LATEST"
 fi
@@ -1181,17 +1107,6 @@ merge_branch() {
   return 1
 }
 
-prune_old() {
-  local branch="$1"
-  if branch_contained_in_target "$branch" "$TARGET_BRANCH"; then
-    log "leftover $branch is contained in $TARGET_BRANCH"
-    delete_contained_branch "$branch" "$TARGET_BRANCH" || true
-  else
-    log "keeping unmerged leftover $branch (retention=${RETENTION_DAYS}d; unmerged branches require explicit discard)"
-    record_preserved "$branch"
-  fi
-}
-
 # Handle the current run's branch per policy.
 case "$POLICY" in
   merge)
@@ -1200,13 +1115,7 @@ case "$POLICY" in
     fi
     ;;
   discard)
-    log "policy=discard — deleting $LATEST only because discard was explicit"
-    if discard_branch "$LATEST"; then
-      RESULT="discarded"
-    else
-      RESULT="kept_for_review"
-      finish 1
-    fi
+    fail_preserved "policy=discard is forbidden here; use closeout.sh with verified tracker, bundle, and deletion-review receipts" "$LATEST"
     ;;
   keep)
     log "policy=keep — leaving $LATEST for review"
@@ -1214,18 +1123,11 @@ case "$POLICY" in
     RESULT="kept_for_review"
     ;;
   *)
-    fail_preserved "unknown POLICY '$POLICY' (use merge|discard|keep)" "$LATEST"
+    fail_preserved "unknown POLICY '$POLICY' (use merge|keep)" "$LATEST"
     ;;
 esac
 
-# Prune older leftover sweep branches from previous runs only when already contained.
-for branch in "${SWEEPS[@]}"; do
-  [ "$branch" = "$LATEST" ] && continue
-  prune_old "$branch"
-done
-
 git checkout -q "$TARGET_BRANCH" >/dev/null 2>&1 || true
-log "done. remaining bugsweep branches:"
-git for-each-ref --format='  %(refname:short)' 'refs/heads/bugsweep/*' 2>/dev/null || true
+log "done. cleanup was scoped to: $LATEST"
 
 finish 0

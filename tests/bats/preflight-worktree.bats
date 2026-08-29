@@ -88,6 +88,83 @@ teardown() {
   [ "$branch" = "bugsweep/${run_id}" ]
 }
 
+@test "preflight --worktree: persists mode and freezes exact path scope" {
+  mkdir -p "${REPO}/src"
+  printf 'inside\n' > "${REPO}/src/in.txt"
+  printf 'outside\n' > "${REPO}/outside.txt"
+  git -C "$REPO" add src/in.txt outside.txt
+  git -C "$REPO" commit -q -m 'add scope fixtures'
+
+  run bash "$PREFLIGHT_SH" --mode fix --scope src --worktree
+
+  [ "$status" -eq 0 ]
+  local run_dir
+  run_dir="$(echo "$output" | sed -n 's/^RUN_DIR=//p')"
+  grep -q "BUGSWEEP_MODE='fix'" "${run_dir}/state.env"
+  grep -q "BUGSWEEP_SCOPE='src'" "${run_dir}/state.env"
+  grep -qx 'src/in.txt' "${run_dir}/scope-files.txt"
+  ! grep -q 'outside.txt' "${run_dir}/scope-files.txt"
+}
+
+@test "preflight --worktree: resolves repository-relative scope from a nested caller" {
+  mkdir -p "${REPO}/src" "${REPO}/nested"
+  printf 'inside\n' > "${REPO}/src/in.txt"
+  git -C "$REPO" add src/in.txt
+  git -C "$REPO" commit -q -m 'add nested scope fixture'
+
+  cd "${REPO}/nested"
+  run bash "$PREFLIGHT_SH" --scope src --worktree
+
+  [ "$status" -eq 0 ]
+  local run_dir
+  run_dir="$(echo "$output" | sed -n 's/^RUN_DIR=//p')"
+  grep -qx 'src/in.txt' "${run_dir}/scope-files.txt"
+}
+
+@test "preflight --worktree: rejects an empty path scope before branch creation" {
+  run bash "$PREFLIGHT_SH" --mode fix --scope missing --worktree
+
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q 'scope contains no tracked files'
+  [ -z "$(git -C "$REPO" branch --list 'bugsweep/*')" ]
+}
+
+@test "preflight --worktree: refuses to create another branch while closeout is blocked" {
+  mkdir -p "${REPO}/.bugsweep/state/closeout-blocked"
+  printf '{"outcome":"INCOMPLETE_CLEANUP"}\n' > "${REPO}/.bugsweep/state/closeout-blocked/run-old.json"
+
+  run bash "$PREFLIGHT_SH" --worktree
+
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -qi "prior Bugsweep closeout is incomplete"
+  [ -z "$(git -C "$REPO" branch --list 'bugsweep/*')" ]
+  [ -z "$(git -C "$REPO" worktree list --porcelain | grep "${REPO}/.bugsweep/worktrees/" || true)" ]
+}
+
+@test "preflight --worktree: ordinary retry cannot accumulate a branch inside the lease grace window" {
+  run bash "$PREFLIGHT_SH" --worktree
+  [ "$status" -eq 0 ]
+  local first_branch
+  first_branch="$(echo "$output" | sed -n 's/^BRANCH=//p')"
+
+  run bash "$PREFLIGHT_SH" --worktree
+
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -qi "unresolved branch"
+  [ "$(git -C "$REPO" branch --list 'bugsweep/*' | wc -l | tr -d ' ')" -eq 1 ]
+  git -C "$REPO" branch --list 'bugsweep/*' | grep -qF "$first_branch"
+}
+
+@test "preflight --worktree --concurrent explicitly permits a sibling live run" {
+  run bash "$PREFLIGHT_SH" --worktree
+  [ "$status" -eq 0 ]
+
+  run bash "$PREFLIGHT_SH" --worktree --concurrent
+
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$REPO" branch --list 'bugsweep/*' | wc -l | tr -d ' ')" -eq 2 ]
+}
+
 @test "preflight --worktree: does not touch the user's current branch" {
   run bash "$PREFLIGHT_SH" --worktree
   [ "$status" -eq 0 ]
@@ -184,7 +261,7 @@ teardown() {
 
   local pids=""
   for i in 1 2 3 4 5; do
-    ( cd "$REPO" && bash "$PREFLIGHT_SH" --worktree > "${outdir}/out.${i}" 2>"${outdir}/err.${i}" ) &
+    ( cd "$REPO" && bash "$PREFLIGHT_SH" --worktree --concurrent > "${outdir}/out.${i}" 2>"${outdir}/err.${i}" ) &
     pids="$pids $!"
   done
   local rc=0
@@ -279,13 +356,8 @@ teardown() {
 
   printf 'fix\n' > "${wt}/fix.txt"
   cd "$wt"
-  # No BUGSWEEP_REAP_MIN_AGE_SECONDS override here: finalize.sh writes a
-  # durable .finalized sentinel before invoking the reaper, which is positive
-  # DONE evidence, so this run's own worktree is reaped deterministically —
-  # regardless of the grace-aligned age floor, the (released) lease, or a
-  # fresh ledger. This is exactly the production teardown path (a real run's
-  # ledger is fresh at finalize time too). If the reaper still relied on the
-  # age floor, this test worktree (seconds old) would be wrongly preserved.
+  # Finalize writes artifacts and a closeout blocker; it does not reap or
+  # broad-stage the worktree before tracker disposition.
   run bash "$FINALIZE_SH" "$run_dir"
   [ "$status" -eq 0 ]
 
@@ -297,10 +369,11 @@ teardown() {
 
   # The user's checkout is untouched.
   [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "$ORIG_BRANCH" ]
-  [ ! -d "$wt" ]
+  [ -d "$wt" ]
 
-  # The isolated worktree is gone, but the review branch remains available.
+  # Both owned resources remain explicitly pending closeout.
   git -C "$REPO" branch --list 'bugsweep/*' | grep -q .
+  find "${REPO}/.bugsweep/state/closeout-blocked" -name '*.json' | grep -q .
 
   # Handoff carries the manual-cleanup breadcrumb.
   python3 - "${run_dir}/post-finalize-handoff.json" "$wt" <<'PY'
@@ -363,12 +436,12 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-# bugsweep-8d0 dataloss review, COMPLETENESS: a session-end sweep entry point
-# must exist and be documented (three wiring points: preflight, finalize,
-# and session end).
+# The broad reaper remains documented only as manual crash recovery. Normal
+# preflight/finalize must use exact per-run closeout instead.
 # ---------------------------------------------------------------------------
 
-@test "SKILL.md documents a session-end --reap-worktrees sweep for orchestrators" {
-  grep -qi 'session.end' "$SKILL_MD"
+@test "SKILL.md limits --reap-worktrees to manual crash recovery" {
+  grep -qi 'Crash recovery' "$SKILL_MD"
+  grep -qi 'manual' "$SKILL_MD"
   grep -q -- '--reap-worktrees' "$SKILL_MD"
 }

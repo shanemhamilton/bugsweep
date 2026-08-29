@@ -19,6 +19,8 @@ anything. One bug at a time. If you cannot fix it safely, quarantine it — do n
    refactor, rename, reformat, restructure, "improve", or touch unrelated lines. A fix
    that changes 3 lines is reviewable; one that changes 300 is not, and breaks the trust
    contract.
+   In `--approve` mode, approval was obtained before the Repro/Fix phase began. Do not
+   broaden the approved edit; a material change requires a new approval before mutation.
 2. **Match the codebase.** Use the existing patterns, validation helpers, and error
    conventions already in the file. Don't introduce a new dependency or pattern.
 3. **Run the checks:**
@@ -38,21 +40,27 @@ anything. One bug at a time. If you cannot fix it safely, quarantine it — do n
    4's decision depends on step 3 alone, unchanged — whenever step 0 printed
    `REPRO=unreproduced` or `REPRO=none`, or was never run for this bug.
 4. **Decide from the result:**
-   - Step 3 printed `OK` / `NO_CHECKS` with no new failures, AND (step 3b was not run, OR
-     step 3b printed `REPRO=confirmed`) → commit exactly this one fix:
-     `git add -A && git commit -m "fix(bugsweep): BUG-<n> <short title>"`
-     Append a `fix_committed` event to the ledger with the bug id, file, commit sha, and the
-     Referee-preserved `priority_reason_codes` list (empty when the candidate had no priority seed).
+   - Step 3 printed `OK` with no new failures, AND (step 3b was not run, OR step 3b printed
+     `REPRO=confirmed`) → stage only this bug's owned files, inspect the staged diff, and
+     commit exactly this one fix:
+     `git add -- <owned-files> && git commit -m "fix(bugsweep): BUG-<n> <short title>"`
+     Append a `fix_committed` event to the ledger with the bug id, final severity, file,
+     commit sha, and the Referee-preserved `priority_reason_codes` list (empty when the
+     candidate had no priority seed). Closeout fails closed when severity is absent or unknown.
+   - Step 3 printed `NO_CHECKS`, or printed `OK` with `FLAKY=`/`FLAKY_TEST=` → do not
+     auto-land. Commit only if needed to escrow the exact fix, mark it review-required, and
+     route it through tracker + recovery-bundle closeout.
    - Step 3 printed `REGRESSION`, OR step 3b printed `REPRO=failed` → revert your changes
      immediately:
-     - uncommitted: `git checkout -- . && git clean -fd -- <only files you touched>`
+     - uncommitted: restore only the exact files this fix touched; never use a repo-wide
+       checkout or clean
      - already committed: `git revert --no-edit HEAD`
      Then append the bug to the ledger `quarantine` list with the failure detail and the same
      Referee-preserved `priority_reason_codes` (cite
      `repro_failed` when step 3b is what triggered the revert, so a human can tell the two
      apart). Move on.
-5. **In `--approve` mode**, show the user the diff and the bug explanation, and wait for
-   approval before step 3's commit.
+5. End with a clean owned worktree: every touched file is in this bug's commit or restored.
+   Unexpected generated/unrelated dirt quarantines the fix; never absorb it with broad staging.
 
 ## When NOT to auto-fix (quarantine instead)
 

@@ -235,7 +235,7 @@ JSON
   ! echo "$output" | grep -q "$rd"
 }
 
-@test "finalize.sh releases the lease it acquired during preflight" {
+@test "finalize.sh keeps the lease until terminal closeout" {
   FINALIZE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/finalize.sh"
   local rd="${BATS_TMP}/run-finalize"
   local ts="20991231T111111Z"
@@ -260,6 +260,11 @@ ENV
   run bash "$FINALIZE_SH" "$rd"
   [ "$status" -eq 0 ]
 
+  run bash "$STATE_SH" lease-list
+  echo "$output" | grep -q "$rd"
+
+  run bash "$STATE_SH" lease-release "$rd"
+  [ "$status" -eq 0 ]
   run bash "$STATE_SH" lease-list
   ! echo "$output" | grep -q "$rd"
 }

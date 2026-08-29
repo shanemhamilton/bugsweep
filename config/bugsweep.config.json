@@ -28,7 +28,7 @@
     "checkpoint_every_iterations": 3
   },
   "context": {
-    "_comment": "Coverage-first cross-run scope. State lives in .bugsweep/state/ (gitignored). The hunt always spans the whole repo; these only reprioritize the queue.",
+    "_comment": "Coverage-first cross-run scope. State lives in .bugsweep/state/ (gitignored). The hunt spans the invocation's frozen tracked-file scope; these only reprioritize that queue.",
     "decay_factor": 0.85,
     "high_risk_top_n": 25,
     "recheck_audited_after_runs": 5,
@@ -41,7 +41,7 @@
     "history_depth_commits": 500
   },
   "priority": {
-    "_comment": "Local-only, deterministic why-now evidence. Signals reorder investigation but never confirm a finding, relax fix gates, or narrow whole-repo scope. Fresh, provenanced project snapshots may be written to .bugsweep/priority-signals.jsonl; Bugsweep never calls their remote services itself. Signal outcomes are observed for yield reporting only and never mutate weights automatically.",
+    "_comment": "Local-only, deterministic why-now evidence. Signals reorder investigation but never confirm a finding, relax fix gates, or narrow the frozen invocation scope. Fresh, provenanced project snapshots may be written to .bugsweep/priority-signals.jsonl; Bugsweep never calls their remote services itself. Signal outcomes are observed for yield reporting only and never mutate weights automatically.",
     "recent_commit_count": 50,
     "max_targets": 50,
     "max_reasons_per_file": 5,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# bugsweep finalize: return the user to exactly where they started, with the fix
-# commits quarantined on the bugsweep branch for review. Idempotent and safe.
+# bugsweep finalize: write run artifacts and checkpoint persistent learning.
+# This is deliberately not terminal; closeout.sh owns tracker and exact Git cleanup.
 
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
@@ -14,21 +14,33 @@ run_dir="$(cd "$run_dir" && pwd)"
 
 require_git_repo
 
-# Commit any stray uncommitted fix work on the bugsweep branch so switching is clean.
+# Claim incomplete closeout before any artifact work. If finalize itself is interrupted,
+# the next preflight must reconcile this exact run instead of cutting another branch.
+closeout_dir="${BUGSWEEP_REPO_ROOT}/.bugsweep/state/closeout-blocked"
+mkdir -p "$closeout_dir"
+printf '{"run_id":"%s","run_dir":"%s","branch":"%s","worktree":"%s","state":"FINALIZING"}\n' \
+  "$(_bsw_json_escape "${BUGSWEEP_RUN_ID:-$BUGSWEEP_TS}")" \
+  "$(_bsw_json_escape "$run_dir")" \
+  "$(_bsw_json_escape "$BUGSWEEP_BRANCH")" \
+  "$(_bsw_json_escape "${BUGSWEEP_WORKTREE:-}")" \
+  > "${closeout_dir}/${BUGSWEEP_RUN_ID:-$BUGSWEEP_TS}.json"
+
+# Never absorb unexpected dirt into a broad escrow commit. The fix phase must leave only
+# narrow, reviewed commits; closeout refuses to remove a dirty owned worktree.
 if ! git diff --quiet --ignore-submodules HEAD 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard)" ]; then
-  git add -A >/dev/null 2>&1 || true
-  git commit -m "fix(bugsweep): finalize uncommitted work" >/dev/null 2>&1 || true
+  printf '{"event":"closeout_unexpected_dirt","branch":"%s"}\n' \
+    "$(_bsw_json_escape "$BUGSWEEP_BRANCH")" >> "${run_dir}/ledger.jsonl" 2>/dev/null || true
+  git diff --binary HEAD > "${run_dir}/unexpected-dirt.patch" 2>/dev/null || true
 fi
 
 # Persist this run's audit coverage + risk into .bugsweep/state/ so the next run
-# resumes the whole-repo frontier instead of starting blind. Best-effort: a failure
+# resumes the frozen-scope frontier instead of starting blind. Best-effort: a failure
 # here must never block finalize or strand the user off their branch.
 if bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" persist "$run_dir" >/dev/null 2>&1; then
   log "Persisted audit coverage + risk to .bugsweep/state/ for future runs."
 else
   log "WARNING: could not persist cross-run state (continuing; not fatal)."
 fi
-bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-release "$run_dir" >/dev/null 2>&1 || true  # bugsweep-p74: release this run's lease (best-effort, non-fatal)
 
 # Anchored, region-restricted stub-content check shared by _emit_stub_report's
 # stale-sentinel invalidation (bugsweep-je8 residual 2) and the classification
@@ -629,41 +641,26 @@ else
   fi
 fi
 
-if [ -n "${BUGSWEEP_WORKTREE:-}" ] && [ -f "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" ]; then
-  # bugsweep-8d0 dataloss re-review MAJOR 1: write a durable ".finalized"
-  # sentinel into this run's run_dir BEFORE invoking the reaper. This is the
-  # positive "the run is definitively over" signal the reaper needs to safely
-  # reap THIS worktree — the reaper now preserves-on-ambiguity (a released
-  # lease is indistinguishable from a reclaimed-stale one, and the ledger is
-  # typically fresh at finalize time), so without this sentinel a
-  # just-finalized worktree whose lease is already released would be preserved
-  # forever ("no live lease + stale-ledger only" is the reap path; a released
-  # lease is "no lease record" → ambiguous → preserve). The sentinel lives
-  # under .bugsweep/ (git-excluded) and lets BOTH this reaper call and any
-  # later session-end sweep reap finalized runs deterministically. (Same
-  # sentinel-file idiom finalize already uses for .report-is-stub.)
-  : > "${run_dir}/.finalized" 2>/dev/null || true
-  if cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null; then
-    bash "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" --reap-worktrees \
-      || log "WARNING: worktree reaper failed; ${BUGSWEEP_WORKTREE} may still need manual cleanup."
-  else
-    log "WARNING: could not enter repo root for worktree reaper; ${BUGSWEEP_WORKTREE} may still need manual cleanup."
-  fi
-fi
-
 printf '{"event":"finalize","branch":"%s","orig_branch":"%s"}\n' \
   "$BUGSWEEP_BRANCH" "$BUGSWEEP_ORIG_BRANCH" >> "${run_dir}/ledger.jsonl" 2>/dev/null || true
 
-echo "FINALIZED"
+printf '{"run_id":"%s","run_dir":"%s","branch":"%s","worktree":"%s","state":"PENDING_CLOSEOUT"}\n' \
+  "$(_bsw_json_escape "${BUGSWEEP_RUN_ID:-$BUGSWEEP_TS}")" \
+  "$(_bsw_json_escape "$run_dir")" \
+  "$(_bsw_json_escape "$BUGSWEEP_BRANCH")" \
+  "$(_bsw_json_escape "${BUGSWEEP_WORKTREE:-}")" \
+  > "${closeout_dir}/${BUGSWEEP_RUN_ID:-$BUGSWEEP_TS}.json"
+
+echo "ARTIFACTS_FINALIZED"
+echo "CLOSEOUT_REQUIRED=bash scripts/closeout.sh ${run_dir} <landed|recorded>"
 echo "REVIEW_WITH=git diff ${BUGSWEEP_ORIG_BRANCH}..${BUGSWEEP_BRANCH}"
 echo "REPORT=${run_dir}/report.md"
 echo "RUN_SUMMARY=${_bugsweep_run_summary_path:-${run_dir}/run-summary.json}"
 echo "POST_FINALIZE_HANDOFF=${run_dir}/post-finalize-handoff.json"
-echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
+echo "BRANCH_PENDING_CLOSEOUT=${BUGSWEEP_BRANCH}"
 
 # Cross-repo/night operator rollup digest — LAST, and isolated. This runs only
-# AFTER the trust-critical teardown above (branch-restore + stash-pop + worktree
-# reaper) and after the stdout contract, because it is the least-important,
+# AFTER the legacy in-place branch restore above and after the stdout contract, because it is the least-important,
 # most-fragile step: a cosmetic, default-OFF operator convenience that must
 # NEVER be able to strand the user on the bugsweep branch. It only READS
 # run-summary.json (already on disk, under the main repo's .bugsweep/ — never in
@@ -672,4 +669,4 @@ echo "BRANCH_PRESERVED=${BUGSWEEP_BRANCH}"
 # unabortable: any failure inside is swallowed to a warning so it can never
 # propagate to finalize's exit status. Defense in depth with the internal
 # `|| var=0` guards above.
-_write_rollup_digest || log "WARNING: rollup digest emission failed (non-fatal; run still finalized)."
+_write_rollup_digest || log "WARNING: rollup digest emission failed (non-fatal; artifacts are still finalized)."

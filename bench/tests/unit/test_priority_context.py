@@ -81,7 +81,7 @@ def test_changed_live_sink_is_must_focus_with_explainable_breakdown() -> None:
     assert {"changed_since_last_run", "content_changed_since_audit", "live_sink"} <= codes
     assert target["priority_score"] == sum(target["breakdown"].values())  # type: ignore[union-attr]
     assert "changed" in target["why_now"].lower()
-    assert context["scope_contract"] == "priority_only_whole_repo_remains_in_scope"
+    assert context["scope_contract"] == "priority_only_frozen_invocation_scope_remains_in_scope"
 
 
 def test_baseline_failure_is_visible_but_stability_is_unknown() -> None:
@@ -390,7 +390,7 @@ def test_tampered_promotion_list_is_consistency_checked_and_hard_capped() -> Non
     }
     context = {
         "schema_version": 1,
-        "scope_contract": "priority_only_whole_repo_remains_in_scope",
+        "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
         "promotion_budget": {"max_batches": 20, "max_files": 1000},
         "targets": [
             {
@@ -438,7 +438,7 @@ def test_promotion_budget_is_batch_and_file_aware_and_preserves_existing_critica
     }
     context = {
         "schema_version": 1,
-        "scope_contract": "priority_only_whole_repo_remains_in_scope",
+        "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
         "promotion_budget": {"max_batches": 2, "max_files": 2},
         "targets": [
             {
@@ -469,7 +469,7 @@ def test_malformed_recon_batch_fails_closed_instead_of_disappearing() -> None:
     }
     context = {
         "schema_version": 1,
-        "scope_contract": "priority_only_whole_repo_remains_in_scope",
+        "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
         "promotion_budget": {"max_batches": 1, "max_files": 10},
         "targets": [],
         "promotion_candidates": [],

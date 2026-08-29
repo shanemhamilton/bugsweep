@@ -6,13 +6,13 @@
 [![Works with Codex](https://img.shields.io/badge/Codex-skill-412991)](https://github.com/openai/codex)
 [![Python 3: exact audit checkpoints](https://img.shields.io/badge/Python%203-exact%20audit%20checkpoints-2563eb)](#configure)
 
-> **An autonomous, adversarial AI code-review and bug-fixing skill for [Claude Code](https://claude.ai/code) and [Codex](https://github.com/openai/codex).** It finds real security vulnerabilities, logic errors, race conditions, and data-integrity bugs across your whole repository — then, when you let it, fixes them on a throwaway git branch you fully control. Safe enough to run unattended overnight.
+> **An autonomous, adversarial AI code-review and bug-fixing skill for [Claude Code](https://claude.ai/code) and [Codex](https://github.com/openai/codex).** It finds real security vulnerabilities, logic errors, race conditions, and data-integrity bugs across your repository, fixes verified work in isolation, records the rest in your tracker, and cleans up after itself. Safe enough to run unattended overnight.
 
-> **New in v0.5.0 — priority intelligence.** Bugsweep now uses current code changes, failing
-> checks, runtime reachability, repeated repairs, prior findings, and fresh local project signals
-> to decide where to investigate first—then records which explicitly attributed reasons actually
-> led to bugs. [See the project site](https://shanemhamilton.github.io/bugsweep/) or read the
-> [full priority contract](references/priority-intelligence.md).
+> **New in v0.6.0 — closed-loop runs.** Bugsweep now locally lands verified fixes or records
+> unresolved work with recovery evidence, then proves its exact temporary branch and worktree
+> are gone. Path-scoped runs also stay path-scoped throughout coverage and prioritization.
+> [See the project site](https://shanemhamilton.github.io/bugsweep/) or read the
+> [closeout contract](references/tracker-closeout.md).
 
 It does five things that make it effective on real, large codebases:
 - **Whole-repo context.** Before hunting, it builds a distilled model of your
@@ -36,14 +36,12 @@ It does five things that make it effective on real, large codebases:
 
 ## The one thing to understand
 
-**The worst case for any core run is a branch you delete.** bugsweep never works on your
-real branch during the hunt/fix loop, never pushes anywhere, never merges, and never
-deletes files. It cuts a fresh `bugsweep/<timestamp>` branch, makes its fixes there as one
-commit each, and re-runs your tests after every fix — automatically undoing any fix that
-breaks something. You review the branch and decide what to keep. You are always the merge
-gate.
+**A successful run leaves no temporary branch or worktree behind.** Bugsweep hunts in an
+isolated linked worktree, never pushes, and re-runs checks after every fix. Verified work
+locally integrates through a post-merge gate; unresolved work is tracker-recorded and
+recovery-bundled before the exact run branch is discarded.
 
-The dangerous, irreversible operations (branching, stashing your work, reverting) are
+The sensitive Git operations (branching, integration, recovery escrow, cleanup) are
 done by short shell scripts in `scripts/` that you can read in a few minutes — not by the
 AI's judgment. That's what makes it trustworthy for long unattended runs.
 
@@ -56,16 +54,16 @@ flowchart TD
     A(["/bugsweep invoked"]) --> B
 
     subgraph scripts ["⚙️ Shell scripts — deterministic, auditable"]
-        B["preflight.sh\ncut bugsweep/&lt;timestamp&gt; branch\nstash uncommitted work\nwrite RUN_DIR + ledger"]
+        B["preflight.sh --worktree\ncreate exact ephemeral branch\nleave user checkout untouched\nwrite RUN_DIR + ledger"]
         C["run_checks.sh baseline\nrecord test / build / lint state"]
         PI["priority-context.sh\nlocal why-now evidence\ntracked changes · failures · recurrence"]
         L["run_checks.sh verify\ndiff against baseline"]
         Q["guard.sh\ncheck iteration / time / fix caps"]
-        FIN["finalize.sh\nrestore original branch\npop stash\npersist audit coverage\nwrite handoff JSON"]
+        FIN["finalize.sh\npersist audit coverage\nwrite report + summary\nprepare closeout"]
     end
 
-    subgraph ai ["🤖 AI phases — reasoning only, no git ops"]
-        D["context-build\nbuild whole-repo model\narchitecture · trust boundaries\nsensitive sinks · call chains"]
+    subgraph ai ["🤖 AI phases — investigate, review, narrow fixes"]
+        D["context-build\nbuild frozen-scope model\narchitecture · trust boundaries\nsensitive sinks · call chains"]
         E["research\nprime with stack-specific\nanti-pattern catalogs"]
         F["hunt\nbatch through files\nHunter generates candidates"]
         G["challenge\nSkeptic tries to disprove\neach candidate"]
@@ -84,10 +82,9 @@ flowchart TD
     RPT --> FIN
     Q --> |CONTINUE| F
     Q --> |STOP| FIN
-    FIN --> HANDOFF["post-finalize handoff\nbranch preserved\none compound next action"]
-    HANDOFF --> DECIDE{"User replies do it?"}
-    DECIDE --> |"No"| R(["Review manually\ngit diff main..bugsweep/&lt;timestamp&gt;"])
-    DECIDE --> |"Yes"| LAND["land preserved branch\nre-run proof on target\npush if safe\nsmoke + remote read-back\ncleanup merged branch"]
+    FIN --> TRACK["upsert unresolved work\nin project's tracker\nread back receipts"]
+    TRACK --> LAND["land verified fixes\nor escrow recovery\nprune exact run branch/worktree"]
+    LAND --> DONE(["COMPLETED_LANDED\nor COMPLETED_RECORDED"])
 ```
 
 ### Adversarial review — why bugsweep has a low false-positive rate
@@ -108,7 +105,9 @@ flowchart LR
 
 ### Coverage-first state — how bugsweep finds bugs in old, unchanged code
 
-bugsweep is not a diff scanner. Every file in the repo is always in scope. Cross-run state lets it track which files have been reviewed at the current catalog version and prioritize the ones that haven't.
+bugsweep is not a diff scanner. Every file in the frozen invocation scope stays in scope—the
+whole repository only when no path was supplied. Cross-run state tracks which selected files
+were reviewed at the current catalog version and prioritizes the ones that have not been.
 
 ```mermaid
 flowchart TD
@@ -142,7 +141,7 @@ project root. Every target includes a lane, a capped score breakdown, closed rea
 a plain-language `why_now` explanation; signal-health counters expose stale, malformed,
 over-broad, and not-yet-mapped context. A deleted path cannot itself become a target because it
 is absent from the current tracked-file scope; deletion-aware caller/dependency mapping is not
-yet implemented, while all surviving tracked files remain in the whole-repo plan.
+yet implemented, while all surviving tracked files remain in the frozen invocation plan.
 
 This is prioritization, not proof. The deterministic applier verifies that it preserves the
 exact recon-plan scope and honors both promoted-batch and promoted-file budgets, then writes
@@ -189,7 +188,7 @@ curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/instal
 **Pin to a specific release** (instead of tracking the latest `main`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash -s -- --version v0.5.0
+curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash -s -- --version v0.6.0
 ```
 
 Re-running the installer with `--version` checks out that release tag; re-running without
@@ -215,7 +214,7 @@ Open Claude Code (or start Codex) in your project and type one of:
 
 | Command | What it does |
 | --- | --- |
-| `/bugsweep` | Find bugs and write a report. **Makes no changes.** Start here. |
+| `/bugsweep` | Find bugs, write a report, and tracker-record confirmed work. **No source changes.** Start here. |
 | `/bugsweep --approve` | Find + fix, but asks you before each fix. Use this to build trust. |
 | `/bugsweep --autonomous` | Find + fix in a loop until clean or a limit is hit. The overnight mode. |
 | `/bugsweep src/api` | Limit the sweep to a folder or file. |
@@ -226,37 +225,15 @@ to watch how it fixes, then `/bugsweep --autonomous` once you trust it.
 
 ## After a run
 
-It tells you the branch name and how to review:
+`finalize.sh` writes `report.md`, `run-summary.json`, and an intermediate handoff. Closeout
+then reports `COMPLETED_LANDED`, `COMPLETED_RECORDED`, `INCOMPLETE_TRACKER`, or
+`INCOMPLETE_CLEANUP`. Only the completed states are success, and both require exact readback
+proving the run-owned branch/worktree is absent.
 
-```
-git diff <your-branch>..bugsweep/<timestamp>
-```
-
-It also writes `<RUN_DIR>/post-finalize-handoff.json`, a machine-readable handoff with the
-preserved branch, report path, fix commits, quality gate, smoke checks, push policy,
-cleanup policy, deletion proof, and final read-back commands.
-
-For `/bugsweep --autonomous`, the recommended next step is intentionally one compound
-approval:
-
-> Reply `do it` to land the preserved branch, re-run proof on the target branch, push if
-> safe, run configured smoke checks, verify remote read-back, and delete the now-merged
-> bugsweep branch.
-
-That does not weaken the trust contract. The core run still stops at finalize and leaves
-the fixes stranded on `bugsweep/<timestamp>` until you approve the continuation. The
-approved follow-through uses the handoff JSON and the optional cleanup script so a parent
-agent does not need to ask again after the merge.
-
-Branch deletion is allowed only after proof that the branch is contained in the target
-branch (`git merge-base --is-ancestor <branch> <target>`). If the branch is checked out in
-a linked worktree, cleanup removes that worktree only when it is clean: no unstaged
-changes, no staged changes, and no untracked files. Dirty worktrees and unmerged branches
-are preserved.
-
-Manual review still works the same way: keep what you like with a cherry-pick or merge, or
-discard explicitly if you decide the branch is not worth keeping. Your original branch and
-uncommitted work are exactly as you left them.
+Verified fixes are locally integrated through a post-merge quality gate. Confirmed but
+unfixed work is idempotently created or updated in the project's documented tracker.
+Unlanded commits are bundled and verified before the exact run branch is discarded. No
+prefix-wide deletion is allowed, and Bugsweep never pushes during closeout.
 
 ## Overnight orchestrator
 
@@ -285,10 +262,9 @@ fleet of concurrent runs can drive without a human watching:
   checks every iteration (`guard.sh`); hitting it routes straight to `finalize.sh`, so a run
   that runs out of time still restores the original branch and writes its report, summary,
   and handoff instead of dying mid-fix.
-- **Crash-safe teardown.** The optional reaper (`bugsweep-cleanup.sh --reap-worktrees`,
-  also called by preflight/finalize themselves) reclaims a worktree or branch only on
-  positive evidence its run is dead or done — a `.finalized` sentinel, or an expired lease.
-  Anything ambiguous, dirty, or unmerged is preserved and reported, never guessed away.
+- **Enforced closeout.** `finalize.sh` creates a per-run blocker; `closeout.sh` clears it
+  only after tracker and exact branch/worktree readback. The optional reaper is reserved for
+  conservative crash recovery and preserves anything ambiguous, dirty, or unmerged.
 - **Landing more than one fix branch safely.** `scripts/integrate.sh` merges an ordered
   list of already-verified branches into a target one at a time, re-running the quality
   gate after *each* merge — a fix that was green in isolation can go red once a sibling's
@@ -307,13 +283,11 @@ fleet of concurrent runs can drive without a human watching:
   feeding their hits in as one more corroboration signal for the Referee — never a
   replacement for adversarial review.
 
-The only thing that still accumulates across runs is one `bugsweep/<timestamp>` branch (or
-worktree) per run, because none of the above lets bugsweep merge or delete on its own — you
-are still the merge gate. The optional companion script `scripts/bugsweep-cleanup.sh`
-automates that gate *after* finalize and after approval: it merges a verified fix branch
-into a branch you choose, deletes only branches proven contained in that target, and
-preserves dirty worktrees or unmerged branches — using only plain git, outside the core
-hunt/fix loop. See
+Cross-run learning accumulates under `.bugsweep/state/`; temporary Git resources do not.
+After `finalize.sh` writes the report and summary, Bugsweep lands verified local fixes or
+records remaining action in the project's existing tracker, then removes only the exact
+branch/worktree recorded for that run. Unlanded code is escrowed in a verified recovery
+bundle before discard. See
 [`references/autonomous-maintenance.md`](references/autonomous-maintenance.md) for the
 copy-paste prompt, settings, and scheduling notes for a single sequential run.
 
@@ -338,7 +312,7 @@ exclude folders, or specify your test/build commands if auto-detect misses them.
 
 **How is bugsweep different from Snyk, CodeQL, SonarQube, or Dependabot?**
 Those are mostly pattern/diff scanners and dependency auditors. bugsweep is an *agentic*
-reviewer: it builds a whole-repo architecture model and reasons about behavior, so it
+reviewer: it builds a frozen-scope architecture model and reasons about behavior, so it
 catches cross-file logic bugs (like a missing authorization check on one path into a
 database write) that pattern matchers miss. It complements those tools rather than
 replacing them — and it can fix what it finds, not just flag it.
@@ -349,22 +323,22 @@ common stacks (JavaScript/TypeScript, Python, Go, Swift/iOS, Kotlin, and React) 
 your stack automatically to prime the hunt.
 
 **Is it safe to run on a production codebase?**
-Yes — that's the design center. bugsweep never works on your branch, never pushes, never
-merges, and never deletes files. It cuts a throwaway `bugsweep/<timestamp>` branch, and
-the irreversible git operations are short shell scripts you can audit in minutes. The
-worst case for any run is a branch you delete.
+Yes — that's the design center. Bugsweep hunts and fixes in an isolated linked worktree,
+never pushes, and locally integrates only verified work in fix modes. It deletes only the
+exact temporary branch/worktree recorded for the current run; unlanded code is recovery-
+bundled and tracker-recorded first. The Git operations are short shell scripts you can audit.
 
 **Does bugsweep send my code anywhere?**
-No third-party services, no telemetry, and no network calls — unless you explicitly opt
-into bounded web research for version-specific advisories (off by default). Your code
-goes only to the AI tool you already use.
+No telemetry. Your code goes only to the AI tool you already use. Network access is limited
+to the project's existing tracker during closeout and optional bounded web research for
+version-specific advisories (off by default); Bugsweep never sends source to a new service.
 
 **Can it run unattended or in CI?**
 Yes. `/bugsweep --autonomous` runs a find-and-fix loop until the codebase is clean or a
 configured limit (time, iterations, or fix count) is hit, re-running your tests after
-every fix. State persists to disk so long runs survive context resets. Landing, pushing,
-smoke checks, remote read-back, and branch cleanup happen through the explicit
-post-finalize continuation so the merge gate stays visible.
+every fix. State persists to disk so long runs survive context resets. Local landing,
+tracker read-back, and exact branch cleanup happen through mandatory closeout. Pushing and
+deployment remain separate user-owned actions.
 
 **Does it work with OpenAI Codex too, or just Claude Code?**
 Both. The installer sets up whichever you have (`--claude`, `--codex`, or `--all`).
@@ -372,23 +346,21 @@ Both. The installer sets up whichever you have (`--claude`, `--codex`, or `--all
 ## What's inside
 
 - `SKILL.md` — the instructions Claude follows.
-- `scripts/` — the deterministic safety + state layer: `preflight` (branch/stash setup),
+- `scripts/` — the deterministic safety + state layer: `preflight` (isolated worktree setup),
   `run_checks` (tests/build), `guard` (stop conditions), `session` (continuity anchor),
-  `finalize` (safe return plus `post-finalize-handoff.json`). Plus two *optional*,
-  user-owned companions for scheduled runs (outside the core hunt/fix loop):
-  `bugsweep-prepare.sh` (if the tree is dirty, it defers to an active session or commits
-  genuinely idle work to close the tree — never parks, never discards) and
-  `bugsweep-cleanup.sh` (the post-run merge gate; the only script that merges or deletes,
-  and only when you choose to run it).
+  `finalize` (artifacts plus a mandatory blocker), `closeout` (tracker/escrow proof and
+  exact resource pruning), `integrate` (post-merge verification), and
+  `bugsweep-cleanup.sh` (manual single-branch/crash-recovery maintenance).
 - `prompts/` — the phases, kept separate so the AI never rubber-stamps its own findings:
-  `context-build` (whole-repo model), `research` (anti-pattern priming), `hunt` (local +
+  `context-build` (frozen-scope model), `research` (anti-pattern priming), `hunt` (local +
   architectural lenses), `challenge` (Skeptic), `referee` (final arbiter), `fix`.
 - `references/` — safety rationale, the no-tests playbook, tuning notes, the
   context/continuity model, and `antipatterns/` (the curated per-stack catalogs).
 - `config/bugsweep.config.json` — your settings (caps, excludes, commands, and the
   adversarial / research / session toggles).
 
-No third-party packages, no network calls (unless you opt into web research), and no telemetry.
+No third-party packages and no telemetry. Network access is limited to the project's
+existing tracker and optional bounded web research.
 Python 3 is required for exact audit checkpoints and the full deterministic priority report;
 without it, Bugsweep finalizes with incomplete output at the first unverifiable audit checkpoint
 and reports zero verified coverage. Read

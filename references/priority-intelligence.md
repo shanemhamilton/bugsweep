@@ -26,14 +26,15 @@ local-only evidence:
   ignored/untracked Beads state actually lives;
 - `priority.critical_globs` and a project-local signal inbox.
 
-No `bd`, `gh`, tracker, telemetry, or incident CLI is invoked. Missing sources are recorded in
+Priority-context construction invokes no `bd`, `gh`, tracker, telemetry, or incident CLI;
+tracker writes happen only in the separate closeout protocol. Missing sources are recorded in
 `source_status` and degrade independently; they never fail or shrink the run. Signal-health
 counts make rejected, expired, inactive, unmapped, or over-broad inputs visible instead of
 silently implying that all configured context was usable.
 
 Change evidence is limited to paths in the **current** tracked-file set. A deleted path is no
 longer targetable and therefore cannot receive a lane or score directly. Surviving tracked files
-in the configured scope remain in the whole-repository plan, but deletion-aware dependency/caller
+in the configured scope remain in the frozen invocation plan, but deletion-aware dependency/caller
 mapping is not yet an implemented signal; do not describe a removed file as covered by priority
 intelligence.
 
@@ -46,7 +47,7 @@ The artifact uses hard lanes first, then a visible bounded score:
 - `high` — content changed since its completed hunt, explicit critical path, repeated repairs,
   high prior risk, a high-priority local bug, or a high-confidence/high-severity project signal;
 - `elevated` — recent change/churn, stale audit, or partial/cold reachability evidence;
-- `normal` — retained whole-repo work with no extra why-now evidence.
+- `normal` — retained frozen-scope work with no extra why-now evidence.
 
 The score breakdown is intentionally inspectable and capped at 100:
 

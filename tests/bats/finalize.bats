@@ -210,13 +210,14 @@ PY
   grep -q "20991231T000000Z" "${RUN_DIR}/report.md"
 }
 
-@test "finalize: still finalizes cleanly (FINALIZED line) even without report.md" {
+@test "finalize: emits artifact checkpoint and closeout requirement" {
   _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
 
   run bash "$FINALIZE_SH" "$RUN_DIR"
   [ "$status" -eq 0 ]
 
-  echo "$output" | grep -q "FINALIZED"
+  echo "$output" | grep -q "ARTIFACTS_FINALIZED"
+  echo "$output" | grep -q "CLOSEOUT_REQUIRED="
 }
 
 @test "finalize: writes post-finalize handoff JSON with required fields" {
@@ -484,9 +485,9 @@ PY
   # Trust contract, in priority order:
   #   1. finalize exits 0 (the digest failure was swallowed, not propagated).
   #   2. the user is back on their ORIGINAL branch (teardown ran).
-  #   3. the machine-readable FINALIZED marker was emitted (the script reached
+  #   3. the machine-readable artifact marker was emitted (the script reached
   #      its normal end, it did not abort mid-way).
   [ "$status" -eq 0 ]
   [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "$ORIG_BRANCH" ]
-  echo "$output" | grep -q "FINALIZED"
+  echo "$output" | grep -q "ARTIFACTS_FINALIZED"
 }

@@ -7,7 +7,7 @@ Hunter -> Skeptic -> Referee confirmation chain.
 
 The reducer is deliberately pure: filesystem, Git, issue-file, and baseline-log
 collection live behind ``scripts/priority-context.sh``.  Keeping this layer free
-of subprocesses makes its ordering, caps, and whole-repository invariants easy to
+of subprocesses makes its ordering, caps, and frozen-scope invariants easy to
 test and safe to reuse.
 """
 
@@ -822,7 +822,7 @@ def build_priority_context(
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "scope_contract": "priority_only_whole_repo_remains_in_scope",
+        "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
         "generated_from": {
             "head": sanitize_text(current_head, 40) or None,
             "previous_run_head": sanitize_text(previous_head, 40) or None,
@@ -895,7 +895,7 @@ def reprioritize_recon(recon: Mapping[str, Any], context: Mapping[str, Any]) -> 
     if context.get("degraded") is True:
         return result
     if context.get("schema_version") != SCHEMA_VERSION or context.get("scope_contract") != (
-        "priority_only_whole_repo_remains_in_scope"
+        "priority_only_frozen_invocation_scope_remains_in_scope"
     ):
         raise ValueError("priority context contract is missing or unsupported")
     raw_targets = context.get("targets")

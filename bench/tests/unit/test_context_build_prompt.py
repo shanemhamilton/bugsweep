@@ -75,7 +75,7 @@ def test_prompt_states_coverage_first_promotion_clears_deferred() -> None:
 def test_prompt_has_a_per_batch_deadline_checkpoint() -> None:
     """bugsweep-5ft review BLOCKER 1: the per-batch modeling loop must contain an
     explicit deadline checkpoint — a literal guard.sh invocation and a STOP*->
-    finalize.sh handoff — not just an outer paragraph describing the contract.
+    Step 5 handoff — not just an outer paragraph describing the contract.
     Without this, a wall-clock deadline hit mid-context-build on a large repo
     never routes through finalize.sh, and the run produces no report.md /
     run-summary.json at all (the exact silent-failure shape bead 2e5 fixed for
@@ -85,16 +85,16 @@ def test_prompt_has_a_per_batch_deadline_checkpoint() -> None:
         "scripts/guard.sh" in text
     ), "the per-batch loop must invoke scripts/guard.sh as a deadline checkpoint"
     assert (
-        "scripts/finalize.sh" in text
-    ), "the per-batch loop must route a STOP result through scripts/finalize.sh"
-    # The literal bash idiom used elsewhere in SKILL.md for the STOP->finalize
-    # handoff, not just a prose description of it.
+        "STOP*)" in text and "break" in text.split("STOP*)", 1)[1][:100]
+    ), "expected STOP to break the modeling loop and route to Step 5"
     assert (
-        "STOP*)" in text and "finalize.sh" in text.split("STOP*)", 1)[1][:80]
-    ), "expected the literal `STOP*) bash scripts/finalize.sh ...` case-arm idiom"
+        "step 5" in text.lower()
+    ), "the STOP path must name the mandatory closeout step"
 
 
-def test_prompt_ties_deadline_checkpoint_to_the_batch_loop_not_just_a_paragraph() -> None:
+def test_prompt_ties_deadline_checkpoint_to_the_batch_loop_not_just_a_paragraph() -> (
+    None
+):
     """The checkpoint must be a numbered sub-step INSIDE the per-batch loop
     ('For each non-deferred batch...'), not merely mentioned in a separate
     paragraph elsewhere in the file."""
@@ -114,13 +114,10 @@ def test_prompt_ties_deadline_checkpoint_to_the_batch_loop_not_just_a_paragraph(
 
 
 def test_prompt_states_any_stop_result_not_only_runtime_cap_ends_the_run() -> None:
-    """bugsweep-5ft review MINOR 7: the prompt must not imply only a runtime-cap
-    STOP requires finalizing — any STOP* (iteration cap, fix cap, convergence)
-    must be treated the same way."""
+    """Budget stops end the run, except the fix cap which only ends mutation."""
     text = _text().lower()
-    assert "any `stop*`" in text or "any stop*" in text, (
-        "prompt must say ANY STOP* result triggers finalize, not just the " "runtime-cap example"
-    )
+    assert "fix_cap_reached" in text and "detect-and-record" in text
+    assert "every other `stop*`" in text or "every other stop" in text
 
 
 def test_prompt_notes_degraded_path_lacks_full_tier_ranking_is_addressed() -> None:
@@ -134,7 +131,10 @@ def test_prompt_notes_degraded_path_lacks_full_tier_ranking_is_addressed() -> No
     # fallback tiering. Accept a mention of the degraded/no-python path OR an
     # explicit statement that tiering holds on both paths.
     assert (
-        "degrad" in text or "no python" in text or "without python" in text or "both paths" in text
+        "degrad" in text
+        or "no python" in text
+        or "without python" in text
+        or "both paths" in text
     ), "prompt must acknowledge the degraded path or assert both-path tiering"
 
 

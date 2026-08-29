@@ -42,10 +42,10 @@ Examples:
 - `adversarial.challenge_enabled` — run the Skeptic pass that tries to disprove each
   finding. Keep on; it is the main false-positive filter.
 - `adversarial.referee_enabled` — run the neutral Referee to resolve disputed findings and
-  spot-check high-severity ones. Turning it off is faster but lets more borderline findings
-  through to the fix stage; keep on for autonomous runs.
-- `adversarial.referee_spotchecks_upheld` — have the Referee independently re-verify the
-  highest-severity findings the Skeptic already upheld, instead of trusting the chain.
+  independently rule every surviving candidate. Turning it off makes fix modes stop before
+  mutation; it is only a detect-mode reporting option.
+- `adversarial.referee_spotchecks_upheld` — legacy compatibility setting. Current fix modes
+  adjudicate every UPHELD item regardless of this value.
 
 ## Anti-pattern research (new)
 

@@ -6,7 +6,7 @@ from bench.scorer.priority_summary import build_priority_summary
 def test_priority_summary_reports_actual_application_and_attributed_outcome() -> None:
     context = {
         "schema_version": 1,
-        "scope_contract": "priority_only_whole_repo_remains_in_scope",
+        "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
         "targets": [
             {
                 "file": "src/pay.py",
@@ -32,7 +32,7 @@ def test_priority_summary_reports_actual_application_and_attributed_outcome() ->
     }
     application = {
         "schema_version": 1,
-        "scope_contract": "priority_only_whole_repo_remains_in_scope",
+        "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
         "candidate_count": 1,
         "promoted_batches": ["2"],
         "promoted_batch_count": 1,
@@ -72,7 +72,7 @@ def test_priority_summary_does_not_credit_same_file_coincidence() -> None:
     result = build_priority_summary(
         context={
             "schema_version": 1,
-            "scope_contract": "priority_only_whole_repo_remains_in_scope",
+            "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
             "targets": [
                 {
                     "file": "src/pay.py",
@@ -96,7 +96,7 @@ def test_priority_summary_does_not_credit_same_file_coincidence() -> None:
 def test_priority_summary_reports_no_finding_only_for_verified_coverage() -> None:
     context = {
         "schema_version": 1,
-        "scope_contract": "priority_only_whole_repo_remains_in_scope",
+        "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
         "targets": [
             {
                 "file": "src/pay.py",
@@ -138,7 +138,7 @@ def test_priority_summary_marks_missing_and_degraded_context_unavailable() -> No
     degraded = build_priority_summary(
         context={
             "schema_version": 1,
-            "scope_contract": "priority_only_whole_repo_remains_in_scope",
+            "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
             "degraded": True,
             "source_status": {"collector": "git_unavailable"},
         },
@@ -160,7 +160,7 @@ def test_priority_summary_does_not_infer_zeroes_from_an_invalid_application_rece
     result = build_priority_summary(
         context={
             "schema_version": 1,
-            "scope_contract": "priority_only_whole_repo_remains_in_scope",
+            "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
             "targets": [],
         },
         application={"schema_version": 1, "candidate_count": 0},

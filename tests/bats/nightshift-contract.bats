@@ -14,9 +14,8 @@
 #       user's tree is byte-for-byte untouched, and N concurrent
 #       `state.sh persist` calls against those runs keep a correct meta.json
 #       run count with zero lost audit/risk lines.
-#   (d) Cleanup invariant (bugsweep-8d0): after a full worktree run, and after
-#       a killed-then-next run, `git worktree list` shows no leftover
-#       bugsweep worktrees and `git worktree prune` is a genuine no-op.
+#   (d) Cleanup invariant: a full run closes its exact resources; a killed run
+#       blocks the next branch until that exact run is reconciled and closed.
 #
 # (b) — the js-cookie prototype-pollution no-reject guard — is intentionally
 # NOT duplicated here: tests/bats/prompts-guardrails.bats (bugsweep-dxh)
@@ -28,6 +27,8 @@
 PREFLIGHT_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/preflight.sh"
 FINALIZE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/finalize.sh"
 STATE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/state.sh"
+CLOSEOUT_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/closeout.sh"
+INTEGRATE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/integrate.sh"
 SCHEMA_PATH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/schemas/run-summary.schema.json"
 
 # ---------------------------------------------------------------------------
@@ -72,7 +73,12 @@ _seed_recon_and_finding() {
 {"batches":[{"id":1,"files":["${file}"]}],"modeled":[1],"covered":[1]}
 JSON
   printf '{"event":"batch_covered","batch":1}\n' >> "${run_dir}/ledger.jsonl"
-  printf '{"event":"fix_committed","file":"%s","severity":"high"}\n' "$file" >> "${run_dir}/ledger.jsonl"
+  local bug_id="BUG-${file}"
+  printf '{"event":"referee_vote","bug_id":"%s","severity":"high","verdict":"CONFIRMED"}\n' "$bug_id" >> "${run_dir}/ledger.jsonl"
+  printf '{"event":"referee_vote","bug_id":"%s","severity":"high","verdict":"CONFIRMED"}\n' "$bug_id" >> "${run_dir}/ledger.jsonl"
+  printf '{"event":"referee_vote","bug_id":"%s","severity":"high","verdict":"NOT_CONFIRMED"}\n' "$bug_id" >> "${run_dir}/ledger.jsonl"
+  printf '{"event":"referee_verdict","bug_id":"%s","verdict":"CONFIRMED"}\n' "$bug_id" >> "${run_dir}/ledger.jsonl"
+  printf '{"event":"fix_committed","bug_id":"%s","file":"%s","severity":"high"}\n' "$bug_id" "$file" >> "${run_dir}/ledger.jsonl"
   printf '{"schema":1,"batch":1,"file":"%s","head":"%s","blob_oid":"%s"}\n' \
     "$file" "$(git -C "$worktree" rev-parse HEAD)" \
     "$(git -C "$worktree" rev-parse "HEAD:${file}")" > "${run_dir}/audit-snapshots.jsonl"
@@ -184,7 +190,7 @@ PY
   # --- Step 1: N preflight --worktree runs, started together. ---------------
   local pids="" i
   for i in $(seq 1 "$n"); do
-    ( cd "$REPO" && bash "$PREFLIGHT_SH" --worktree > "${outdir}/out.${i}" 2>"${outdir}/err.${i}" ) &
+    ( cd "$REPO" && bash "$PREFLIGHT_SH" --worktree --concurrent > "${outdir}/out.${i}" 2>"${outdir}/err.${i}" ) &
     pids="$pids $!"
   done
   local rc=0
@@ -288,20 +294,26 @@ PY
 @test "(d) after a full worktree run, git worktree list has no leftover bugsweep worktrees and git worktree prune is a no-op" {
   run bash "$PREFLIGHT_SH" --worktree
   [ "$status" -eq 0 ]
-  local run_dir wt
+  local run_dir wt branch
   run_dir="$(echo "$output" | sed -n 's/^RUN_DIR=//p')"
   wt="$(echo "$output" | sed -n 's/^WORKTREE=//p')"
+  branch="$(echo "$output" | sed -n 's/^BRANCH=//p')"
   [ -n "$run_dir" ]
   [ -n "$wt" ]
   [ -d "$wt" ]
 
   # The ordinary shape of a "full run": some fix work landed on the run's own
   # branch inside the isolated worktree.
-  printf 'fix\n' > "${wt}/fix.txt"
-  git -C "$wt" add fix.txt
-  git -C "$wt" commit -q -m "fix(bugsweep): full-run test commit"
+  _seed_recon_and_finding "$run_dir" "fix.txt" "$wt"
 
   run bash "$FINALIZE_SH" "$run_dir"
+  [ "$status" -eq 0 ]
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$run_dir" main "$branch"
+  [ "$status" -eq 0 ]
+  run_id="$(sed -n "s/^BUGSWEEP_RUN_ID='\([^']*\)'$/\1/p" "${run_dir}/state.env")"
+  printf '{"provider":"beads","item_id":"FOLLOW-UP","finding_key":"run:%s:follow-up","readback_verified":true}\n' \
+    "$run_id" > "${run_dir}/tracker-receipts.jsonl"
+  run bash "$CLOSEOUT_SH" "$run_dir" landed
   [ "$status" -eq 0 ]
   [ ! -d "$wt" ]
 
@@ -326,9 +338,12 @@ PY
 
   local killed_run_dir="${REPO}/.bugsweep/run-killed-run"
   mkdir -p "$killed_run_dir"
+  printf '.bugsweep/\n' >> "${REPO}/.git/info/exclude"
   cat > "${killed_run_dir}/state.env" <<ENV
 BUGSWEEP_TS=killed-run
+BUGSWEEP_RUN_ID=killed-run
 BUGSWEEP_RUN_DIR=${killed_run_dir}
+BUGSWEEP_REPO_ROOT=${REPO}
 BUGSWEEP_BRANCH=bugsweep/killed-run
 BUGSWEEP_ORIG_BRANCH=main
 BUGSWEEP_STASH_REF=none
@@ -338,20 +353,28 @@ BUGSWEEP_WORKTREE=${killed_wt}
 BUGSWEEP_SCRIPT_DIR=$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts
 ENV
   touch "${killed_run_dir}/ledger.jsonl"
+  _seed_recon_and_finding "$killed_run_dir" "killed.txt" "$killed_wt"
 
   local leases="${REPO}/.bugsweep/state/leases"
   mkdir -p "$leases"
   printf '{"pid":999999,"run_dir":"%s","started":1}\n' "$killed_run_dir" > "${leases}/run-killed-run.json"
   touch -t 202001010000 "${leases}/run-killed-run.json" "${killed_run_dir}/ledger.jsonl"
 
-  # The NEXT run: its own preflight --worktree call reaps the killed sibling
-  # BEFORE creating its own worktree (bugsweep-8d0's documented three-wiring-
-  # point contract: preflight, finalize, session-end sweep).
-  # BUGSWEEP_REAP_MIN_AGE_SECONDS=0 waives only the worktree-dir age floor —
-  # the stale-lease + quiescent-ledger evidence above is what actually
-  # authorizes the reap (same override cleanup.bats's own "preflight
-  # --worktree reaps stale orphan" test uses).
+  # A new run is blocked before branch creation until the exact killed run is
+  # reconciled; normal preflight never performs broad cleanup.
   run env BUGSWEEP_REAP_MIN_AGE_SECONDS=0 bash "$PREFLIGHT_SH" --worktree
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "prior Bugsweep run owns unresolved branch"
+
+  run bash "$FINALIZE_SH" "$killed_run_dir"
+  [ "$status" -eq 0 ]
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$killed_run_dir" main bugsweep/killed-run
+  [ "$status" -eq 0 ]
+  run bash "$CLOSEOUT_SH" "$killed_run_dir" landed
+  [ "$status" -eq 0 ]
+  [ ! -d "$killed_wt" ]
+
+  run bash "$PREFLIGHT_SH" --worktree
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "PREFLIGHT_OK"
 
@@ -361,16 +384,12 @@ ENV
   [ -n "$next_run_dir" ]
   [ -n "$next_wt" ]
 
-  # The killed sibling is already gone — reaped during THIS preflight call,
-  # before its own worktree was even created.
-  [ ! -d "$killed_wt" ]
-
-  # Complete the next run normally (a full run on top of the killed one).
-  printf 'next fix\n' > "${next_wt}/next-fix.txt"
-  git -C "$next_wt" add next-fix.txt
-  git -C "$next_wt" commit -q -m "fix(bugsweep): next run after killed sibling"
-
   run bash "$FINALIZE_SH" "$next_run_dir"
+  [ "$status" -eq 0 ]
+  next_id="$(sed -n "s/^BUGSWEEP_RUN_ID='\([^']*\)'$/\1/p" "${next_run_dir}/state.env")"
+  printf '{"provider":"beads","item_id":"FOLLOW-UP","finding_key":"run:%s:follow-up","readback_verified":true}\n' \
+    "$next_id" > "${next_run_dir}/tracker-receipts.jsonl"
+  run bash "$CLOSEOUT_SH" "$next_run_dir" recorded
   [ "$status" -eq 0 ]
   [ ! -d "$next_wt" ]
 

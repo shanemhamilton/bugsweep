@@ -12,6 +12,10 @@ today's suite-only gating (see "Skip conditions" below).
 
 ## Protocol (per confirmed bug, before editing anything)
 
+In `--approve` mode, the user's approval must already be recorded before this protocol
+starts. A repro can write a repository test file, so it is itself a mutation. If approval
+is declined or times out, do not synthesize a repro; record the confirmed bug in the tracker.
+
 1. **Decide if this bug has a reproducible shape.** A good candidate has a single,
    nameable triggering condition — a function call with specific inputs, an HTTP request
    with a specific payload, a CLI invocation with specific flags — that the Referee's

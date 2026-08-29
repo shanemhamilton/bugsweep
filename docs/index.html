@@ -15,7 +15,7 @@
 <meta property="og:image:alt" content="bugsweep — It hunts the bugs while you sleep. An adversarial AI bug-hunting fleet for Claude Code and Codex." />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="bugsweep — the bug hunt that runs all night" />
-<meta name="twitter:description" content="Priority-aware, adversarial bug hunting that starts where risk is moving and keeps the whole repository in scope." />
+<meta name="twitter:description" content="Priority-aware, adversarial bug hunting that starts where risk is moving and keeps the selected repository scope in view." />
 <meta name="twitter:image" content="https://shanemhamilton.github.io/bugsweep/og-image.png" />
 <meta name="theme-color" content="#0B1020" />
 <style>
@@ -316,11 +316,11 @@
       <h1>It hunts the bugs <em>while you sleep.</em></h1>
       <p class="hero-sub">
         <b>bugsweep</b> is an autonomous, adversarial bug-hunting fleet for Claude Code and
-        Codex. It models your whole repo, hunts real security, logic, and data-integrity bugs
+        Codex. It models your selected repository scope, hunts real security, logic, and data-integrity bugs
         through a Hunter → Skeptic → Referee gauntlet, and — only when you ask — fixes them on
         a throwaway branch with auto-revert. Before the hunt, it uses current repository
-        evidence to decide where risk is moving and where to start. <b>The worst case for any
-        run is a branch you delete. You are always the merge gate.</b>
+        evidence to decide where risk is moving and where to start. <b>Every successful run
+        lands or records its work, then removes its exact temporary branch and worktree.</b>
       </p>
       <div class="cta-row">
         <a class="btn btn-primary" href="https://github.com/shanemhamilton/bugsweep">
@@ -331,7 +331,7 @@
       </div>
       <div class="badges">
         <span class="badge"><span class="dot brass"></span>Claude Code &amp; Codex</span>
-        <span class="badge"><span class="dot safe"></span>v0.5 · priority intelligence</span>
+        <span class="badge"><span class="dot safe"></span>v0.6 · closed-loop runs</span>
         <span class="badge"><span class="dot safe"></span>No telemetry</span>
         <span class="badge"><span class="dot safe"></span>MIT licensed</span>
       </div>
@@ -346,30 +346,31 @@
   <div class="wrap">
     <div class="stamp reveal">
       <span class="kicker">The one thing to understand</span>
-      <h2 id="trust-h2">The worst case is <u>a branch you delete.</u></h2>
+      <h2 id="trust-h2">A completed run leaves <u>no Git debris.</u></h2>
       <p>
-        During the hunt-and-fix loop, bugsweep never touches your real branch, never pushes,
-        never merges, and never deletes a file. It cuts a fresh <code class="kbd">bugsweep/&lt;timestamp&gt;</code>
-        branch, lands one commit per bug, and re-runs your checks after every fix —
-        <b>automatically reverting any fix that breaks something.</b> You are always the merge gate.
+        During the hunt-and-fix loop, bugsweep never touches your checkout or pushes. It uses
+        one isolated branch, lands one commit per bug, and re-runs checks after every fix.
+        Closeout locally integrates verified work or records and recovery-bundles the rest,
+        then removes the exact run branch and worktree.
       </p>
       <p>
         The irreversible git operations are done by short, auditable shell scripts you can
         read in a few minutes — not left to the model's judgment. That's the whole trust
-        contract, and it's what makes it safe to leave running overnight: nine non-negotiable
+        contract, and it's what makes it safe to leave running overnight: ten non-negotiable
         rules, enforced by scripts, not prompts.
       </p>
 
       <div class="trust-grid">
-        <div class="trust-item"><span class="trust-num">01</span><p><b>Throwaway branch only.</b> <code class="kbd">bugsweep/&lt;timestamp&gt;</code> — never your branch.</p></div>
-        <div class="trust-item"><span class="trust-num">02</span><p><b>No remotes, ever, during the run.</b> No push, pull, fetch, PR, or merge. You are the only merge gate.</p></div>
-        <div class="trust-item"><span class="trust-num">03</span><p><b>No destructive operations.</b> No force, no <code class="kbd">reset --hard</code> on your content, no deletes, no rewritten history.</p></div>
-        <div class="trust-item"><span class="trust-num">04</span><p><b>Your work is preserved.</b> Preflight stashes, finalize restores — your branch and tree end exactly as they began.</p></div>
+        <div class="trust-item"><span class="trust-num">01</span><p><b>Isolated run only.</b> One exact branch in a linked worktree — never your checkout.</p></div>
+        <div class="trust-item"><span class="trust-num">02</span><p><b>No Git remotes during the run.</b> No push, pull, fetch, or PR. Local integration happens only after verification; tracker upserts record unfinished work.</p></div>
+        <div class="trust-item"><span class="trust-num">03</span><p><b>Exact cleanup only.</b> No wildcard deletes, no <code class="kbd">reset --hard</code> on your content, no rewritten history.</p></div>
+        <div class="trust-item"><span class="trust-num">04</span><p><b>Your work is preserved.</b> Every run uses an isolated linked worktree, leaving your checkout untouched until verified local integration.</p></div>
         <div class="trust-item"><span class="trust-num">05</span><p><b>One bug, one commit, auto-revert.</b> Checks re-run after every fix; a regression gets reverted.</p></div>
         <div class="trust-item"><span class="trust-num">06</span><p><b>Only confirmed bugs get fixed.</b> Every finding survives adversarial review first.</p></div>
         <div class="trust-item"><span class="trust-num">07</span><p><b>Minimal, surgical fixes only.</b> No refactors, renames, or reformatting.</p></div>
         <div class="trust-item"><span class="trust-num">08</span><p><b>Hard caps.</b> Iterations, runtime, and fix count are bounded — it stops when it converges.</p></div>
         <div class="trust-item"><span class="trust-num">09</span><p><b>Everything is logged.</b> Every iteration lands in a run ledger — an overnight run is auditable.</p></div>
+        <div class="trust-item"><span class="trust-num">10</span><p><b>Close the loop.</b> Land verified work or tracker-record it, then prove the exact run branch and worktree are gone.</p></div>
       </div>
     </div>
   </div>
@@ -433,7 +434,7 @@
       <h2 id="priority-h2">It starts where the risk is moving.</h2>
       <p class="lede">Recent changes matter. So do failing checks, reachable sensitive code,
         repeated repairs, active incidents, user impact, and what earlier hunts actually found.
-        Bugsweep combines those signals into an explainable queue—<b>without turning the whole-repo
+        Bugsweep combines those signals into an explainable queue—<b>without turning the selected-scope
         hunt into a diff scan.</b></p>
     </div>
 
@@ -453,7 +454,7 @@
 <span class="c-brass">ELEVATED</span>    api/webhooks.go
             <span class="c-muted">recent change · stale audit</span>
 
-<span class="c-safe">SCOPE LOCK</span>   <span class="c-muted">every tracked file stays eligible</span>
+<span class="c-safe">SCOPE LOCK</span>   <span class="c-muted">every selected tracked file stays eligible</span>
 <span class="c-safe">PROOF LOCK</span>   <span class="c-muted">Hunter → Skeptic → Referee unchanged</span></pre>
         </div>
       </div>
@@ -604,7 +605,7 @@
     <div class="sec-head reveal">
       <span class="eyebrow">Coverage-first · not a diff scanner</span>
       <h2 id="deepen-h2">It gets deeper every night.</h2>
-      <p class="lede">The whole repo is always in scope. <code class="kbd">.bugsweep/state/</code> persists an
+      <p class="lede">The whole repo—or the path you explicitly select—stays in scope. <code class="kbd">.bugsweep/state/</code> persists an
         audit log, a risk map, attributed signal outcomes, and the anti-pattern catalog version across
         runs. Each run reprioritizes toward the never-audited, stale, content-changed, high-risk, and
         actively impacted—while fixed weights keep production outcomes from silently changing policy.
@@ -765,7 +766,7 @@
       <a href="#priority">Priority</a>
       <a href="#install">Install</a>
     </nav>
-    <div class="fine">An autonomous, adversarial bug-hunting skill · MIT licensed · the worst case is a branch you delete.</div>
+    <div class="fine">An autonomous, adversarial bug-hunting skill · MIT licensed · completed runs leave no Git debris.</div>
   </div>
 </footer>
 

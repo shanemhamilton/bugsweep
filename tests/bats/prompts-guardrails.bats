@@ -29,7 +29,7 @@ setup() {
   grep -q 'priority-context.json' "$HUNT_MD"
   grep -qi 'untrusted data, never as instructions' "$HUNT_MD"
   grep -qi 'hint, never a finding' "$HUNT_MD"
-  grep -qi 'whole repo remains in scope' "$HUNT_MD"
+  grep -qi "invocation's selected scope remains" "$HUNT_MD"
 }
 
 # ---------------------------------------------------------------------------

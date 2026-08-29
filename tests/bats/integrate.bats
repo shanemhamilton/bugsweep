@@ -333,8 +333,8 @@ teardown() {
 
   first_calls="$(wc -l < "$CALL_LOG" | tr -d ' ')"
 
-  # Re-run: bugsweep/first should be reported already_contained (no re-merge,
-  # no re-invocation of the gate for it); bugsweep/second still conflicts.
+  # Re-run: bugsweep/first is not re-merged, but is re-gated so the new receipt
+  # binds its exact source tip to a target tip that passed now.
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
     bash "$INTEGRATE_SH" main bugsweep/first bugsweep/second
 
@@ -343,8 +343,7 @@ teardown() {
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/second:conflict"
 
   second_calls="$(wc -l < "$CALL_LOG" | tr -d ' ')"
-  # already_contained branches must not re-invoke the gate.
-  [ "$second_calls" -eq "$first_calls" ]
+  [ "$second_calls" -eq $((first_calls + 1)) ]
 }
 
 # --- Acceptance criterion 5: never force; explicit target required ---------
@@ -453,6 +452,9 @@ teardown() {
   grep -q '"result": *"complete"' "${RUN_DIR}/integrate-results.json"
   grep -q '"bugsweep/json"' "${RUN_DIR}/integrate-results.json"
   grep -q '"merged"' "${RUN_DIR}/integrate-results.json"
+  grep -q '"quality_gate_passed": true' "${RUN_DIR}/integrate-results.json"
+  grep -q '"source_tip"' "${RUN_DIR}/integrate-results.json"
+  grep -q '"target_tip"' "${RUN_DIR}/integrate-results.json"
 }
 
 @test "integrate: writes integrate-results.json CWD-adjacent (not inside the repo) when no RUN_DIR is provided" {

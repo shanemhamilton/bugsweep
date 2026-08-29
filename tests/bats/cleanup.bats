@@ -180,7 +180,7 @@ teardown() {
   [ -d "$WORKTREE" ]
 }
 
-@test "cleanup: unmerged branch is preserved unless discard policy is explicit" {
+@test "cleanup: unmerged branch is preserved and direct discard is forbidden" {
   _make_bugsweep_branch "bugsweep/unmerged" "unmerged fix"
 
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_POLICY=keep \
@@ -194,13 +194,13 @@ teardown() {
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_POLICY=discard \
     bash "$CLEANUP_SH" "bugsweep/unmerged"
 
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q "CLEANUP_RESULT=discarded"
-  echo "$output" | grep -q "BRANCH_DELETED=bugsweep/unmerged"
-  ! _branch_exists "bugsweep/unmerged"
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "policy=discard is forbidden"
+  echo "$output" | grep -q "BRANCH_PRESERVED=bugsweep/unmerged"
+  _branch_exists "bugsweep/unmerged"
 }
 
-@test "cleanup: unmerged leftover branch is preserved during contained branch cleanup" {
+@test "cleanup: exact-branch cleanup does not touch another bugsweep branch" {
   _make_bugsweep_branch "bugsweep/merged-latest" "merged latest"
   _merge_branch_to_main "bugsweep/merged-latest"
   _make_bugsweep_branch "bugsweep/unmerged-leftover" "unmerged leftover"
@@ -211,9 +211,19 @@ teardown() {
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "CLEANUP_RESULT=merged_deleted"
   echo "$output" | grep -q "BRANCH_DELETED=bugsweep/merged-latest"
-  echo "$output" | grep -q "BRANCH_PRESERVED=bugsweep/unmerged-leftover"
+  ! echo "$output" | grep -q "BRANCH_PRESERVED=bugsweep/unmerged-leftover"
   ! _branch_exists "bugsweep/merged-latest"
   _branch_exists "bugsweep/unmerged-leftover"
+}
+
+@test "cleanup: refuses to infer ownership when no exact branch is given" {
+  _make_bugsweep_branch "bugsweep/user-owned" "do not infer ownership"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main bash "$CLEANUP_SH"
+
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "exact bugsweep branch is required"
+  _branch_exists "bugsweep/user-owned"
 }
 
 @test "cleanup: merge conflict preserves branch" {
@@ -445,7 +455,7 @@ teardown() {
   [ ! -d "$vwt" ]
 }
 
-@test "reap-worktrees: stale dirty worktree is committed to its branch, worktree removed, branch preserved" {
+@test "reap-worktrees: stale dirty worktree is preserved without broad staging" {
   _make_bugsweep_branch "bugsweep/reap-dirty" "fix dirty before reap"
   local wt="${REPO}/.bugsweep/worktrees/reap-dirty"
   mkdir -p "${REPO}/.bugsweep/worktrees"
@@ -466,13 +476,12 @@ teardown() {
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "WORKTREES_REMOVED=1"
-  echo "$output" | grep -q "WORKTREES_PRESERVED=0"
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREES_PRESERVED=1"
   echo "$output" | grep -q "BRANCHES_PRUNED=0"
-  echo "$output" | grep -q "LEASES_RELEASED=1"
-  [ ! -d "$wt" ]
+  [ -d "$wt" ]
   _branch_exists "bugsweep/reap-dirty"
-  git -C "$REPO" show "bugsweep/reap-dirty:scratch.txt" | grep -q "important uncommitted data"
+  grep -q "important uncommitted data" "${wt}/scratch.txt"
 }
 
 @test "reap-worktrees: live leased sibling is preserved" {
@@ -496,7 +505,7 @@ teardown() {
   _branch_exists "bugsweep/reap-live"
 }
 
-@test "preflight --worktree reaps stale orphan before creating the next worktree" {
+@test "preflight --worktree blocks on an abandoned mapped run without broadly reaping it" {
   _make_bugsweep_branch "bugsweep/reap-preflight" "fix preflight"
   _merge_branch_to_main "bugsweep/reap-preflight"
   local orphan="${REPO}/.bugsweep/worktrees/reap-preflight"
@@ -511,11 +520,11 @@ teardown() {
 
   run env BUGSWEEP_REAP_MIN_AGE_SECONDS=0 bash "$PREFLIGHT_SH" --worktree
 
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q "PREFLIGHT_OK"
-  [ ! -d "$orphan" ]
-  ! _branch_exists "bugsweep/reap-preflight"
-  ! git -C "$REPO" worktree list --porcelain | grep -q "$orphan"
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "prior Bugsweep run owns unresolved branch"
+  [ -d "$orphan" ]
+  _branch_exists "bugsweep/reap-preflight"
+  git -C "$REPO" worktree list --porcelain | grep -q "$orphan"
 }
 
 # ---------------------------------------------------------------------------

@@ -76,7 +76,7 @@ import json, sys
 import jsonschema
 d = json.load(open(sys.argv[1]))
 jsonschema.validate(d, json.load(open(sys.argv[2])))
-assert d["scope_contract"] == "priority_only_whole_repo_remains_in_scope"
+assert d["scope_contract"] == "priority_only_frozen_invocation_scope_remains_in_scope"
 t = next(x for x in d["targets"] if x["file"] == "src/checkout.py")
 assert t["lane"] == "must_focus", t
 codes = set(t["attribution_reason_codes"])
@@ -145,7 +145,7 @@ d = json.load(open(sys.argv[1]))
 assert d["schema_version"] == 1
 assert d["degraded"] is True
 assert d["targets"] == []
-assert d["scope_contract"] == "priority_only_whole_repo_remains_in_scope"
+assert d["scope_contract"] == "priority_only_frozen_invocation_scope_remains_in_scope"
 PY
 }
 

@@ -11,9 +11,11 @@
 #     Byte-for-byte identical behavior to before bugsweep-p74 — existing
 #     callers/tests are unaffected.
 #
-#   --worktree (bugsweep-p74) — concurrency-safe mode for N sibling subagents
-#   (e.g. a metaswarm orchestrator dispatching up to 5 in parallel) that must
-#   each get an ISOLATED working dir + index + HEAD without colliding on the
+#   --worktree (bugsweep-p74) — isolated mode for one ordinary run. It refuses
+#   to create a second branch while any prior mapped run remains unresolved.
+#   Add --concurrent only for an orchestrator intentionally dispatching up to
+#   5 sibling subagents; each sibling must still complete terminal closeout.
+#   Both forms get an ISOLATED working dir + index + HEAD without colliding on the
 #   ONE shared tree/branch/stash-stack, and without ever touching the user's
 #   checkout:
 #     - a NEW linked git worktree is created under
@@ -55,19 +57,58 @@ if [ -n "${_PREFLIGHT_TEST_CONFIG_OVERRIDE:-}" ]; then
   BUGSWEEP_CONFIG="$_PREFLIGHT_TEST_CONFIG_OVERRIDE"
 fi
 
-# Parse optional --mode and --worktree flags (e.g. --mode autonomous --worktree)
+# Parse optional mode, scope, worktree, and explicit concurrency flags.
 bs_mode="detect"
 bs_worktree="no"
+bs_scope="."
+bs_concurrent="no"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --mode) bs_mode="${2:-detect}"; shift 2 ;;
+    --mode) [ "$#" -ge 2 ] || die "--mode requires a value"; bs_mode="$2"; shift 2 ;;
     --mode=*) bs_mode="${1#--mode=}"; shift ;;
+    --scope) [ "$#" -ge 2 ] || die "--scope requires a value"; bs_scope="$2"; shift 2 ;;
+    --scope=*) bs_scope="${1#--scope=}"; shift ;;
     --worktree) bs_worktree="yes"; shift ;;
-    *) shift ;;
+    --concurrent) bs_concurrent="yes"; shift ;;
+    *) die "unknown preflight option: $1" ;;
   esac
 done
 
+case "$bs_mode" in detect|fix|approve|autonomous) ;; *) die "invalid mode: $bs_mode" ;; esac
+case "$bs_scope" in
+  ""|.) bs_scope="." ;;
+  /*|..|../*|*/..|*/../*) die "scope must be a repository-relative tracked path" ;;
+esac
+
 require_git_repo
+
+if [ "$bs_scope" != "." ] \
+  && [ -z "$(git -C "$BUGSWEEP_REPO_ROOT" --literal-pathspecs ls-files -- "$bs_scope")" ]; then
+  die "scope contains no tracked files: $bs_scope"
+fi
+
+# A prior run that could not finish tracker or cleanup readback must be
+# reconciled before this process creates another branch. This turns a rare
+# closeout failure into one bounded blocker instead of an accumulating pile.
+closeout_blocks="${BUGSWEEP_REPO_ROOT}/.bugsweep/state/closeout-blocked"
+if [ -d "$closeout_blocks" ] && find "$closeout_blocks" -type f -name '*.json' -print -quit 2>/dev/null | grep -q .; then
+  die "A prior Bugsweep closeout is incomplete (${closeout_blocks}). Reconcile its tracker/cleanup receipt before starting another run."
+fi
+
+# A hard-killed run may never reach finalize, so it has no closeout marker. Detect any
+# state-mapped branch whose lease is no longer live and stop before creating more state.
+live_leases="$(bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-list 2>/dev/null || true)"
+for prior_state in "${BUGSWEEP_REPO_ROOT}"/.bugsweep/run-*/state.env; do
+  [ -f "$prior_state" ] || continue
+  prior_run_dir="$(dirname "$prior_state")"
+  prior_branch="$(_bsw_state_env_get "$prior_state" BUGSWEEP_BRANCH 2>/dev/null || true)"
+  [ -n "$prior_branch" ] || continue
+  git show-ref --verify --quiet "refs/heads/${prior_branch}" || continue
+  if [ "$bs_concurrent" = "yes" ] && printf '%s\n' "$live_leases" | grep -qxF "LEASE=${prior_run_dir}"; then
+    continue
+  fi
+  die "A prior Bugsweep run owns unresolved branch '${prior_branch}' (${prior_run_dir}). Reconcile or close out that exact run before creating another branch."
+done
 
 # --- Refuse unsafe repo states ------------------------------------------------
 git_dir="$(git rev-parse --git-dir)"
@@ -151,19 +192,6 @@ elif [ ! -f "$exclude_file" ]; then
   printf '.bugsweep/\n' > "$exclude_file"
 fi
 
-# BLOCKER B fix (bugsweep-8d0 dataloss review): run the reaper from the MAIN
-# repo root, mirroring finalize.sh's --reap-worktrees call site exactly, so
-# TARGET_BRANCH/containment can never be resolved from whatever cwd this
-# preflight invocation happens to be running in. A subshell is used (not a
-# permanent `cd`) so preflight's own cwd is never altered for the rest of
-# this script, out of caution — nothing after this point currently depends on
-# the original cwd in worktree mode (every path used below is absolute), but
-# there is no reason to risk it.
-if [ "$bs_worktree" = "yes" ] && [ -f "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" ]; then
-  ( cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null && bash "${BUGSWEEP_SCRIPT_DIR}/bugsweep-cleanup.sh" --reap-worktrees ) >/dev/null 2>&1 \
-    || log "worktree reaper skipped or failed before preflight (non-fatal)."
-fi
-
 start_epoch="$(date +%s)"
 max_runtime_minutes="$(cfg_get '.caps.max_runtime_minutes' '120')"
 case "$max_runtime_minutes" in
@@ -197,6 +225,7 @@ _bsw_persist_run_state_and_lease() {
     # worktree runs use bs_id so their outcome episodes can never collapse.
     _bsw_env_kv BUGSWEEP_RUN_ID "$bs_id"
     _bsw_env_kv BUGSWEEP_RUN_DIR "$run_dir"
+    _bsw_env_kv BUGSWEEP_REPO_ROOT "$BUGSWEEP_REPO_ROOT"
     _bsw_env_kv BUGSWEEP_BRANCH "$branch"
     _bsw_env_kv BUGSWEEP_ORIG_BRANCH "$orig_branch"
     _bsw_env_kv BUGSWEEP_ORIG_HEAD "$orig_head"
@@ -205,6 +234,8 @@ _bsw_persist_run_state_and_lease() {
     _bsw_env_kv BUGSWEEP_DEADLINE_EPOCH "$deadline_epoch"
     _bsw_env_kv BUGSWEEP_MAX_RUNTIME_MINUTES "$max_runtime_minutes"
     _bsw_env_kv BUGSWEEP_MODE "$bs_mode"
+    _bsw_env_kv BUGSWEEP_SCOPE "$bs_scope"
+    _bsw_env_kv BUGSWEEP_CONCURRENT "$bs_concurrent"
     _bsw_env_kv BUGSWEEP_WORKTREE "$worktree_path"
   } > "${run_dir}/state.env"
 
@@ -320,7 +351,7 @@ fi
 # --- Prime coverage-first scope from prior runs (best-effort, never fatal) -----
 # Reads .bugsweep/state/ and writes ${run_dir}/prior-coverage.json so context-build
 # can put never-audited + stale + high-risk files on the critical-tier frontier.
-# A broken/empty cache degrades to whole-repo scope; it must never fail preflight.
+# A broken/empty cache degrades to the frozen invocation scope; it must never fail preflight.
 prior_summary=""
 prior_summary="$(bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" prime "$run_dir" 2>/dev/null \
   | sed -n 's/^SUMMARY=//p' | head -1 || true)"
@@ -402,12 +433,24 @@ if [ -f "${BUGSWEEP_SCRIPT_DIR}/conclusions.sh" ]; then
   [ -n "$reopened_summary" ] && log "Conclusions: ${reopened_summary}"
 fi
 
+# Freeze the exact tracked-file scope consumed by context-build. This prevents a
+# path-scoped request from silently expanding to the whole repository.
+scope_repo="$BUGSWEEP_REPO_ROOT"
+[ -n "$worktree_path" ] && scope_repo="$worktree_path"
+if [ "$bs_scope" = "." ]; then
+  git -C "$scope_repo" ls-files > "${run_dir}/scope-files.txt"
+else
+  git -C "$scope_repo" --literal-pathspecs ls-files -- "$bs_scope" > "${run_dir}/scope-files.txt"
+fi
+
 # --- Output for the SKILL to read ---------------------------------------------
 echo "RUN_DIR=${run_dir}"
 echo "BRANCH=${branch}"
 echo "ORIG_BRANCH=${orig_branch}"
 echo "STASH=${stash_ref}"
 [ -n "$worktree_path" ] && echo "WORKTREE=${worktree_path}"
+echo "SCOPE=${bs_scope}"
+echo "SCOPE_FILES=${run_dir}/scope-files.txt"
 [ -f "${run_dir}/prior-coverage.json" ] && echo "PRIOR_COVERAGE=${run_dir}/prior-coverage.json"
 [ -f "${run_dir}/exposure.json" ] && echo "EXPOSURE=${run_dir}/exposure.json"
 [ -s "${run_dir}/reopened-conclusions.txt" ] && echo "REOPENED_CONCLUSIONS=${run_dir}/reopened-conclusions.txt"

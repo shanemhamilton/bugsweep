@@ -528,7 +528,7 @@ if [ "$test_check_failed" -eq 1 ] && [ "$base_test_failed" -eq 0 ] && [ -n "$cmd
 
     # bugsweep-7hw: leave the isolated worktree clean of test-induced
     # pollution regardless of the classification outcome below, so a
-    # subsequent `git add -A && git commit` (SKILL.md Step 4) never picks up
+    # subsequent narrow owned-file staging (SKILL.md Step 4) never picks up
     # rerun debris, and so tracked/untracked state the test mutated is fully
     # restored even after the LAST rerun. Best-effort/no-op when isolation
     # was never active.

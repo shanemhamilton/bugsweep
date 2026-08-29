@@ -17,7 +17,7 @@
   ],
   "properties": {
     "schema_version": {"const": 1},
-    "scope_contract": {"const": "priority_only_whole_repo_remains_in_scope"},
+    "scope_contract": {"const": "priority_only_frozen_invocation_scope_remains_in_scope"},
     "candidate_count": {"type": "integer", "minimum": 0, "maximum": 200},
     "promoted_batches": {
       "type": "array",

@@ -1,15 +1,14 @@
 # Phase: Referee (final arbiter)
 
-You are neutral ground truth. You resolve what the Hunter and the Skeptic disagree on, and
-you spot-check what they agree on, by reading the code independently. Your verdict
+You are neutral ground truth. You independently rule every candidate that survived the
+Skeptic, whether disputed or upheld. Your verdict
 determines what is eligible to be fixed. You have no incentive toward either side — call
 it as the code actually is.
 
 ## What reaches you
 - DISPUTED items (Skeptic was uncertain, or the Skeptic's only grounds for rejection were
   weak patterns such as "upstream's bug" or "no call site in this codebase exploits it").
-- UPHELD items — spot-check the highest-severity ones independently rather than trusting
-  the chain; confirm the evidence is real.
+- Every UPHELD item. No severity may bypass independent adjudication before Fix.
 
 ## How to rule
 
@@ -39,7 +38,7 @@ When you see such reasoning in a DISPUTED item:
 
 ## K-vote majority for severity >= high (bugsweep-hcj)
 
-A single adjudication is enough to decide a DISPUTED item or spot-check an UPHELD one at
+A single adjudication is enough to decide a DISPUTED or UPHELD item at
 medium/low severity — that path is **unchanged**. But a lone CONFIRMED verdict deciding
 whether a HIGH or CRITICAL finding becomes fix-eligible (and therefore gets auto-edited) is
 not enough independent evidence; a critical bug warrants more than one read.
@@ -90,7 +89,10 @@ The final CONFIRMED bug list, severity-ordered, each with the triggering conditi
 unchanged `priority_reason_codes`, and a one-line rationale. Only this list is eligible for the
 Fix phase. A reason may be credited later only when this closed-code list survives into the
 finding's `confirmed`, `fix_committed`, or `quarantine` ledger event. Never add a reason after
-adjudication merely because the file was prioritized. Append to the ledger:
+adjudication merely because the file was prioritized. Append
+`{"event":"referee_verdict","bug_id":"<BUG-ID>","verdict":"CONFIRMED"}` for each
+confirmed item, or the same event with `NOT_CONFIRMED` for every other ruled item. This
+receipt is mandatory for closeout; do not pass a bug to Fix without it. Also append:
 `{"event":"iteration","confirmed":<n>,"new_bugs":<n_new_this_iteration>}` so the loop's
 no-progress detection and session checkpoints stay accurate. Put NOT-CONFIRMED items in
 the report's "needs human" section so nothing is lost.
@@ -125,11 +127,9 @@ Hard rules:
 - Only a fresh, independent re-evaluation that reaches the normal >67% bar on its own
   merits — in a later run, once more evidence exists — may promote a near-miss to
   CONFIRMED. Recording it as a near-miss now is not partial credit toward that bar.
-- If the report template's "Near misses (review, not auto-fixed)" section is not yet
-  wired into this project's `SKILL.md`, the ledger event above is still sufficient: it is
-  what `run-summary.json`'s `near_misses[]` field is populated from at summarize time
-  (only when `--recall` is set — see `scripts/summarize.sh` and
-  `bench/scorer/run_summary.py`'s `reduce_run`).
+- Include ledger-recorded near-misses in the report's "Near misses (review, never
+  auto-fixed)" section. `run-summary.json.near_misses[]` is populated from the same events
+  only when recall mode is active; neither surface changes fix eligibility.
 
 ## Synthesize a variant query per confirmed pattern bug (WU1)
 

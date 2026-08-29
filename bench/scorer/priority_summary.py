@@ -76,7 +76,7 @@ def _application(value: Mapping[str, Any]) -> tuple[dict[str, Any], str | None]:
     added_file_count = value.get("added_file_count")
     valid = (
         value.get("schema_version") == 1
-        and value.get("scope_contract") == "priority_only_whole_repo_remains_in_scope"
+        and value.get("scope_contract") == "priority_only_frozen_invocation_scope_remains_in_scope"
         and isinstance(candidate_count, int)
         and not isinstance(candidate_count, bool)
         and 0 <= candidate_count <= 200
@@ -142,7 +142,7 @@ def build_priority_summary(
         status = raw_status if isinstance(raw_status, Mapping) else {}
         degraded_reason = sanitize_text(status.get("collector") or "priority_context_degraded", 80)
     elif context.get("schema_version") != 1 or context.get("scope_contract") != (
-        "priority_only_whole_repo_remains_in_scope"
+        "priority_only_frozen_invocation_scope_remains_in_scope"
     ):
         degraded_reason = "priority_context_invalid"
     else:

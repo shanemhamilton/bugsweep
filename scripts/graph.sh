@@ -40,7 +40,7 @@
 #   - Indirect/dynamic dispatch (interface & abstract-method calls, getattr/setattr route
 #     registration, decorators imported under an alias) is NOT resolved.
 #   - A file that fails to parse contributes NO edges/entries -> WU3 falls back to
-#     sink+severity ordering FOR THAT FILE (the whole-repo widen contract, per file).
+#     sink+severity ordering FOR THAT FILE (the frozen-scope widen contract, per file).
 #   - Whole-build failure (no python, or an unexpected error) -> files are absent/empty ->
 #     WU3 falls back globally to sink+severity. We never crash and never fail the run.
 #   - The no-python shell fallback classifies only http/cli entry points (not consumer/file_ipc)

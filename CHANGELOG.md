@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-29
+
+The closed-loop milestone: Bugsweep now finishes each run by locally landing verified fixes
+or recording unresolved work with recovery evidence, then proving that its exact temporary
+branch and worktree are gone. Path-scoped runs retain their selected scope throughout the
+coverage and priority pipeline.
+
+### Changed
+
+- **Runs now close the operational loop.** `finalize.sh` is an artifact checkpoint, followed
+  by idempotent tracker upserts, local integration of verified fixes or recovery escrow, and
+  exact branch/worktree readback. Temporary branches no longer serve as a review queue.
+- **Discovery continues after the fix cap.** Reaching the mutation budget switches the
+  remainder to detect-and-record mode instead of abandoning the planned hunt frontier.
+- **Fixes stage narrowly and approval precedes mutation.** Flaky or unchecked fixes are
+  tracker-routed rather than auto-landed.
+
+### Fixed
+
+- **Cleanup no longer infers ownership from `bugsweep/*`.** The cleanup command requires an
+  exact branch and no longer prunes older prefix-matching refs, preventing it from touching
+  user-owned or concurrent branches.
+- **Scope, Referee, tracker, and terminal-state contradictions were removed.** Path-scoped
+  runs now keep path-scoped coverage, fix modes require a Referee, and a run cannot report
+  success while its exact Git resources remain.
+
 ## [0.5.0] - 2026-07-09
 
 The priority-intelligence milestone: Bugsweep now combines live repository evidence with
@@ -244,7 +270,8 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.0...v0.3.1

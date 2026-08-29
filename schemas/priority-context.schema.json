@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://bugsweep/schemas/priority-context.schema.json",
   "title": "bugsweep priority context",
-  "description": "Deterministic, bounded investigation-order evidence. This artifact may reorder work but never confirms a finding, changes fix eligibility, or narrows the whole-repository scope.",
+  "description": "Deterministic, bounded investigation-order evidence. This artifact may reorder work but never confirms a finding, changes fix eligibility, or narrows the frozen invocation scope.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -22,7 +22,7 @@
     "degraded": {"type": "boolean"},
     "scope_contract": {
       "type": "string",
-      "const": "priority_only_whole_repo_remains_in_scope"
+      "const": "priority_only_frozen_invocation_scope_remains_in_scope"
     },
     "generated_from": {
       "type": "object",

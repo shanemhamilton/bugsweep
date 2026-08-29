@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# bugsweep-prepare.sh — get the working tree to a clean state BEFORE a scheduled bugsweep
-# run, WITHOUT losing work and WITHOUT leaving anything that accumulates. Runs first.
+# bugsweep-prepare.sh — LEGACY compatibility helper for old in-place schedulers.
+# Current Bugsweep runs must not invoke it: use preflight.sh --worktree so the user's
+# checkout remains untouched. This file is retained only for existing explicit callers.
 #
 # Default policy `auto` decides based on whether the uncommitted work looks ACTIVE or STALE:
 #   - ACTIVE  (a git op is in progress, or the newest dirty file was touched < threshold):

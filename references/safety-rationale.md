@@ -1,30 +1,31 @@
 # Why bugsweep is safe to run unattended
 
 The safety does not depend on the AI behaving well. It depends on three structural
-properties, two of which are enforced by deterministic shell scripts, not by the model.
+properties, most enforced by deterministic shell scripts rather than model prose.
 
-1. **Quarantine by construction.** `preflight.sh` cuts a fresh `bugsweep/<timestamp>`
-   branch from your HEAD and works only there. Your original branch is never committed
-   to. The worst case for any run is a branch you delete — there is no path by which an
-   overnight run damages your real work.
+1. **Isolation by construction.** `preflight.sh --worktree` cuts one exact ephemeral
+   branch in a Bugsweep-owned linked worktree. The user's checkout is not switched,
+   stashed, or edited during hunting.
 
-2. **Your work is preserved deterministically.** Uncommitted changes are stashed before
-   anything happens and restored by `finalize.sh` afterward. The scripts record the
-   stash reference and original branch in `state.env`, so restore works even if the run
-   is interrupted and finalize is run later.
+2. **Ownership is exact.** `state.env` records the run branch, worktree, base SHA, and
+   original target. Cleanup requires that exact branch argument and never infers ownership
+   from a `bugsweep/*` prefix.
 
 3. **No fix survives without proof.** Every fix is a single commit, and `run_checks.sh`
    re-runs your tests/typecheck/build after each one. A fix that introduces any new
-   failure is reverted automatically and the bug is quarantined for a human. The branch
-   never ends on a failing checkpoint.
+   failure is reverted automatically and the bug is tracker-routed. Flaky or unchecked
+   fixes are not auto-integrated.
 
-Things bugsweep structurally cannot do (no script ever calls them, and the SKILL
-forbids them): push to a remote, open a PR, merge, force-push, rewrite history, delete
-files or directories, run `rm -rf`, `git reset --hard` your content, or modify a
-protected branch.
+4. **Unlanded work is escrowed.** Verified fixes locally integrate only after a post-merge
+   gate. Anything that cannot land is idempotently recorded in the project's existing
+   tracker and recovery-bundled before the exact run branch may be discarded.
 
-The human is the only merge gate. bugsweep produces a reviewable branch and a report;
-you decide what, if anything, lands.
+Things Bugsweep closeout cannot do: push to a Git remote, open a PR, force-push, rewrite
+history, delete by wildcard, or reset user content. Tracker upserts and guarded local
+integration are the only external/local mutations added after hunting.
+
+A run is successful only after exact readback proves its owned branch and worktree are
+gone. Tracker or cleanup failures remain explicitly incomplete.
 
 ## Bounding cost
 
@@ -35,6 +36,7 @@ to run indefinitely.
 
 ## Supply-chain note
 
-bugsweep is plain markdown plus short, readable shell scripts — no third-party runtime
-dependencies, no network calls, no telemetry. Read every script in `scripts/` before
+Bugsweep is plain markdown plus short, readable shell scripts — no third-party runtime
+dependencies and no telemetry. Network activity is limited to the project's existing
+tracker and optional bounded advisory research. Read every script in `scripts/` before
 you trust it; that's the point of owning the skill rather than installing an opaque one.

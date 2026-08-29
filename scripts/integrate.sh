@@ -184,6 +184,9 @@ branch_contained_in_target() {
 # --- Result tracking (bash-3.2: no associative arrays) ---------------------------
 RESULT_BRANCHES=()
 RESULT_CODES=()
+RESULT_SOURCE_TIPS=()
+RESULT_TARGET_TIPS=()
+RESULT_GATE_PASSED=()
 MERGED_COUNT=0
 ALREADY_CONTAINED_COUNT=0
 PRESERVED_COUNT=0
@@ -193,6 +196,9 @@ INTEGRATE_RESULT="complete"
 record_result() {
   RESULT_BRANCHES+=("$1")
   RESULT_CODES+=("$2")
+  RESULT_SOURCE_TIPS+=("${3:-}")
+  RESULT_TARGET_TIPS+=("${4:-}")
+  RESULT_GATE_PASSED+=("${5:-false}")
 }
 
 # --- Core per-branch integration -------------------------------------------------
@@ -206,7 +212,20 @@ integrate_one() {
   local branch="$1" tip merge_sha
 
   if branch_contained_in_target "$branch" "$TARGET_BRANCH"; then
-    log "$branch is already contained in $TARGET_BRANCH — skipping (idempotent re-run)"
+    log "$branch is already contained in $TARGET_BRANCH — re-running the quality gate for a tip-bound receipt"
+    local contained_output contained_status=0
+    contained_output="$(run_quality_gate 2>&1)" || contained_status=$?
+    [ -n "$contained_output" ] && printf '%s\n' "$contained_output" | sed 's/^/integrate:   gate> /' >&2
+    if ! tree_is_clean; then
+      log "QUALITY GATE DIRTIED THE WORKING TREE for already-contained $branch — stopping"
+      printf 'gate_dirtied_tree'
+      return 1
+    fi
+    if [ "$contained_status" -ne 0 ]; then
+      log "QUALITY GATE FAILED for already-contained $branch (exit ${contained_status}) — stopping"
+      printf 'gate_failed'
+      return 1
+    fi
     printf 'already_contained'
     return 0
   fi
@@ -305,7 +324,7 @@ while [ "$idx" -lt "$total" ]; do
 
   if [ "$STOP" -eq 1 ]; then
     log "skipping $branch — stopped earlier in this run"
-    record_result "$branch" "skipped_after_stop"
+    record_result "$branch" "skipped_after_stop" "$(git rev-parse "$branch")" "$(git rev-parse "$TARGET_BRANCH")" false
     PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
     idx=$((idx + 1))
     continue
@@ -316,7 +335,7 @@ while [ "$idx" -lt "$total" ]; do
   if ! tree_is_clean; then
     git checkout -q "$TARGET_BRANCH" >/dev/null 2>&1 || true
     log "working tree became dirty before integrating $branch — stopping to avoid building on polluted state"
-    record_result "$branch" "gate_dirtied_tree"
+    record_result "$branch" "gate_dirtied_tree" "$(git rev-parse "$branch")" "$(git rev-parse "$TARGET_BRANCH")" false
     PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
     STOP=1
     STOPPED_AT="$branch"
@@ -331,8 +350,12 @@ while [ "$idx" -lt "$total" ]; do
   # echoes it. Because `|| true` disables set -e inside the substitution,
   # integrate_one checks its own critical exit statuses (e.g. update-ref CAS)
   # explicitly rather than relying on set -e — see MAJOR 2, retry 2.
+  source_tip="$(git rev-parse "$branch")"
   code="$(integrate_one "$branch")" || true
-  record_result "$branch" "$code"
+  target_tip="$(git rev-parse "$TARGET_BRANCH")"
+  gate_passed=false
+  case "$code" in merged|already_contained) gate_passed=true ;; esac
+  record_result "$branch" "$code" "$source_tip" "$target_tip" "$gate_passed"
   case "$code" in
     merged)            MERGED_COUNT=$((MERGED_COUNT + 1)) ;;
     already_contained) ALREADY_CONTAINED_COUNT=$((ALREADY_CONTAINED_COUNT + 1)) ;;
@@ -445,6 +468,10 @@ write_results_json() {
     BSW_PRESERVED_COUNT="$PRESERVED_COUNT" \
     BSW_BRANCHES="$(printf '%s\n' "${RESULT_BRANCHES[@]}")" \
     BSW_CODES="$(printf '%s\n' "${RESULT_CODES[@]}")" \
+    BSW_SOURCE_TIPS="$(printf '%s\n' "${RESULT_SOURCE_TIPS[@]}")" \
+    BSW_TARGET_TIPS="$(printf '%s\n' "${RESULT_TARGET_TIPS[@]}")" \
+    BSW_GATE_PASSED="$(printf '%s\n' "${RESULT_GATE_PASSED[@]}")" \
+    BSW_GATE_COMMAND="$QUALITY_GATE_COMMAND" \
     python3 - "$out" <<'PY'
 import json
 import os
@@ -454,15 +481,22 @@ out_path = sys.argv[1]
 # Branch names cannot contain newlines in git, so splitlines() is a safe pairing.
 branches = os.environ["BSW_BRANCHES"].splitlines()
 codes = os.environ["BSW_CODES"].splitlines()
+source_tips = os.environ["BSW_SOURCE_TIPS"].splitlines()
+target_tips = os.environ["BSW_TARGET_TIPS"].splitlines()
+gate_passed = os.environ["BSW_GATE_PASSED"].splitlines()
 data = {
     "target_branch": os.environ["BSW_TARGET"],
+    "quality_gate_command": os.environ["BSW_GATE_COMMAND"],
     "result": os.environ["BSW_RESULT"],
     "stopped_at": os.environ["BSW_STOPPED_AT"] or None,
     "merged_count": int(os.environ["BSW_MERGED_COUNT"]),
     "already_contained_count": int(os.environ["BSW_ALREADY_CONTAINED_COUNT"]),
     "preserved_count": int(os.environ["BSW_PRESERVED_COUNT"]),
     "branches": [
-        {"branch": b, "status": c} for b, c in zip(branches, codes)
+        {"branch": b, "status": c, "source_tip": source, "target_tip": target,
+         "quality_gate_passed": passed == "true"}
+        for b, c, source, target, passed in
+        zip(branches, codes, source_tips, target_tips, gate_passed)
     ],
 }
 with open(out_path, "w", encoding="utf-8") as f:
@@ -473,11 +507,13 @@ PY
     # Degraded fallback for machines without python3 (or forced via
     # BUGSWEEP_FORCE_NO_PYTHON): hand-rolled JSON with every interpolated string
     # field passed through json_escape so quotes/backslashes stay valid (MAJOR 4).
-    local first=1 fidx esc_target esc_stopped esc_branch esc_code
+    local first=1 fidx esc_target esc_stopped esc_branch esc_code esc_source esc_result_target esc_gate_command
     esc_target="$(json_escape "$TARGET_BRANCH")"
+    esc_gate_command="$(json_escape "$QUALITY_GATE_COMMAND")"
     {
       printf '{\n'
       printf '  "target_branch": "%s",\n' "$esc_target"
+      printf '  "quality_gate_command": "%s",\n' "$esc_gate_command"
       printf '  "result": "%s",\n' "$INTEGRATE_RESULT"
       if [ -n "$STOPPED_AT" ]; then
         esc_stopped="$(json_escape "$STOPPED_AT")"
@@ -495,7 +531,10 @@ PY
         first=0
         esc_branch="$(json_escape "${RESULT_BRANCHES[$fidx]}")"
         esc_code="$(json_escape "${RESULT_CODES[$fidx]}")"
-        printf '    {"branch": "%s", "status": "%s"}' "$esc_branch" "$esc_code"
+        esc_source="$(json_escape "${RESULT_SOURCE_TIPS[$fidx]}")"
+        esc_result_target="$(json_escape "${RESULT_TARGET_TIPS[$fidx]}")"
+        printf '    {"branch": "%s", "status": "%s", "source_tip": "%s", "target_tip": "%s", "quality_gate_passed": %s}' \
+          "$esc_branch" "$esc_code" "$esc_source" "$esc_result_target" "${RESULT_GATE_PASSED[$fidx]}"
         fidx=$((fidx + 1))
       done
       printf '\n  ]\n'

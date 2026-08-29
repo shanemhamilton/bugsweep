@@ -49,7 +49,7 @@ _write_degraded() {
     '  "promotion_candidates": [],' \
     '  "recent_repairs": [],' \
     '  "schema_version": 1,' \
-    '  "scope_contract": "priority_only_whole_repo_remains_in_scope",' \
+    '  "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",' \
     "  \"source_status\": {\"collector\": \"$(_bsw_json_escape "$reason")\"}," \
     '  "targets": [],' \
     '  "truncated": {"reasons_omitted": 0, "targets_omitted": 0}' \
@@ -121,7 +121,7 @@ PY
     ;;
   apply)
     if ! have_python; then
-      log "priority-context: python3 unavailable; leaving recon.json unchanged (whole-repo fallback)."
+      log "priority-context: python3 unavailable; leaving recon.json unchanged (frozen-scope fallback)."
       echo "PRIORITY_APPLIED=skipped_degraded"
       exit 0
     fi

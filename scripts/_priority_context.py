@@ -1051,7 +1051,7 @@ def apply(args: argparse.Namespace) -> int:
 
     application = {
         "schema_version": 1,
-        "scope_contract": "priority_only_whole_repo_remains_in_scope",
+        "scope_contract": "priority_only_frozen_invocation_scope_remains_in_scope",
         "candidate_count": len(context.get("promotion_candidates", []) or []),
         "promoted_batches": promoted_batches,
         "promoted_batch_count": len(promoted_batches),

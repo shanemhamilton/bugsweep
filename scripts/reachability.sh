@@ -37,7 +37,7 @@
 # ── Degrade, never fail (every path WIDENS) ──
 #   No graph.jsonl / empty graph -> sinks still classified, every bucket COLD, exposure orders
 #   by asset weight only (sink+severity fallback). No python3 -> file-level sink grep, all COLD.
-#   Per-file parse error -> that file contributes no sinks (handled elsewhere as whole-repo scope).
+#   Per-file parse error -> that file contributes no sinks (handled elsewhere by frozen-scope coverage).
 #   Any failure leaves the run unharmed and exits 0.
 
 set -euo pipefail

@@ -2,8 +2,9 @@
 # bugsweep cross-run state: the coverage-first persistence layer.
 #
 # Durable audit COVERAGE + historical RISK that survive across runs, so the hunt
-# always spans the WHOLE repo (never-audited + stale + changed + risky + sinks),
-# never just the latest diff. All state lives in <repo>/.bugsweep/state/ and is
+# always spans the frozen invocation scope (never-audited + stale + changed +
+# risky + sinks), never just the latest diff. All state lives in
+# <repo>/.bugsweep/state/ and is
 # already kept out of git by preflight's info/exclude entry.
 #
 #   state.sh persist <RUN_DIR>   harvest this run's coverage+risk into .bugsweep/state/
@@ -606,7 +607,7 @@ prime() {
     _write_degraded_coverage "$run_dir" "$out_path" \
       '{"schema":1,"catalog_version":"0","prior_runs":0,"files_audited_current_catalog":[],"files_audited_current_catalog_count":0,"files_audited_stale_catalog":[],"files_audited_stale_catalog_count":0,"high_risk_files":[],"degraded":true}' \
       || true
-    echo "SUMMARY=coverage history unavailable (unsafe state path) — whole-repo scope, no reprioritization applied."
+    echo "SUMMARY=coverage history unavailable (unsafe state path) — frozen invocation scope, no reprioritization applied."
     return 0
   fi
 
@@ -812,7 +813,7 @@ finally:
             pass
 
 if runs == 0:
-    print("SUMMARY=first run on this repo — entire codebase is the unaudited frontier; whole-repo scope.")
+    print("SUMMARY=first run on this repo — the frozen invocation scope is the unaudited frontier.")
 else:
     print("SUMMARY=prior_runs=%d audited@v%s=%d stale=%d high_risk=%d"
           % (runs, cur, len(audited_current), len(audited_stale), len(high)))
@@ -825,15 +826,15 @@ PY
   [ -z "$history_log_path" ] || rm -f -- "$history_log_path"
 
   # Degraded path: no python3 or no state yet. Emit an empty-history file so
-  # context-build treats the WHOLE repo as the frontier (safe: never narrows).
+  # context-build treats the frozen invocation scope as the frontier (safe: never narrows).
   local runs; runs="$(_state_meta_runs)"
   _write_degraded_coverage "$run_dir" "$out_path" \
     "{\"schema\":1,\"catalog_version\":\"${cat_v}\",\"prior_runs\":${runs},\"files_audited_current_catalog\":[],\"files_audited_current_catalog_count\":0,\"files_audited_stale_catalog\":[],\"files_audited_stale_catalog_count\":0,\"high_risk_files\":[],\"degraded\":true}" \
     || true
   if [ "$runs" = "0" ]; then
-    echo "SUMMARY=first run on this repo — entire codebase is the unaudited frontier; whole-repo scope."
+    echo "SUMMARY=first run on this repo — the frozen invocation scope is the unaudited frontier."
   else
-    echo "SUMMARY=coverage history unavailable (no python3) — whole-repo scope, no reprioritization applied."
+    echo "SUMMARY=coverage history unavailable (no python3) — frozen invocation scope, no reprioritization applied."
   fi
 }
 
@@ -970,10 +971,10 @@ lease_acquire() {
 # heartbeat must never resurrect or fabricate a lease that lease-acquire was
 # never called for. The lifecycle is: lease-acquire once up front
 # (preflight.sh), then lease-touch on every loop iteration (guard.sh — the
-# SOLE per-iteration heartbeat), then lease-release once at teardown
-# (finalize.sh). persist() does NOT touch the lease: it runs a single time at
-# the end of the run, so a heartbeat there would refresh a lease that is about
-# to be released and provide no mid-run protection (bugsweep-re9 retry 1,
+# SOLE per-iteration heartbeat), then lease-release once at terminal closeout.
+# persist() does NOT touch the lease: it runs a single time at the end of the
+# hunt, so a heartbeat there would refresh a lease already pending closeout
+# and provide no mid-run protection (bugsweep-re9 retry 1,
 # MAJOR 2). Best-effort and non-fatal like every other lease operation: a
 # failed touch just means the NEXT touch (or the grace window) determines
 # reclaim, never a hard failure of the caller.
