@@ -1,0 +1,61 @@
+{
+  "id": "py-click-false-default",
+  "suite": "heldout-v1",
+  "repository": "pallets/click",
+  "language": "python",
+  "category": "data-integrity",
+  "source": {
+    "repo": "pallets/click",
+    "commit": "36baa15ff831b939a22bc527cd76ce653ef6f66d",
+    "archive_url": "https://codeload.github.com/pallets/click/tar.gz/36baa15ff831b939a22bc527cd76ce653ef6f66d",
+    "archive_sha256": "0fa792fe26295cb0b2568e811bec22b19fc0d4dc90f5f9d698c0e0202d3ac89e",
+    "license": "BSD-3-Clause"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "src/click/core.py",
+        "before": "and self.default_map[name] is not UNSET",
+        "after": "and bool(self.default_map[name])",
+        "source_file_sha256": "4c65a613c1c407dce907a4e123b12cec5fe0f62088a8b9f86fabd4b60c4b6d78"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "heldout-v1/py-click-false-default",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "pytest",
+        "-q",
+        "gold/py-click-false-default_oracle.py"
+      ],
+      "test_file": "gold/py-click-false-default_oracle.py",
+      "test_sha256": "e19c36d31f29f559c21c85c3d5af151cb874e620e459386925b99f6752cc3c09",
+      "native_test_id": "gold/py-click-false-default_oracle.py::test_py_click_false_default_positive"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "gold/py-click-false-default_oracle.py::test_py_click_false_default_positive negative control",
+      "patched": "gold/py-click-false-default_oracle.py::test_py_click_false_default_positive patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "src/click/core.py",
+        "sha256": "4c65a613c1c407dce907a4e123b12cec5fe0f62088a8b9f86fabd4b60c4b6d78"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

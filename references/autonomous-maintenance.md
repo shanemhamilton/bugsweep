@@ -28,13 +28,16 @@ each merge, and never hunting itself), see
 1. Point the scheduler at the installed skill directory so the scripts keep their shared
    `common.sh` dependency:
    ```bash
-   BUGSWEEP_SKILL_DIR="$HOME/.claude/skills/bugsweep"  # or ~/.codex/skills/bugsweep
+   SKILL_ROOT="$HOME/.claude/skills/bugsweep"  # or ~/.codex/skills/bugsweep
    ```
-2. Make sure the project has a **non-protected** integration/dev branch to receive fixes.
+2. Configure the external `required-untrusted` Docker policy and explicit
+   `adversarial.hosts` operator model IDs. The default empty hosts map means an unattended
+   run can detect and record but cannot automatically fix.
+3. Make sure the project has a **non-protected** integration/dev branch to receive fixes.
    The script refuses to auto-merge into `main`/`master`/`develop`/`prod`/`release` unless
    you set `BUGSWEEP_ALLOW_PROTECTED=1`. A dedicated `bugsweep-staging` branch you review
    periodically is the safest target.
-3. Run every sweep with `preflight.sh --worktree`. The user's checkout may be dirty because
+4. Run every sweep with `preflight.sh --worktree`. The user's checkout may be dirty because
    isolated mode never stashes, commits, switches, or cleans it.
 
 ## The prompt (placeholders for your project agent to fill)
@@ -43,7 +46,8 @@ each merge, and never hunting itself), see
 > git state. Follow these steps in order; do not skip verification.
 >
 > Background to respect: Bugsweep uses one isolated, ephemeral run branch, fixes only
-> adversarially-confirmed bugs, and auto-reverts regressions. Before preflight, resolve this
+> source-backed, fresh-native-review-eligible bugs with immutable assertion red/green proof
+> and a provider-verified suite receipt. Before preflight, resolve this
 > project's documented tracker. After `finalize.sh`, locally land verified work or upsert
 > remaining action, then remove only this run's exact branch/worktree and read back the
 > result. Do not push, raise caps, or bypass a safety script.
@@ -57,20 +61,27 @@ each merge, and never hunting itself), see
 > 2. Treat `finalize.sh` as an artifact checkpoint. Read `run-summary.json` and follow
 >    `references/tracker-closeout.md`: upsert actionable unresolved work with stable keys and
 >    read back the tracker receipts.
-> 3. Integrate verified fixes into `<DEV_BRANCH>` with `scripts/integrate.sh`, then run
->    `scripts/closeout.sh <RUN_DIR> landed`.
+> 3. Integrate verified fixes into `<DEV_BRANCH>` with
+>    `bash "$SKILL_ROOT/scripts/integrate.sh"`, then run
+>    `bash "$SKILL_ROOT/scripts/closeout.sh" <RUN_DIR> landed`.
 >    If integration cannot pass its post-merge gate, escrow a verified recovery bundle,
 >    update the tracker item, obtain the independent deletion check, then discard only the
->    exact run branch with `scripts/closeout.sh <RUN_DIR> recorded`.
-> 4. Run configured smoke commands only after local integration. Do not push as part of the
+>    exact run branch with `bash "$SKILL_ROOT/scripts/closeout.sh" <RUN_DIR> recorded`.
+> 4. After every multi-fix integration, preserve each original proof and reverify each
+>    original regression test against the final combined tree:
+>    `python3 -B "$SKILL_ROOT/scripts/_prepare_execution.py" reverify <RUN_DIR> <BUG_ID> <SHA>`
+>    followed by `bash "$SKILL_ROOT/scripts/repro.sh" reverify <RUN_DIR> <BUG_ID> <REQUEST_PATH>`.
+> 5. Run configured smoke commands only after local integration. Do not push as part of the
 >    Bugsweep run.
-> 5. VERIFY the exact run branch and worktree are absent and the user's checkout is unchanged.
+> 6. If execution, native review, or tracker evidence is unavailable, do not fix or claim a
+>    completed run: record the blocked finding and preserve the required recovery state.
+> 7. VERIFY the exact run branch and worktree are absent and the user's checkout is unchanged.
 >    Report `COMPLETED_LANDED`, `COMPLETED_RECORDED`, `INCOMPLETE_TRACKER`, or
 >    `INCOMPLETE_CLEANUP`; only the first two are success.
-> 6. Produce the findings report ordered by severity (critical → low). For each finding:
+> 8. Produce the findings report ordered by severity (critical → low). For each finding:
 >    ABSOLUTE file path + exact line number(s), what was wrong, the fix commit SHA (or why
 >    quarantined), and the test/build evidence (baseline vs final from bugsweep's report.md).
-> 7. Include tracker IDs, pass timestamp, severity counts, fixed vs quarantined, coverage,
+> 9. Include tracker IDs, pass timestamp, severity counts, fixed vs quarantined, coverage,
 >    and closeout outcome in the final report.
 
 Placeholders: `<DEV_BRANCH>`, `<TEST_CMD>`.

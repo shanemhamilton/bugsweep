@@ -1,0 +1,59 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install quality tools
+        run: |
+          python -m pip install --disable-pip-version-check 'pytest==9.0.3' 'pytest-cov==7.0.0' 'coverage==7.13.1' 'jsonschema==4.26.0'
+          tools="$RUNNER_TEMP/bugsweep-tools"
+          mkdir -p "$tools"
+          verify_sha256() {
+            if command -v sha256sum >/dev/null; then
+              printf '%s  %s\n' "$1" "$2" | (cd "$tools" && sha256sum -c -)
+            else
+              printf '%s  %s\n' "$1" "$2" | (cd "$tools" && shasum -a 256 -c -)
+            fi
+          }
+          curl --fail --location --retry 3 --output "$tools/bats.tar.gz" https://github.com/bats-core/bats-core/archive/v1.10.0.tar.gz
+          verify_sha256 a1a9f7875aa4b6a9480ca384d5865f1ccf1b0b1faead6b47aa47d79709a5c5fd bats.tar.gz
+          tar -xzf "$tools/bats.tar.gz" -C "$tools"
+          echo "$tools/bats-core-1.10.0/bin" >> "$GITHUB_PATH"
+          case "${RUNNER_OS}/${RUNNER_ARCH}" in
+            Linux/X64) shellcheck_file=shellcheck-v0.10.0.linux.x86_64.tar.xz; shellcheck_sha=6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87 ;;
+            macOS/ARM64) shellcheck_file=shellcheck-v0.10.0.darwin.aarch64.tar.xz; shellcheck_sha=bbd2f14826328eee7679da7221f2bc3afb011f6a928b848c80c321f6046ddf81 ;;
+            *) echo "unsupported pinned ShellCheck platform: ${RUNNER_OS}/${RUNNER_ARCH}" >&2; exit 1 ;;
+          esac
+          curl --fail --location --retry 3 --output "$tools/$shellcheck_file" "https://github.com/koalaman/shellcheck/releases/download/v0.10.0/$shellcheck_file"
+          verify_sha256 "$shellcheck_sha" "$shellcheck_file"
+          tar -xJf "$tools/$shellcheck_file" -C "$tools"
+          test -x "$tools/shellcheck-v0.10.0/shellcheck"
+          echo "$tools/shellcheck-v0.10.0" >> "$GITHUB_PATH"
+          echo 'BUGSWEEP_BATS_VERSION=1.10.0' >> "$GITHUB_ENV"
+          echo 'BUGSWEEP_SHELLCHECK_VERSION=0.10.0' >> "$GITHUB_ENV"
+      - name: Session-pure quality gates
+        run: bash scripts/quality-check.sh
+      - name: Full Git-backed CI contract
+        env:
+          BUGSWEEP_FULL_GIT_CI: '1'
+          BUGSWEEP_BATS_VERSION: '1.10.0'
+          BUGSWEEP_SHELLCHECK_VERSION: '0.10.0'
+        run: bash scripts/quality-check.sh --full-git-ci

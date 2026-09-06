@@ -11,10 +11,10 @@ properties, most enforced by deterministic shell scripts rather than model prose
    original target. Cleanup requires that exact branch argument and never infers ownership
    from a `bugsweep/*` prefix.
 
-3. **No fix survives without proof.** Every fix is a single commit, and `run_checks.sh`
-   re-runs your tests/typecheck/build after each one. A fix that introduces any new
-   failure is reverted automatically and the bug is tracker-routed. Flaky or unchecked
-   fixes are not auto-integrated.
+3. **No fix survives without evidence.** Every automatic fix needs immutable red/green
+   assertion proof, a provider-verified suite receipt, and an eligible fresh native
+   review under the frozen host/model and prompt contract. A missing execution policy,
+   unavailable provider, unchecked result, or flaky result blocks automatic integration.
 
 4. **Unlanded work is escrowed.** Verified fixes locally integrate only after a post-merge
    gate. Anything that cannot land is idempotently recorded in the project's existing
@@ -30,13 +30,15 @@ gone. Tracker or cleanup failures remain explicitly incomplete.
 ## Bounding cost
 
 `guard.sh` enforces hard caps on iterations, wall-clock runtime, and total fixes, and
-stops automatically once the codebase converges (no new confirmed bugs for N
-iterations). Tune these in `config/bugsweep.config.json`. There is no way for the loop
-to run indefinitely.
+stops new loop work once the codebase converges (no new confirmed bugs for N iterations).
+Tune these in `config/bugsweep.config.json`. An interrupt, unavailable evidence provider,
+or incomplete tracker/cleanup recovery still requires terminal readback before the run can
+be called complete.
 
 ## Supply-chain note
 
-Bugsweep is plain markdown plus short, readable shell scripts — no third-party runtime
-dependencies and no telemetry. Network activity is limited to the project's existing
-tracker and optional bounded advisory research. Read every script in `scripts/` before
-you trust it; that's the point of owning the skill rather than installing an opaque one.
+Bugsweep's automatic-fix path requires an operator-supplied, digest-pinned Docker policy.
+Tests and analyzers run with denied network; native reviews use the separately verified
+approved-proxy-only profile. Tracker access and optional advisory research remain
+project-controlled. Read the installed scripts and execution policy before trusting an
+automatic run.

@@ -14,9 +14,9 @@
 #     reverse proxy (proxy.sh), which claude reaches via ANTHROPIC_BASE_URL and
 #     which forwards only to api.anthropic.com
 #   - with quantified cpu/memory/pids limits AND a hard wall-clock timeout
-#   - with the dedicated ANTHROPIC_API_KEY injected BY NAME (key-in-container
-#     model — see proxy.sh); NO other host env (no OpenAI judge key, no other
-#     *_API_KEY / *_TOKEN / *_KEY) is forwarded.
+#   - with an inert client credential only; the per-invocation proxy injects
+#     the dedicated provider key from its external secret mount. No host
+#     credential or OAuth state reaches the analysis container.
 #
 # Modes:
 #   isolate.sh --print-cmd <image> [clone-dir]
@@ -33,7 +33,7 @@
 set -euo pipefail
 
 # --- tunables (quantified limits asserted by the bats suite) ----------------
-readonly BENCH_NETWORK="bench-proxynet"
+readonly BENCH_NETWORK="${BENCH_NETWORK:-bench-proxynet}"
 # CPU/memory raised (was 2/4g): a host diagnosis showed go-nezha completes the
 # detect-only pipeline in ~21 min uncapped, but the 2-CPU/4g container is slow
 # enough that it overran the old 1800s cap. Env-overridable for tuning.
@@ -50,6 +50,7 @@ readonly BENCH_WALLCLOCK_SECS="${BENCH_WALLCLOCK_SECS:-3600}"
 # default. run.sh sets this from BENCH_RUNNER_MODEL_ID so the pinned model and
 # the recorded provenance model_id stay identical.
 readonly BENCH_RUNNER_MODEL="${BENCH_RUNNER_MODEL:-}"
+readonly BENCH_HOST="${BENCH_HOST:-claude}"
 
 # Egress: the container reaches the model API ONLY through the reverse proxy on
 # the --internal bench-proxynet. claude (Bun-based) ignores HTTP(S)_PROXY env,
@@ -91,14 +92,12 @@ require_docker() {
 
 # Build the docker run argv into the global array DOCKER_ARGV.
 #
-# Key handling (key-in-container model — see proxy.sh / bench/README.md): the
-# ONE permitted key passthrough is the dedicated, revocable ANTHROPIC_API_KEY,
-# injected BY NAME (`--env ANTHROPIC_API_KEY`) so docker reads the value from
-# the host env and the value never appears in the argv. NO other host env is
-# forwarded, so the OpenAI judge key, *_TOKEN, and other *_KEY values stay out.
-# Egress is bounded by the CONNECT allow-list proxy, not by withholding the key.
+# Credential handling: the analysis client receives only the inert literal that
+# the owned proxy replaces upstream. No host API key, OAuth state, socket, or
+# credential-shaped environment variable is forwarded.
 build_argv() {
   local image="$1" clone_dir="$2"
+  case "${BENCH_HOST}" in claude | codex) ;; *) die "BENCH_HOST must be claude or codex" ;; esac
   local out_dir="${BENCH_OUT:-/tmp/bench-out}"
   DOCKER_ARGV=(
     docker run --rm
@@ -129,12 +128,12 @@ build_argv() {
     --env "BENCH_WALLCLOCK_SECS=${BENCH_WALLCLOCK_SECS}"
     # Pin the runner model inside the container (empty = CLI default).
     --env "BENCH_RUNNER_MODEL=${BENCH_RUNNER_MODEL}"
-    # The dedicated key, by NAME only (value read by docker from the host env).
-    --env "ANTHROPIC_API_KEY"
-    # Point claude at the reverse proxy (it treats this as the API endpoint).
-    # The proxy forwards only to api.anthropic.com; everything else is
-    # unroutable on the --internal bench-proxynet.
+    # The client receives an inert literal. The owned per-invocation proxy is
+    # the only process that holds and injects the dedicated provider key.
+    --env "BENCH_INERT_CLIENT_ID=benchmark-inert-client-credential"
+    --env "BENCH_HOST=${BENCH_HOST}"
     --env "ANTHROPIC_BASE_URL=${BENCH_CONTAINER_BASE_URL}"
+    --env "CODEX_BENCH_BASE_URL=${BENCH_CONTAINER_BASE_URL}"
     # Suppress claude's non-essential traffic (telemetry/auto-update/etc.) so it
     # contacts ONLY the API endpoint — any other host would hang on the
     # internal network.

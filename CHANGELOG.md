@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0-rc.1] - 2026-09-06
+
+Development prerelease for review and validation. This release does not establish
+production readiness or improved bug-detection performance. Stable remains v0.6.0.
+
+### Changed
+- Added structured execution, review, fix-proof, and terminal lifecycle records.
+- Added frozen benchmark schedules, separate pipeline-stage comparisons, native
+  result import, human calibration, and evidence-based evaluation tooling.
+- Added commit-bound installer staging and recovery, analyzer imports, and a
+  cross-platform quality workflow.
+- Updated skill instructions and documentation to distinguish verified evidence
+  from missing or inconclusive results.
+
+### Validation limits
+- Pure local checks passed before packaging: 630 Python tests, 84% aggregate
+  scorer line/branch coverage, 80% installer-helper line/branch coverage, three
+  pure Bats tests, and the focused ShellCheck gate.
+- Live host/model runs, Docker isolation and provider-cap enforcement, actual
+  installer recovery, analyzer compatibility, and independent final acceptance
+  remain incomplete. No live efficacy or production-safety claim is made.
+- Benchmark corpus inventories remain unverified; ground-truth detection
+  integration and five required release-evidence kinds remain unsupported.
+- An additional 19 Git-backed Python tests pass. The broader Bats shell suite
+  has known cleanup, closeout, finalize, and integration compatibility failures;
+  it is not green. Resolve these before stable promotion.
+- Cross-platform CI results are separate from the local checks and must be
+  inspected before broader adoption.
+
+
 ## [0.6.0] - 2026-08-29
 
 The closed-loop milestone: Bugsweep now finishes each run by locally landing verified fixes

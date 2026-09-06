@@ -10,8 +10,8 @@
 #   - forces research.allow_web_research=false via a per-run workdir config
 #     override and ASSERTS it (so the no-network container cannot silently
 #     degrade), for the bugsweep arm,
-#   - asserts the workdir git tree is clean after the run (detect-only made no
-#     code changes), and
+#   - re-hashes the scoped source tree after the run (detect-only made no code
+#     changes), without invoking Git in the benchmark coordinator, and
 #   - emits EXACTLY ONE terminal status line and the matching exit code.
 #
 # Terminal contract (mirrors the scripts/ RESULT= convention):
@@ -110,41 +110,32 @@ force_no_web_research() {
     || emit_error "allow_web_research override assertion failed for ${cfg}"
 }
 
-# --- clean-tree assertion -----------------------------------------------------
+# --- source-integrity assertion ----------------------------------------------
 
-# Capture HEAD before the run so we can confirm the original branch's commit did
-# not move (detect-only must not commit fixes onto the user's branch).
-workdir_head() {
-  git -C "$1" rev-parse HEAD 2>/dev/null || true
+# Hash every source file in the mounted workdir, including unexpected new
+# source paths. The runner's own report/config scratch is outside this scope.
+workdir_source_manifest() {
+  python3 - "$1" <<'PY'
+import hashlib, json, os, sys
+root = os.path.realpath(sys.argv[1]); files = {}
+for base, dirs, names in os.walk(root):
+    dirs[:] = [d for d in dirs if os.path.relpath(os.path.join(base, d), root) not in {'.git', '.bugsweep'}]
+    for name in names:
+        path = os.path.join(base, name); rel = os.path.relpath(path, root)
+        if rel == 'config/bugsweep.config.json' or os.path.islink(path) or not os.path.isfile(path): continue
+        h = hashlib.sha256()
+        with open(path, 'rb') as fh:
+            for block in iter(lambda: fh.read(65536), b''): h.update(block)
+        files[rel] = h.hexdigest()
+print(hashlib.sha256(json.dumps(files, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+PY
 }
 
-# After the run, assert no tracked source was mutated and the original HEAD did
-# not move. Two non-source paths are the runner's / skill's own scaffolding and
-# are NOT detect-only output, so they are ignored: the per-run config override
-# at config/bugsweep.config.json, and the skill's .bugsweep/ run-tree (RUN_DIRs,
-# ledger, state — the skill's scratch space). Any OTHER dirty path is a real
-# detect-only violation and fails closed.
-#
-# `git status --porcelain` lines are "XY <path>". Note git COLLAPSES a wholly
-# untracked directory to its dir name (e.g. "?? config/" when the runner created
-# config/ just to drop the override), so we accept either the collapsed-dir form
-# or the exact override path; the same applies to the .bugsweep/ scratch tree.
-assert_clean_tree() {
-  local workdir="$1" head_before="$2" out="$3"
-  local dirty head_after violation=""
-
-  dirty="$(git -C "${workdir}" status --porcelain 2>/dev/null \
-    | grep -v -E '(^|[? ])config/(bugsweep\.config\.json)?$' \
-    | grep -v -E '(^|[? ])\.bugsweep/?' || true)"
-  if [[ -n "${dirty}" ]]; then
-    violation="workdir tree is dirty after detect-only run:"$'\n'"${dirty}"
-  fi
-
-  head_after="$(workdir_head "${workdir}")"
-  if [[ "${head_after}" != "${head_before}" ]]; then
-    violation="${violation:+${violation}$'\n'}workdir HEAD moved (${head_before} -> ${head_after}); detect-only must not commit"
-  fi
-
+assert_source_unchanged() {
+  local workdir="$1" before="$2" out="$3"
+  local after violation=""
+  after="$(workdir_source_manifest "${workdir}")"
+  [[ "${after}" == "${before}" ]] || violation="source manifest changed after detect-only run (${before} -> ${after})"
   [[ -z "${violation}" ]] && return 0
 
   # Persist the violation to the writable out dir so a failure is observable
@@ -155,7 +146,7 @@ assert_clean_tree() {
     # TEST-ONLY diagnostic bypass: log + persist, do NOT fail. MUST NOT be set
     # for a real run — converts a safety-check failure into a soft warning so a
     # single smoke can yield both the verdict and the violation cause.
-    echo "runner.sh: clean-tree violation (BENCH_CLEANTREE_SOFT=1, continuing):" >&2
+    echo "runner.sh: source-integrity violation (BENCH_CLEANTREE_SOFT=1, continuing):" >&2
     echo "${violation}" >&2
     return 0
   fi
@@ -202,6 +193,7 @@ main() {
 
   # Infra preconditions.
   command -v jq >/dev/null 2>&1 || emit_error "jq not found on PATH"
+  command -v python3 >/dev/null 2>&1 || emit_error "python3 not found on PATH"
   [[ -f "${case_file}" ]] || emit_error "case file not found: ${case_file}"
   [[ -d "${workdir}" ]] || emit_error "workdir not found: ${workdir}"
   command -v claude >/dev/null 2>&1 || emit_error "claude CLI not found on PATH"
@@ -216,8 +208,8 @@ main() {
     force_no_web_research "${workdir}"
   fi
 
-  local head_before
-  head_before="$(workdir_head "${workdir}")"
+  local source_before
+  source_before="$(workdir_source_manifest "${workdir}")"
 
   # Run the arm (captures report into <out>/report.md). A capture failure is an
   # infra ERROR, not a SKIP.
@@ -232,8 +224,8 @@ main() {
   grep -q '## Confirmed but not fixed' "${out}/report.md" \
     || emit_error "captured report.md lacks the '## Confirmed but not fixed' section (malformed capture)"
 
-  # Detect-only must not mutate source or move the branch HEAD.
-  assert_clean_tree "${workdir}" "${head_before}" "${out}"
+  # Detect-only must not mutate the scoped source tree.
+  assert_source_unchanged "${workdir}" "${source_before}" "${out}"
 
   emit_ran
 }

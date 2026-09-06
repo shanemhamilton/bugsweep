@@ -1,0 +1,63 @@
+{
+  "id": "go-chi-parent-context",
+  "suite": "heldout-v1",
+  "repository": "go-chi/chi",
+  "language": "go",
+  "category": "data-integrity",
+  "source": {
+    "repo": "go-chi/chi",
+    "commit": "ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
+    "archive_url": "https://codeload.github.com/go-chi/chi/tar.gz/ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
+    "archive_sha256": "334ca40fc975599e200479664b20abff8dd8a082504d4b6f4effe4fa51ece8c0",
+    "license": "MIT"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "mux.go",
+        "before": "\trctx.parentCtx = r.Context()",
+        "after": "\trctx.parentCtx = context.Background()",
+        "source_file_sha256": "cc44c2d620e6306b16d6d80f5f6c70f02b5814b357a4f5823372818f355ae67d"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "heldout-v1/go-chi-parent-context",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "go",
+        "test",
+        "./...",
+        "-run",
+        "TestGoChiParentContextPositive"
+      ],
+      "test_file": "gold/go-chi-parent-context_oracle_test.go",
+      "test_sha256": "19bf80ca506366141f53a1b1b00f1d6f7526d1e460693c0b5940551f2b94ea49",
+      "native_test_id": "TestGoChiParentContextPositive"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "TestGoChiParentContextPositive negative control",
+      "patched": "TestGoChiParentContextPositive patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "mux.go",
+        "sha256": "cc44c2d620e6306b16d6d80f5f6c70f02b5814b357a4f5823372818f355ae67d"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

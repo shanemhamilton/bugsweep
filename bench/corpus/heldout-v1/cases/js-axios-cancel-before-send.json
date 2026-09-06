@@ -1,0 +1,62 @@
+{
+  "id": "js-axios-cancel-before-send",
+  "suite": "heldout-v1",
+  "repository": "axios/axios",
+  "language": "javascript",
+  "category": "lifecycle",
+  "source": {
+    "repo": "axios/axios",
+    "commit": "af4f6d960f7478604841cfff2eb5c2491565c518",
+    "archive_url": "https://codeload.github.com/axios/axios/tar.gz/af4f6d960f7478604841cfff2eb5c2491565c518",
+    "archive_sha256": "6012b7ac6d57a79f88e1d5bbc67734e2aea9badbbc7594df90ecad94772ecb76",
+    "license": "MIT"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "lib/core/dispatchRequest.js",
+        "before": "export default function dispatchRequest(config) {\n  throwIfCancellationRequested(config);",
+        "after": "export default function dispatchRequest(config) {\n  ",
+        "source_file_sha256": "514a5cf274a9e56ca3414cce2509a50768b3401c18ac29c4b71ef595d7e4fa53"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "heldout-v1/js-axios-cancel-before-send",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--test-name-pattern=js-axios-cancel-before-send"
+      ],
+      "test_file": "gold/js-axios-cancel-before-send.test.js",
+      "test_sha256": "27f7f81687d9e54d2985f7b82e169a664619f3102d0089873276f9a92111b164",
+      "native_test_id": "js-axios-cancel-before-send positive behavior"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "js-axios-cancel-before-send positive behavior negative control",
+      "patched": "js-axios-cancel-before-send positive behavior patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "lib/core/dispatchRequest.js",
+        "sha256": "514a5cf274a9e56ca3414cce2509a50768b3401c18ac29c4b71ef595d7e4fa53"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

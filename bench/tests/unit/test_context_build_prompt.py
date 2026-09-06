@@ -150,5 +150,5 @@ def test_context_modeling_uses_modeled_not_covered() -> None:
 def test_priority_context_is_applied_without_scope_narrowing() -> None:
     text = _text()
     assert "priority-context.json" in text
-    assert "priority-context.sh apply" in text
+    assert '"$SKILL_ROOT/scripts/priority-context.sh" apply' in text
     assert "never remove" in text.lower() or "never removes" in text.lower()

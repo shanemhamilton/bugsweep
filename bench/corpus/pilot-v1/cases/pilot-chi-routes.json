@@ -1,0 +1,63 @@
+{
+  "id": "pilot-chi-routes",
+  "suite": "pilot-v1",
+  "repository": "go-chi/chi",
+  "language": "go",
+  "category": "logic",
+  "source": {
+    "repo": "go-chi/chi",
+    "commit": "ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
+    "archive_url": "https://codeload.github.com/go-chi/chi/tar.gz/ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
+    "archive_sha256": "334ca40fc975599e200479664b20abff8dd8a082504d4b6f4effe4fa51ece8c0",
+    "license": "MIT"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "mux.go",
+        "before": "\trctx.Routes = mx",
+        "after": "\t",
+        "source_file_sha256": "cc44c2d620e6306b16d6d80f5f6c70f02b5814b357a4f5823372818f355ae67d"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "pilot-v1/pilot-chi-routes",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "go",
+        "test",
+        "./...",
+        "-run",
+        "TestPilotChiRoutesPositive"
+      ],
+      "test_file": "gold/pilot-chi-routes_oracle_test.go",
+      "test_sha256": "bb0df7f6383e1176af2bb9e1238c6e9114227f6cc50337bd460cb6a34b863e95",
+      "native_test_id": "TestPilotChiRoutesPositive"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "TestPilotChiRoutesPositive negative control",
+      "patched": "TestPilotChiRoutesPositive patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "mux.go",
+        "sha256": "cc44c2d620e6306b16d6d80f5f6c70f02b5814b357a4f5823372818f355ae67d"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

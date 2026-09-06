@@ -62,6 +62,7 @@ bs_mode="detect"
 bs_worktree="no"
 bs_scope="."
 bs_concurrent="no"
+bs_execution_policy="$(cfg_get '.execution.policy_file' '')"
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) [ "$#" -ge 2 ] || die "--mode requires a value"; bs_mode="$2"; shift 2 ;;
@@ -70,6 +71,7 @@ while [ $# -gt 0 ]; do
     --scope=*) bs_scope="${1#--scope=}"; shift ;;
     --worktree) bs_worktree="yes"; shift ;;
     --concurrent) bs_concurrent="yes"; shift ;;
+    --execution-policy) [ "$#" -ge 2 ] || die "--execution-policy requires an external JSON path"; bs_execution_policy="$2"; shift 2 ;;
     *) die "unknown preflight option: $1" ;;
   esac
 done
@@ -443,6 +445,24 @@ else
   git -C "$scope_repo" --literal-pathspecs ls-files -- "$bs_scope" > "${run_dir}/scope-files.txt"
 fi
 
+# Preserve the full tracked inventory separately from the requested hunt scope.
+# NUL delimiters preserve literal filenames; no repository command is executed
+# by the preparation helper. Repro tests are explicitly added to this inventory.
+git -C "$scope_repo" ls-files -z > "${run_dir}/source-files.nul"
+if [ -n "$worktree_path" ]; then
+  prepare_args=(init "$run_dir" --target-root "$scope_repo" --run-id "$bs_id"
+    --deadline-epoch "$deadline_epoch" --config-path "$BUGSWEEP_CONFIG"
+    --files-path "${run_dir}/source-files.nul")
+  [ -z "$bs_execution_policy" ] || prepare_args+=(--policy-path "$bs_execution_policy")
+  if ! python3 -B "${BUGSWEEP_SCRIPT_DIR}/_prepare_execution.py" "${prepare_args[@]}" \
+      > "${run_dir}/execution-preparation-result.json"; then
+    log "Execution preparation unavailable; preserve the run for detection and report the recorded error."
+  fi
+else
+  printf '%s\n' '{"available":false,"reason":"execution_requires_isolated_worktree"}' \
+    > "${run_dir}/execution-preparation-result.json"
+fi
+
 # --- Output for the SKILL to read ---------------------------------------------
 echo "RUN_DIR=${run_dir}"
 echo "BRANCH=${branch}"
@@ -451,6 +471,7 @@ echo "STASH=${stash_ref}"
 [ -n "$worktree_path" ] && echo "WORKTREE=${worktree_path}"
 echo "SCOPE=${bs_scope}"
 echo "SCOPE_FILES=${run_dir}/scope-files.txt"
+echo "EXECUTION_PREPARATION=${run_dir}/execution-preparation-result.json"
 [ -f "${run_dir}/prior-coverage.json" ] && echo "PRIOR_COVERAGE=${run_dir}/prior-coverage.json"
 [ -f "${run_dir}/exposure.json" ] && echo "EXPOSURE=${run_dir}/exposure.json"
 [ -s "${run_dir}/reopened-conclusions.txt" ] && echo "REOPENED_CONCLUSIONS=${run_dir}/reopened-conclusions.txt"

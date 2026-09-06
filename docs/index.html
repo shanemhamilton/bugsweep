@@ -356,8 +356,8 @@
       <p>
         The irreversible git operations are done by short, auditable shell scripts you can
         read in a few minutes — not left to the model's judgment. That's the whole trust
-        contract, and it's what makes it safe to leave running overnight: ten non-negotiable
-        rules, enforced by scripts, not prompts.
+        contract. Automatic fixes also require immutable proof, a verified execution receipt,
+        and fresh native review under a frozen operator configuration.
       </p>
 
       <div class="trust-grid">
@@ -365,8 +365,8 @@
         <div class="trust-item"><span class="trust-num">02</span><p><b>No Git remotes during the run.</b> No push, pull, fetch, or PR. Local integration happens only after verification; tracker upserts record unfinished work.</p></div>
         <div class="trust-item"><span class="trust-num">03</span><p><b>Exact cleanup only.</b> No wildcard deletes, no <code class="kbd">reset --hard</code> on your content, no rewritten history.</p></div>
         <div class="trust-item"><span class="trust-num">04</span><p><b>Your work is preserved.</b> Every run uses an isolated linked worktree, leaving your checkout untouched until verified local integration.</p></div>
-        <div class="trust-item"><span class="trust-num">05</span><p><b>One bug, one commit, auto-revert.</b> Checks re-run after every fix; a regression gets reverted.</p></div>
-        <div class="trust-item"><span class="trust-num">06</span><p><b>Only confirmed bugs get fixed.</b> Every finding survives adversarial review first.</p></div>
+        <div class="trust-item"><span class="trust-num">05</span><p><b>One bug, one commit, evidence preserved.</b> Each fix needs immutable assertion proof and a verified suite receipt.</p></div>
+        <div class="trust-item"><span class="trust-num">06</span><p><b>Only eligible bugs get fixed.</b> Every automatic fix needs fresh native review under frozen operator host, model, and prompt settings.</p></div>
         <div class="trust-item"><span class="trust-num">07</span><p><b>Minimal, surgical fixes only.</b> No refactors, renames, or reformatting.</p></div>
         <div class="trust-item"><span class="trust-num">08</span><p><b>Hard caps.</b> Iterations, runtime, and fix count are bounded — it stops when it converges.</p></div>
         <div class="trust-item"><span class="trust-num">09</span><p><b>Everything is logged.</b> Every iteration lands in a run ledger — an overnight run is auditable.</p></div>
@@ -506,10 +506,10 @@
       </div>
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
-        <h3>Always finalizes</h3>
-        <p>A deadline checkpoint runs at every phase boundary. When the clock runs out, the run
-          finalizes anyway — branch restored, summary written — instead of dying mid-hunt with
-          nothing on disk.</p>
+        <h3>Terminal recovery is explicit</h3>
+        <p>A deadline checkpoint records the run at every phase boundary. An interrupt or an
+          unavailable provider can still leave recovery work; terminal readback decides whether
+          the run is complete or blocked.</p>
       </div>
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4.5 8-11V5l-8-3-8 3v6c0 6.5 8 11 8 11Z"/><path d="m9 12 2 2 4-4"/></svg>
@@ -527,17 +527,17 @@
       </div>
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
-        <h3>Reverts, but understands "flaky"</h3>
-        <p>A newly-failing test is rerun up to 3 times before a fix is reverted; only a strict
-          majority of passing reruns reclassifies it FLAKY. Reruns share the run's own tree, so
-          this isn't full isolation — any fix landing as flaky is always surfaced, never silent.</p>
+        <h3>Flaky results block automation</h3>
+        <p>Reruns can help diagnose a failure, but they do not establish a waiver. A flaky
+          classification blocks automatic integration and sends the finding to the tracker with
+          its recovery state.</p>
       </div>
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4"/><path d="M15 3h4a2 2 0 0 1 2 2v4"/><path d="M9 21H5a2 2 0 0 1-2-2v-4"/><path d="M15 21h4a2 2 0 0 0 2-2v-4"/><circle cx="12" cy="12" r="3"/></svg>
-        <h3>Analyzer corroboration, opt-in</h3>
+        <h3>Analyzer hints, opt-in</h3>
         <p>Turn on <code class="kbd">.analyzers.enabled</code> and installed static analyzers —
-          semgrep, gosec, bandit, and others already on your machine — seed the hunt as an
-          independent signal. Off by default.</p>
+          semgrep, gosec, bandit, and others already on your machine — seed investigation.
+          They never confirm a bug or authorize a fix. Off by default.</p>
       </div>
     </div>
   </div>
@@ -744,9 +744,10 @@
     <div class="sub-cmds">
       <b>/bugsweep</b> detect-only &nbsp;·&nbsp; <b>--fix</b> confirm &amp; patch &nbsp;·&nbsp; <b>--approve</b> ask first &nbsp;·&nbsp; <b>--autonomous</b> loop all night
     </div>
-    <p class="fine-note"><code class="kbd">--claude</code> / <code class="kbd">--codex</code> / <code class="kbd">--all</code> to target an install
+    <p class="fine-note">This command downloads the bootstrap from <code class="kbd">main</code>; the installed payload defaults to the newest stable release.
+      <code class="kbd">--claude</code> / <code class="kbd">--codex</code> / <code class="kbd">--all</code> to target an install
       &nbsp;·&nbsp; <code class="kbd">--version vX.Y.Z</code> to pin — see
-      <a href="https://github.com/shanemhamilton/bugsweep/releases">Releases</a> for tagged versions.</p>
+      <a href="https://github.com/shanemhamilton/bugsweep/releases">Releases</a> for tagged versions. The installer defaults to the newest stable release; use <code class="kbd">--edge</code> only to select the current main commit.</p>
 
     <div class="cta-row" style="justify-content:center;margin-top:2rem">
       <a class="btn btn-primary" href="https://github.com/shanemhamilton/bugsweep">Read the docs on GitHub</a>

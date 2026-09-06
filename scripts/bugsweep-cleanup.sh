@@ -515,6 +515,24 @@ reap_one_worktree() {
   path="$canonical_worktree"
   run_dir="$(run_dir_for_worktree "$path" || true)"
 
+  # A mapped run has a durable authority now.  This legacy reaper cannot
+  # manufacture it from leases, a .finalized sentinel, or containment: exact
+  # pending runs must resume through closeout.sh, and unknown/legacy state is
+  # preserved for a human.  A terminal receipt alongside a still-registered
+  # worktree is contradictory evidence, so it is preserved too.
+  if [ -n "$run_dir" ]; then
+    if ! python3 -B "${BUGSWEEP_SCRIPT_DIR}/_terminal_lifecycle.py" status "$run_dir" >/dev/null 2>&1; then
+      log "preserving $path ($branch): terminal lifecycle is pending, invalid, or legacy; use closeout.sh"
+      record_worktree_preserved "$path"
+      record_preserved "$branch"
+      return 0
+    fi
+    log "preserving $path ($branch): terminal receipt conflicts with a registered worktree"
+    record_worktree_preserved "$path"
+    record_preserved "$branch"
+    return 0
+  fi
+
   # BLOCKER B fix: prefer the per-worktree recorded original branch (the real
   # integration target THIS run's fix was meant for) when known; fall back to
   # the pinned, cwd-independent default otherwise. Never the caller's cwd HEAD.

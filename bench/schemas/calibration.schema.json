@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/bench/schemas/calibration.schema.json",
+  "title": "Bugsweep frozen human-calibration frame",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "seed", "minimum", "frame_sha256", "population_n", "sampled_candidate_ids", "strata"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "seed": {"type": "integer"},
+    "minimum": {"type": "integer", "minimum": 1},
+    "frame_sha256": {"$ref": "#/$defs/sha256"},
+    "population_n": {"type": "integer", "minimum": 0},
+    "sampled_candidate_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "strata": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["key", "population_n", "sampled_n", "inclusion_probability", "candidate_ids"],
+        "properties": {
+          "key": {"type": "object", "additionalProperties": false, "required": ["host", "arm", "category", "severity", "status"], "properties": {"host": {"type": "string"}, "arm": {"type": "string"}, "category": {"type": "string"}, "severity": {"type": "string"}, "status": {"enum": ["confirmed", "rejected"]}}},
+          "population_n": {"type": "integer", "minimum": 1},
+          "sampled_n": {"type": "integer", "minimum": 1},
+          "inclusion_probability": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+          "candidate_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+        }
+      }
+    }
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Pinned image entrypoint for one WU6 host invocation.
+set -euo pipefail
+
+[[ $# -eq 4 ]] || {
+  echo "bench-host-adapter: expected host model arm prompt or review host model prompt" >&2
+  exit 64
+}
+
+# Review evidence uses a deliberately fixed entrypoint form.  It shares the
+# trusted executor/proxy contract with WU6, but it never selects or loads a
+# benchmark arm snapshot.
+if [[ "$1" == "review" ]]; then
+  mode="review"
+  host="$2"
+  model="$3"
+  prompt="$4"
+  selected_arm="review"
+else
+  mode="benchmark"
+  host="$1"
+  model="$2"
+  arm="$3"
+  prompt="$4"
+  selected_arm="${arm}"
+fi
+[[ -n "${BUGSWEEP_PROXY_URL:-}" && -n "${BUGSWEEP_OUTPUT_DIR:-}" ]] || {
+  echo "bench-host-adapter: executor proxy/output contract missing" >&2; exit 64; }
+
+case "${host}" in
+  claude)
+    [[ "${ANTHROPIC_API_KEY:-}" == "benchmark-inert-client-credential" ]] || exit 64
+    export ANTHROPIC_BASE_URL="${BUGSWEEP_PROXY_URL}"
+    export BENCH_INERT_CLIENT_ID="${ANTHROPIC_API_KEY}"
+    exec /opt/bugsweep-bench/runners/claude_json.sh "${model}" "${prompt}" "${selected_arm}"
+    ;;
+  codex)
+    [[ "${OPENAI_API_KEY:-}" == "benchmark-inert-client-credential" ]] || exit 64
+    export CODEX_BENCH_BASE_URL="${BUGSWEEP_PROXY_URL}"
+    export BENCH_INERT_CLIENT_ID="${OPENAI_API_KEY}"
+    exec /opt/bugsweep-bench/runners/codex_json.sh "${model}" "${prompt}" "${selected_arm}"
+    ;;
+  *) echo "bench-host-adapter: unsupported host" >&2; exit 64 ;;
+esac

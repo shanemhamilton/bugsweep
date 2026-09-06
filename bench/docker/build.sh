@@ -1,20 +1,7 @@
 #!/usr/bin/env bash
 #
-# build.sh — build the bugsweep-bench analysis image reproducibly.
-#
-# Stages the bugsweep skill from a configurable source (default: the installed
-# skill at ~/.claude/skills/bugsweep) into the build context at ./skill/, builds
-# the image, and prints the resulting image id + the staged skill's commit so
-# they can be recorded in the run provenance (run.sh reads the image id via
-# `docker image inspect`).
-#
-# A locally-built image has no registry digest, so provenance records the image
-# ID (sha256:...) — see bench/README.md "Provenance".
-#
-# usage:
-#   bench/docker/build.sh                     # skill from ~/.claude/skills/bugsweep
-#   BUGSWEEP_SKILL_SRC=/path/to/skill bench/docker/build.sh
-#   BENCH_IMAGE_TAG=bugsweep-bench:pilot bench/docker/build.sh
+# Build only from operator-supplied, already-verified artifacts. It never
+# fetches installers, downloads CLIs, or reads an ambient CLI login.
 
 set -euo pipefail
 
@@ -23,7 +10,16 @@ readonly DOCKER_DIR
 
 readonly IMAGE_TAG="${BENCH_IMAGE_TAG:-bugsweep-bench:latest}"
 readonly PROXY_IMAGE_TAG="${BENCH_PROXY_IMAGE:-bugsweep-bench-proxy:latest}"
-readonly SKILL_SRC="${BUGSWEEP_SKILL_SRC:-${HOME}/.claude/skills/bugsweep}"
+readonly BASE_IMAGE="${BENCH_BASE_IMAGE:?set a pinned BENCH_BASE_IMAGE}"
+readonly CLAUDE_BIN="${BENCH_CLAUDE_CLI_BIN:?set BENCH_CLAUDE_CLI_BIN}"
+readonly CLAUDE_SHA256="${BENCH_CLAUDE_CLI_SHA256:?set BENCH_CLAUDE_CLI_SHA256}"
+readonly CODEX_BIN="${BENCH_CODEX_CLI_BIN:?set BENCH_CODEX_CLI_BIN}"
+readonly CODEX_SHA256="${BENCH_CODEX_CLI_SHA256:?set BENCH_CODEX_CLI_SHA256}"
+readonly CURRENT_SKILL_SRC="${BENCH_CURRENT_SKILL_SRC:?set BENCH_CURRENT_SKILL_SRC}"
+readonly CURRENT_SKILL_REVISION="${BENCH_CURRENT_SKILL_REVISION:?set BENCH_CURRENT_SKILL_REVISION}"
+readonly PREVIOUS_SKILL_SRC="${BENCH_PREVIOUS_SKILL_SRC:?set BENCH_PREVIOUS_SKILL_SRC}"
+readonly PREVIOUS_SKILL_REVISION="${BENCH_PREVIOUS_SKILL_REVISION:?set BENCH_PREVIOUS_SKILL_REVISION}"
+readonly PROXY_BASE_IMAGE="${BENCH_PROXY_BASE_IMAGE:?set a pinned BENCH_PROXY_BASE_IMAGE}"
 
 die() {
   echo "build.sh: $*" >&2
@@ -31,32 +27,81 @@ die() {
 }
 
 command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
-[[ -d "${SKILL_SRC}" ]] || die "bugsweep skill not found at ${SKILL_SRC} (set BUGSWEEP_SKILL_SRC)"
-[[ -f "${SKILL_SRC}/SKILL.md" ]] || die "no SKILL.md under ${SKILL_SRC}; not a bugsweep skill dir"
+[[ "${BASE_IMAGE}" =~ @sha256:[a-f0-9]{64}$ ]] || die "BENCH_BASE_IMAGE must be pinned by sha256"
+[[ "${PROXY_BASE_IMAGE}" =~ @sha256:[a-f0-9]{64}$ ]] || die "BENCH_PROXY_BASE_IMAGE must be pinned by sha256"
+for value in "${CLAUDE_SHA256}" "${CODEX_SHA256}"; do [[ "${value}" =~ ^[a-f0-9]{64}$ ]] || die "binary digest must be lowercase sha256"; done
+for binary in "${CLAUDE_BIN}" "${CODEX_BIN}"; do [[ "${binary}" == /* && -f "${binary}" && ! -L "${binary}" ]] || die "CLI must be an absolute regular file"; done
+for skill in "${CURRENT_SKILL_SRC}" "${PREVIOUS_SKILL_SRC}"; do [[ "${skill}" == /* && -d "${skill}" && -f "${skill}/SKILL.md" ]] || die "skill snapshot must be an absolute directory with SKILL.md"; done
 
 # Stage the skill into the build context (docker COPY cannot reach outside it).
-readonly STAGE="${DOCKER_DIR}/skill"
+readonly STAGE="${DOCKER_DIR}/stage"
 rm -rf "${STAGE}"
-mkdir -p "${STAGE}"
-cp -a "${SKILL_SRC}/." "${STAGE}/"
+mkdir -p "${STAGE}/bin" "${STAGE}/arms/current_skill" "${STAGE}/arms/previous_release" "${STAGE}/arms/baseline" "${STAGE}/runners"
+cp "${CLAUDE_BIN}" "${STAGE}/bin/claude"
+cp "${CODEX_BIN}" "${STAGE}/bin/codex"
+cp "${DOCKER_DIR}/bench-host-adapter" "${STAGE}/bench-host-adapter"
+cp "${DOCKER_DIR}/../provider_proxy.py" "${STAGE}/provider_proxy.py"
+cp "${DOCKER_DIR}/provider_proxy_entrypoint.sh" "${STAGE}/provider_proxy_entrypoint.sh"
+cp -a "${DOCKER_DIR}/../runners/." "${STAGE}/runners/"
+copy_snapshot() {
+  python3 - "$1" "$2" <<'PY'
+import os, shutil, stat, sys
+source, destination = map(os.path.realpath, sys.argv[1:])
+for directory, dirs, names in os.walk(source):
+  dirs[:] = sorted(d for d in dirs if d != '.git')
+  relative = os.path.relpath(directory, source)
+  out_dir = destination if relative == '.' else os.path.join(destination, relative)
+  os.makedirs(out_dir, exist_ok=True)
+  for name in sorted(names):
+    path = os.path.join(directory, name)
+    if os.path.islink(path) or not stat.S_ISREG(os.stat(path, follow_symlinks=False).st_mode):
+      raise SystemExit('skill snapshot contains a non-regular file')
+    shutil.copyfile(path, os.path.join(out_dir, name), follow_symlinks=False)
+PY
+}
+copy_snapshot "${CURRENT_SKILL_SRC}" "${STAGE}/arms/current_skill"
+copy_snapshot "${PREVIOUS_SKILL_SRC}" "${STAGE}/arms/previous_release"
+printf 'no skill is mounted for this arm\n' >"${STAGE}/arms/baseline/NO_SKILL"
 
-# Record the staged skill's provenance: a git commit if the source is a clone,
-# else the VERSION file. This is what the leaderboard's `bugsweep @ <commit>`
-# headline should reflect.
-skill_commit="(unknown)"
-if git -C "${SKILL_SRC}" rev-parse --short HEAD >/dev/null 2>&1; then
-  skill_commit="$(git -C "${SKILL_SRC}" rev-parse --short HEAD)"
-elif [[ -f "${SKILL_SRC}/VERSION" ]]; then
-  skill_commit="v$(tr -d '[:space:]' <"${SKILL_SRC}/VERSION")"
-fi
+sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
+[[ "$(sha256 "${STAGE}/bin/claude")" == "${CLAUDE_SHA256}" ]] || die "Claude CLI digest mismatch"
+[[ "$(sha256 "${STAGE}/bin/codex")" == "${CODEX_SHA256}" ]] || die "Codex CLI digest mismatch"
+proxy_source_sha="$(sha256 "${STAGE}/provider_proxy.py")"
+adapter_sha="$(sha256 "${STAGE}/bench-host-adapter")"
+arms_json="$(python3 - "${STAGE}/arms" "${CURRENT_SKILL_REVISION}" "${PREVIOUS_SKILL_REVISION}" <<'PY'
+import hashlib, json, os, sys
+root, current, previous = sys.argv[1:]
+def tree(name):
+  files = {}
+  base = os.path.join(root, name)
+  for directory, dirs, names in os.walk(base):
+    dirs[:] = sorted(d for d in dirs if d != '.git')
+    for item in sorted(names):
+      path = os.path.join(directory, item); rel = os.path.relpath(path, base)
+      if os.path.islink(path): raise SystemExit('symlink in arm snapshot')
+      files[rel] = hashlib.sha256(open(path, 'rb').read()).hexdigest()
+  return hashlib.sha256(json.dumps(files, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+print(json.dumps({'baseline': {'skill_revision':'none','skill_content_sha256':tree('baseline')}, 'current': {'skill_revision':current,'skill_content_sha256':tree('current_skill')}, 'previous': {'skill_revision':previous,'skill_content_sha256':tree('previous_release')}}, sort_keys=True, separators=(',', ':')))
+PY
+)"
+arms_sha="$(printf '%s' "${arms_json}" | shasum -a 256 | awk '{print $1}')"
+printf '%s' "${arms_json}" >"${STAGE}/arms.json"
 
-echo "build.sh: staging skill from ${SKILL_SRC} (commit ${skill_commit})"
-docker build -t "${IMAGE_TAG}" "${DOCKER_DIR}"
+echo "build.sh: staging verified local binaries and arm snapshots"
+docker build -f "${DOCKER_DIR}/Dockerfile" -t "${IMAGE_TAG}" \
+  --build-arg "BENCH_BASE_IMAGE=${BASE_IMAGE}" \
+  --build-arg "CLAUDE_CLI_SHA256=${CLAUDE_SHA256}" \
+  --build-arg "CODEX_CLI_SHA256=${CODEX_SHA256}" \
+  --build-arg "ADAPTER_SHA256=${adapter_sha}" \
+  --build-arg "ARMS_SHA256=${arms_sha}" \
+  "${STAGE}"
 image_id="$(docker image inspect --format '{{.Id}}' "${IMAGE_TAG}")"
 
-# The CONNECT egress proxy image (no skill; independent build context).
-echo "build.sh: building egress proxy image ${PROXY_IMAGE_TAG}"
-docker build -f "${DOCKER_DIR}/Dockerfile.proxy" -t "${PROXY_IMAGE_TAG}" "${DOCKER_DIR}"
+echo "build.sh: staging the source-verified standard-library provider proxy"
+docker build -f "${DOCKER_DIR}/Dockerfile.proxy" -t "${PROXY_IMAGE_TAG}" \
+  --build-arg "BENCH_PROXY_BASE_IMAGE=${PROXY_BASE_IMAGE}" \
+  --build-arg "PROXY_SOURCE_SHA256=${proxy_source_sha}" \
+  "${STAGE}"
 proxy_image_id="$(docker image inspect --format '{{.Id}}' "${PROXY_IMAGE_TAG}")"
 
 cat <<EOF
@@ -64,12 +109,13 @@ cat <<EOF
 build.sh: built
   ${IMAGE_TAG}
     image_id     = ${image_id}
-    skill_commit = ${skill_commit}
+    adapter_sha256 = ${adapter_sha}
+    arms_sha256    = ${arms_sha}
   ${PROXY_IMAGE_TAG}
     image_id     = ${proxy_image_id}
+    proxy_source_sha256 = ${proxy_source_sha}
 
 Record these in the run provenance:
   export BENCH_CONTAINER_IMAGE_DIGEST="${image_id}"
-  export BENCH_EGRESS_PROXY_IMAGE="${PROXY_IMAGE_TAG}@${proxy_image_id}"
-  export BENCH_BUGSWEEP_COMMIT="${skill_commit}"
+  benchmark_profile.arms = ${arms_json}
 EOF

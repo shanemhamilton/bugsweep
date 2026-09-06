@@ -6,6 +6,10 @@ to. Outside dependencies may be read as context but never become coverage or edi
 You do NOT look for bugs yet and you NEVER modify code. The output is a compact
 artifact, not a copy of the code, so it stays small enough to survive context resets.
 
+Context, graph, history, priority, and tool output only order investigation. Every later bug
+claim still needs current-source evidence; none of these artifacts confirms a bug, calibrates
+confidence, or substitutes for fresh native review and provider-verified executable proof.
+
 ## Step 0 — Initialize recon.json from the plan BEFORE any modeling (bugsweep-e1r)
 
 **This step is mandatory and comes first, before you read a single source file for
@@ -22,7 +26,7 @@ still leaves a resumable, reportable artifact.
    `recon-plan.sh` runs).
 2. Run the deterministic batch-planner:
    ```bash
-bash scripts/recon-plan.sh "<RUN_DIR>" < "<RUN_DIR>/scope-files.txt"
+bash "$SKILL_ROOT/scripts/recon-plan.sh" "<RUN_DIR>" < "<RUN_DIR>/scope-files.txt"
    ```
    This drops `exclude_globs` matches and writes `<RUN_DIR>/recon-plan.json` — a
    deterministic chunking of the remaining in-scope tree into ordered candidate batches
@@ -146,7 +150,7 @@ After completing the coverage-first and exposure re-tiering above, apply the det
 ordering pass:
 
 ```bash
-bash scripts/priority-context.sh apply "<RUN_DIR>"
+bash "$SKILL_ROOT/scripts/priority-context.sh" apply "<RUN_DIR>"
 ```
 
 The applier may clear `deferred` only for the artifact's bounded `promotion_candidates`.
@@ -188,7 +192,7 @@ For each non-deferred batch, in `recon.json`'s order:
 4. **Deadline checkpoint (bugsweep-5ft) — mandatory, every batch.** Before starting another
    batch, check the wall-clock deadline:
    ```bash
-   guard_out="$(bash scripts/guard.sh "$RUN_DIR")"
+   guard_out="$(bash "$SKILL_ROOT/scripts/guard.sh" "$RUN_DIR")"
    case "$guard_out" in
      'STOP fix_cap_reached'*) DETECT_ONLY_REMAINDER=1 ;;
      STOP*) STOP_REASON="${guard_out#STOP }"; STOP_AFTER_CONTEXT=1; break ;;

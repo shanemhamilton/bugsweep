@@ -12,6 +12,8 @@
     "follow_up",
     "runs",
     "run_count",
+    "input_count",
+    "invalid_input_count",
     "worst_status"
   ],
   "properties": {
@@ -82,6 +84,16 @@
       "type": "integer",
       "minimum": 0,
       "description": "Number of runs merged. run_count == 0 (with worst_status 'no_runs') means a scheduler matched no run-summary.json files — distinct from a genuine all-complete session."
+    },
+    "input_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "All supplied summary paths, including invalid inputs."
+    },
+    "invalid_input_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Malformed, missing, or non-object inputs retained in session accounting."
     },
     "worst_status": {
       "type": "string",

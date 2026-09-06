@@ -1,13 +1,15 @@
 """Tests for bench.scorer.precision_score."""
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from bench.scorer.precision import PrecisionCaseResult, PrecisionJudgement, SampledFinding
-from bench.scorer.precision_score import score_results_dir, write_precision_track
+from bench.scorer.evidence import build_packet
+from bench.scorer.precision_score import load_trusted_sources, score_results_dir, write_precision_track
 
 MODEL = "test-model"
 
@@ -80,8 +82,36 @@ def test_score_results_dir_processes_non_gt_finding(tmp_path) -> None:
     assert r.arm == "bugsweep"
     assert r.total_confirmed == 1
     assert r.sampled == 1
-    assert r.real == 1
-    assert r.precision == 1.0
+    assert r.real == 0
+    assert r.unverified == 1
+    assert r.precision is None
+
+
+def test_score_results_dir_promotes_only_matching_trusted_packet_and_source(tmp_path) -> None:
+    run_dir = tmp_path / "bugsweep" / "case-1" / "run-1"
+    _write_report(run_dir, "## Confirmed but not fixed\n- B1 · high · sec · a.py:1 · SQLi\n")
+    _write_ground_truths(tmp_path, {"case-1": {"description": "XSS", "files": ["other.py"]}})
+    _write_provenance(tmp_path)
+    source = "dangerous()\n"
+    packet = build_packet(candidate_id="B1", source_path="a.py", source=source, source_sha256=hashlib.sha256(source.encode()).hexdigest(), excerpt_start=1, excerpt_end=1, trigger={"kind": "request", "value": "/x"}, repro=None)
+    (run_dir / "precision-evidence.jsonl").write_text(json.dumps(packet) + "\n")
+    client = MultiResponseClient(['[{"bug_id":"B1","file":"a.py","line":1,"rationale":"SQLi"}]', '{"match":false,"confidence":1,"reason":"x"}', '{"is_real":true,"confidence":90,"reason":"shown"}'])
+    trusted = {"a.py": {"path": "a.py", "start_line": 1, "end_line": 1, "source_sha256": hashlib.sha256(source.encode()).hexdigest(), "text": "dangerous()"}}
+    result = score_results_dir(tmp_path, client, MODEL, trusted_sources={("case-1", 1): trusted})[0]
+    assert result.reviewed == 1 and result.real == 1 and result.precision == 1.0
+    packet["source"]["path"] = "other.py"
+    (run_dir / "precision-evidence.jsonl").write_text(json.dumps(packet) + "\n")
+    client = MultiResponseClient(['[{"bug_id":"B1","file":"a.py","line":1,"rationale":"SQLi"}]', '{"match":false,"confidence":1,"reason":"x"}', '{"is_real":true,"confidence":90,"reason":"shown"}'])
+    result = score_results_dir(tmp_path, client, MODEL, trusted_sources={("case-1", 1): trusted})[0]
+    assert result.reviewed == 0 and result.precision is None
+
+
+def test_cli_trusted_source_snapshot_loads_per_case_run_excerpts(tmp_path) -> None:
+    source = "dangerous()\n"
+    snapshot = tmp_path / "trusted-sources.json"
+    snapshot.write_text(json.dumps({"schema_version": 1, "authority": "trusted_coordinator", "cases": {"case-1": {"1": {"a.py": {"path": "a.py", "start_line": 1, "end_line": 1, "source_sha256": hashlib.sha256(source.encode()).hexdigest(), "text": "dangerous()"}}}}}), encoding="utf-8")
+    loaded = load_trusted_sources(snapshot)
+    assert loaded[("case-1", 1)]["a.py"]["text"] == "dangerous()"
 
 
 def test_score_results_dir_excludes_gt_matched_from_precision(tmp_path) -> None:
@@ -100,7 +130,7 @@ def test_score_results_dir_excludes_gt_matched_from_precision(tmp_path) -> None:
     assert r.total_confirmed == 1
     assert r.sampled == 0
     assert r.real == 0
-    assert r.precision == 0.0
+    assert r.precision is None
 
 
 def test_score_results_dir_multiple_runs(tmp_path) -> None:
@@ -120,7 +150,8 @@ def test_score_results_dir_multiple_runs(tmp_path) -> None:
     results = score_results_dir(tmp_path, client, MODEL)
     assert len(results) == 2
     assert results[0].run == 1 and results[1].run == 2
-    assert results[0].real == 1
+    assert results[0].real == 0
+    assert results[0].unverified == 1
     assert results[1].real == 0
 
 
@@ -141,13 +172,13 @@ def test_score_results_dir_processes_empty_confirmed_section(tmp_path) -> None:
 
 def _make_result(case_id: str = "c1", run: int = 1) -> PrecisionCaseResult:
     jdg = PrecisionJudgement(
-        is_real=True, confidence=80, reason="ok", model="m", prompt_hash="ph"
+        is_real=True, confidence=80, reason="ok", model="m", prompt_hash="ph", status="reviewed"
     )
     sf = SampledFinding(bug_id="B1", file="a.py", rationale="r", judgement=jdg)
     return PrecisionCaseResult(
         case_id=case_id, run=run, arm="bugsweep",
         total_confirmed=3, sampled=1, real=1, precision=1.0,
-        findings=(sf,),
+        findings=(sf,), reviewed=1,
     )
 
 

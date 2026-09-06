@@ -1,0 +1,61 @@
+{
+  "id": "pilot-click-unset-callback",
+  "suite": "pilot-v1",
+  "repository": "pallets/click",
+  "language": "python",
+  "category": "logic",
+  "source": {
+    "repo": "pallets/click",
+    "commit": "36baa15ff831b939a22bc527cd76ce653ef6f66d",
+    "archive_url": "https://codeload.github.com/pallets/click/tar.gz/36baa15ff831b939a22bc527cd76ce653ef6f66d",
+    "archive_sha256": "0fa792fe26295cb0b2568e811bec22b19fc0d4dc90f5f9d698c0e0202d3ac89e",
+    "license": "BSD-3-Clause"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "src/click/core.py",
+        "before": "            value = ()",
+        "after": "            value = None",
+        "source_file_sha256": "4c65a613c1c407dce907a4e123b12cec5fe0f62088a8b9f86fabd4b60c4b6d78"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "pilot-v1/pilot-click-unset-callback",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "pytest",
+        "-q",
+        "gold/pilot-click-unset-callback_oracle.py"
+      ],
+      "test_file": "gold/pilot-click-unset-callback_oracle.py",
+      "test_sha256": "5c7bf27a3021296cc144a4402378544cd79b308af139e9d0781ec095a5100423",
+      "native_test_id": "gold/pilot-click-unset-callback_oracle.py::test_pilot_click_unset_callback_positive"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "gold/pilot-click-unset-callback_oracle.py::test_pilot_click_unset_callback_positive negative control",
+      "patched": "gold/pilot-click-unset-callback_oracle.py::test_pilot_click_unset_callback_positive patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "src/click/core.py",
+        "sha256": "4c65a613c1c407dce907a4e123b12cec5fe0f62088a8b9f86fabd4b60c4b6d78"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

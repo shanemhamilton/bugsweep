@@ -1,0 +1,62 @@
+{
+  "id": "js-qs-array-boundary",
+  "suite": "heldout-v1",
+  "repository": "ljharb/qs",
+  "language": "javascript",
+  "category": "logic",
+  "source": {
+    "repo": "ljharb/qs",
+    "commit": "3c29fd01706dc71ecbe941746d16b46a098cb26e",
+    "archive_url": "https://codeload.github.com/ljharb/qs/tar.gz/3c29fd01706dc71ecbe941746d16b46a098cb26e",
+    "archive_sha256": "070e171f2f509cf3e63c6a7bf5b8c91a7f3d0b126cccffd8a1dd23a31e22c7e7",
+    "license": "BSD-3-Clause"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "lib/parse.js",
+        "before": "} else if (isValidArrayIndex && index < options.arrayLimit) {",
+        "after": "} else if (isValidArrayIndex && index <= options.arrayLimit) {",
+        "source_file_sha256": "e78105814d5f66b4ce1d874b4d7bbb3a4c8c2b4cd7bcc8df3d761b4ab076673c"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "heldout-v1/js-qs-array-boundary",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--test-name-pattern=js-qs-array-boundary"
+      ],
+      "test_file": "gold/js-qs-array-boundary.test.js",
+      "test_sha256": "87bc3d1a3e93f7684e14676caeba087256a2f60acc6d08ba09f982180e56cffd",
+      "native_test_id": "js-qs-array-boundary positive behavior"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "js-qs-array-boundary positive behavior negative control",
+      "patched": "js-qs-array-boundary positive behavior patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "lib/parse.js",
+        "sha256": "e78105814d5f66b4ce1d874b4d7bbb3a4c8c2b4cd7bcc8df3d761b4ab076673c"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

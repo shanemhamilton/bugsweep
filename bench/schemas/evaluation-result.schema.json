@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/bench/schemas/evaluation-result.schema.json",
+  "title": "Bugsweep evaluation result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol_sha256",
+    "schedule_sha256",
+    "execution_order_sha256",
+    "receipt_sha256",
+    "thresholds",
+    "hosts",
+    "calibration",
+    "evaluation_decision",
+    "verification",
+    "release_eligibility"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "protocol_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "schedule_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "execution_order_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "hosts": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/host"
+      }
+    },
+    "calibration": {
+      "type": "object"
+    },
+    "evaluation_decision": {
+      "enum": [
+        "proceed",
+        "redesign",
+        "inconclusive"
+      ]
+    },
+    "verification": {
+      "$ref": "#/$defs/verification"
+    },
+    "release_eligibility": {
+      "type": "boolean"
+    },
+    "stage_experiments": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "hosts",
+          "calibration"
+        ],
+        "properties": {
+          "hosts": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "$ref": "#/$defs/host"
+            }
+          },
+          "calibration": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_slots",
+        "received_slots",
+        "missing_slots",
+        "attrition",
+        "comparable_cases",
+        "categories",
+        "repositories",
+        "arms",
+        "lifecycle",
+        "accounting",
+        "comparability_reasons",
+        "metrics",
+        "decision"
+      ],
+      "properties": {
+        "expected_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "received_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_slots": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attrition": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "comparable_cases": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "arms": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "accounting": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "comparability_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metrics": {
+          "type": "object"
+        },
+        "decision": {
+          "enum": [
+            "proceed",
+            "redesign",
+            "inconclusive"
+          ]
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "complete",
+        "source_completeness",
+        "evaluation_decision",
+        "release_eligibility",
+        "reasons"
+      ],
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "source_completeness": {
+          "type": "boolean"
+        },
+        "evaluation_decision": {
+          "enum": [
+            "proceed",
+            "redesign",
+            "inconclusive"
+          ]
+        },
+        "release_eligibility": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

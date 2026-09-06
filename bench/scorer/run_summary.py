@@ -788,10 +788,13 @@ def reduce_run(
             if votes:
                 finding["vote_split"] = majority_gate(votes)
 
+    audit_progress = "complete" if total > 0 and covered >= total else ("partial" if covered else "not_started")
     return {
         "schema_version": SCHEMA_VERSION,
         "mode": mode,
         "status": status,
+        "operational_status": status,
+        "audit_progress": audit_progress,
         "stop_reason": stop_reason,
         "coverage": {"covered": covered, "total": total},
         "counts": counts,
@@ -827,10 +830,13 @@ def reduce_run_degraded(
     full reduction.
     """
     status, stop_reason = _derive_status(report_is_stub=report_is_stub, covered=covered)
+    audit_progress = "complete" if total > 0 and covered >= total else ("partial" if covered else "not_started")
     return {
         "schema_version": SCHEMA_VERSION,
         "mode": mode,
         "status": status,
+        "operational_status": status,
+        "audit_progress": audit_progress,
         "stop_reason": stop_reason,
         "degraded": True,
         "coverage": {"covered": covered, "total": total},

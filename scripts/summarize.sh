@@ -119,6 +119,8 @@ _write_degraded_summary() {
   "schema_version": 1,
   "mode": ${mode_json},
   "status": "${status}",
+  "operational_status": "${status}",
+  "audit_progress": "not_started",
   "stop_reason": ${stop_reason},
   "degraded": true,
   "coverage": {"covered": ${covered}, "total": ${total}},

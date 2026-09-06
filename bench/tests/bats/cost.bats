@@ -21,10 +21,10 @@ teardown() {
 
 # Write a usage.json with the three accounted fields under a per-case/run dir.
 _write_usage() {
-  local dir="$1" tokens="$2" wall="$3" cost="$4"
+  local dir="$1" tokens="$2" wall="$3" cost="$4" source="${5:-actual}"
   mkdir -p "$dir"
   cat >"$dir/usage.json" <<EOF
-{ "tokens": ${tokens}, "wall_clock_seconds": ${wall}, "cost_usd": ${cost} }
+{ "tokens": ${tokens}, "wall_clock_seconds": ${wall}, "cost_usd": ${cost}, "cost_source": "${source}" }
 EOF
 }
 
@@ -41,12 +41,12 @@ EOF
   [ "$status" -eq 0 ]
 }
 
-@test "cost sum-file defaults missing fields to zero" {
+@test "cost sum-file preserves missing fields as incomplete rather than zero" {
   mkdir -p "${ARM_DIR}/c1/run-1"
   printf '{ "tokens": 50 }\n' >"${ARM_DIR}/c1/run-1/usage.json"
   run "$COST_SH" sum-file "${ARM_DIR}/c1/run-1/usage.json"
   [ "$status" -eq 0 ]
-  run jq -e '.tokens == 50 and .wall_clock_seconds == 0 and .cost_usd == 0' \
+  run jq -e '.tokens == 50 and .wall_clock_seconds == null and .cost_usd == null and .accounting_state == "incomplete"' \
     <<<"$output"
   [ "$status" -eq 0 ]
 }
@@ -56,6 +56,15 @@ EOF
   printf 'not json\n' >"${ARM_DIR}/c1/run-1/usage.json"
   run "$COST_SH" sum-file "${ARM_DIR}/c1/run-1/usage.json"
   [ "$status" -eq 1 ]
+}
+
+@test "cost sum-file rejects negative, fractional, nonfinite, and forged complete usage" {
+  mkdir -p "${ARM_DIR}/c1/run-1"
+  for record in '{"tokens": -1, "wall_clock_seconds": 1, "cost_usd": 1, "cost_source":"actual"}' '{"tokens": 1.5, "wall_clock_seconds": 1, "cost_usd": 1, "cost_source":"actual"}' '{"tokens": 1, "wall_clock_seconds": 1, "cost_usd": "NaN", "cost_source":"actual"}' '{"tokens": 1, "wall_clock_seconds": null, "cost_usd": 1, "cost_source":"actual", "accounting_state":"complete"}'; do
+    printf '%s\n' "$record" >"${ARM_DIR}/c1/run-1/usage.json"
+    run "$COST_SH" sum-file "${ARM_DIR}/c1/run-1/usage.json"
+    [ "$status" -ne 0 ]
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -80,11 +89,19 @@ EOF
   [ "$status" -eq 0 ]
 }
 
-@test "cost sum on an arm dir with no usage records yields zeroed totals" {
+@test "cost sum on an arm dir with no usage records yields unknown totals" {
   mkdir -p "$ARM_DIR"
   run "$COST_SH" sum "$ARM_DIR"
   [ "$status" -eq 0 ]
-  run jq -e '.runs == 0 and .tokens == 0 and .cost_usd == 0' <<<"$output"
+  run jq -e '.runs == 0 and .tokens == null and .cost_usd == null and .accounting_state == "unknown"' <<<"$output"
+  [ "$status" -eq 0 ]
+}
+
+@test "cost sum labels rate-estimated dollars and never relabels them actual" {
+  _write_usage "${ARM_DIR}/c1/run-1" 100 1 0.01 rate_estimated
+  run "$COST_SH" sum "$ARM_DIR"
+  [ "$status" -eq 0 ]
+  run jq -e '.cost_usd == 0.01 and .cost_source == "rate_estimated" and .accounting_state == "complete"' <<<"$output"
   [ "$status" -eq 0 ]
 }
 

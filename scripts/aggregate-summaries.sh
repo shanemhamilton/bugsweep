@@ -43,6 +43,8 @@ _write_degraded_session() {
   "follow_up": [],
   "runs": [],
   "run_count": 0,
+  "input_count": 0,
+  "invalid_input_count": 0,
   "worst_status": "no_runs"
 }
 JSON

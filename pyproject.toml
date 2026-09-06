@@ -2,6 +2,9 @@
 name = "bugsweep-bench"
 version = "0.0.1"
 requires-python = ">=3.12"
+dependencies = [
+    "jsonschema==4.26.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["bench/tests/unit"]

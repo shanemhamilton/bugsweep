@@ -1,0 +1,65 @@
+{
+  "id": "py-requests-auth-strip",
+  "suite": "heldout-v1",
+  "repository": "psf/requests",
+  "language": "python",
+  "category": "security",
+  "source": {
+    "repo": "psf/requests",
+    "commit": "dae7ef63b4df6eded86637f251fc4e3a06c3b479",
+    "archive_url": "https://codeload.github.com/psf/requests/tar.gz/dae7ef63b4df6eded86637f251fc4e3a06c3b479",
+    "archive_sha256": "55999922723576238c243ca02183f2c367c9b0c197a3c1afc671b35c2daf96c2",
+    "license": "Apache-2.0"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "src/requests/sessions.py",
+        "before": "if old_parsed.hostname != new_parsed.hostname:",
+        "after": "if False:",
+        "source_file_sha256": "3d2089736ced93b2b405624a943f866d22652b17df06a85eb010f86272fc3e7d"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "heldout-v1/py-requests-auth-strip",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "pytest",
+        "-q",
+        "gold/py-requests-auth-strip_oracle.py"
+      ],
+      "test_file": "gold/py-requests-auth-strip_oracle.py",
+      "test_sha256": "b84d583ede0b00924020fa2c9c018437bb1a9a2f027d465170d9d433b7e0ee80",
+      "native_test_id": "gold/py-requests-auth-strip_oracle.py::test_py_requests_auth_strip_positive"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "gold/py-requests-auth-strip_oracle.py::test_py_requests_auth_strip_positive negative control",
+      "patched": "gold/py-requests-auth-strip_oracle.py::test_py_requests_auth_strip_positive patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "src/requests/sessions.py",
+        "sha256": "3d2089736ced93b2b405624a943f866d22652b17df06a85eb010f86272fc3e7d"
+      },
+      {
+        "path": "src/requests/models.py",
+        "sha256": "a3351c3c12a86bf5ed211533875350bc4791e9327a685f8c19ba54343e471e26"
+      }
+    ],
+    "cross_file": true
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

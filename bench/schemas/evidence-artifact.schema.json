@@ -1,0 +1,352 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/bench/schemas/evidence-artifact.schema.json",
+  "title": "Bugsweep trusted evaluation evidence artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "producer",
+    "producer_version",
+    "authority",
+    "tested_source_manifest_sha256",
+    "tested_revision",
+    "invocation_id",
+    "result",
+    "limitations",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "enum": [
+        "human_calibration",
+        "cross_platform_ci"
+      ]
+    },
+    "producer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "producer_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authority": {
+      "const": "trusted_coordinator"
+    },
+    "tested_source_manifest_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "tested_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "invocation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "result": {
+      "enum": [
+        "passed",
+        "failed",
+        "blocked",
+        "unknown"
+      ]
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "human_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frame_sha256",
+        "calibration_sha256",
+        "reviewed_candidate_ids",
+        "labels",
+        "metrics",
+        "labels_sha256"
+      ],
+      "properties": {
+        "frame_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "calibration_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "reviewed_candidate_ids": {
+          "type": "array",
+          "minItems": 0,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "labels": {
+          "type": "array",
+          "minItems": 0,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "candidate_id",
+              "reviewer_id",
+              "role",
+              "label",
+              "seconds",
+              "reason"
+            ],
+            "properties": {
+              "candidate_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reviewer_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "role": {
+                "enum": [
+                  "primary",
+                  "adjudicator"
+                ]
+              },
+              "label": {
+                "enum": [
+                  "real",
+                  "false",
+                  "unverifiable"
+                ]
+              },
+              "seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "review_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "required": [
+            "serious_precision_lower",
+            "baseline_precision_upper",
+            "review_time_ratio",
+            "cost_per_serious_ratio",
+            "unresolved_fraction"
+          ],
+          "properties": {
+            "serious_precision_lower": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "baseline_precision_upper": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "review_time_ratio": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "cost_per_serious_ratio": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "unresolved_fraction": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": true
+        },
+        "labels_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "ci_payload": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "kind",
+        "repository",
+        "workflow_path",
+        "source_commit",
+        "run_id",
+        "run_attempt",
+        "workflow",
+        "run",
+        "jobs",
+        "jobs_run_id",
+        "jobs_run_attempt"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "cross_platform_ci"
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "workflow_path": {
+          "type": "string"
+        },
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "workflow": {
+          "type": "object"
+        },
+        "run": {
+          "type": "object"
+        },
+        "jobs": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 100,
+          "items": {
+            "type": "object"
+          }
+        },
+        "jobs_run_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "jobs_run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "human_calibration"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/human_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "cross_platform_ci"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/ci_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "human_calibration"
+          },
+          "result": {
+            "const": "passed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "reviewed_candidate_ids": {
+                "minItems": 60
+              },
+              "labels": {
+                "minItems": 120
+              },
+              "metrics": {
+                "properties": {
+                  "serious_precision_lower": {
+                    "type": "number"
+                  },
+                  "baseline_precision_upper": {
+                    "type": "number"
+                  },
+                  "review_time_ratio": {
+                    "type": "number"
+                  },
+                  "cost_per_serious_ratio": {
+                    "type": "number"
+                  },
+                  "unresolved_fraction": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -2,8 +2,8 @@
 
 This is the playbook for the pattern `references/autonomous-maintenance.md` doesn't cover:
 one Opus (or equivalent) **orchestrator** session that fans out up to 5 worktree-isolated
-bugsweep subagents to find and fix bugs in parallel, then reviews, integrates, and pushes
-the result — while the orchestrator itself never hunts. If you want a single sequential
+bugsweep subagents to find and fix bugs in parallel, then reviews and locally integrates
+eligible results — while the orchestrator itself never hunts. If you want a single sequential
 `/bugsweep --autonomous` run on a schedule, see `references/autonomous-maintenance.md`
 instead; this doc is for the multi-subagent fan-out case.
 
@@ -19,9 +19,9 @@ The orchestrator partitions the hunt frontier across N ≤ 5 subagents
 `--approve`) loop, and then — critically — **does not hunt itself**. It waits for each
 subagent to finish, reads its `<RUN_DIR>/run-summary.json` (never its own re-derivation of
 findings), decides fix order and integration order from that machine-readable contract,
-integrates the verified branches one at a time with re-verification after each merge
-(`scripts/integrate.sh`), reviews the result, and only then pushes/merges to the user's
-real branch. Before ending, it writes down the combined follow-up frontier so the next
+integrates eligible branches one at a time, preserves each original red/green proof, and
+re-verifies every original regression test against the final combined tree. A remote push is
+separate from Bugsweep. Before ending, it writes down the combined follow-up frontier so the next
 session (human or orchestrator) knows exactly where coverage is still thin.
 
 ## Step 1 — Create one orchestrator-owned coordination directory
@@ -171,8 +171,8 @@ For fix ordering and root-cause judgment, read every subagent's
   look next" handoff: `kind` is one of `uncovered_batch` / `stale_file` / `high_risk_file` /
   `quarantined`, ordered exactly that way and capped at `FOLLOW_UP_CAP` (50,
   `bench/scorer/run_summary.py:132`). Union every subagent's `follow_up[]` for Step 6.
-- **`flaky[]`** (optional) — one entry per `flaky_test` ledger event; a fix that landed with
-  a flaky classification is a review flag, not a hard blocker (see the taxonomy table).
+- **`flaky[]`** (optional) — one entry per `flaky_test` ledger event. It blocks automatic
+  integration and requires tracker routing; it is not a waiver for a landed fix.
 
 ## Step 5 — Decide fix order, then integrate: `scripts/integrate.sh`
 
@@ -235,7 +235,7 @@ never re-run blindly with the same order.
 `--delete-merged` deletes a branch only after merge-base containment proof, never a force
 operation (`scripts/integrate.sh:350-366`).
 
-## Step 6 — Push and merge to main
+## Step 6 — Optional remote delivery
 
 `integrate.sh` never pushes (`scripts/integrate.sh:45-47`) — advancing the target branch
 locally is as far as any script in this repo goes. Pushing the target remains a separate,
@@ -279,13 +279,14 @@ hunt for bugs yourself. Each subagent runs its own full hunt/fix/finalize loop
    quarantined/confirmed_unfixed findings to build the next-session frontier.
 3. Review every subagent's fixes (diff + report.md) before integrating — do not blind-merge.
    Decide integration order yourself, then integrate the verified branches with
-   scripts/integrate.sh --run-dir <ORCH_DIR> <target> <branch1> [branch2 ...],
+   bash "$SKILL_ROOT/scripts/integrate.sh" --run-dir <ORCH_DIR> <target> <branch1> [branch2 ...],
    which re-runs the quality gate after every merge and stops cleanly on the first conflict
    or regression.
-4. Upsert unresolved findings and the combined follow-up frontier into the project's
+4. After each integration, run `python3 -B "$SKILL_ROOT/scripts/_prepare_execution.py" reverify <RUN_DIR> <BUG_ID> <SHA>` and then `bash "$SKILL_ROOT/scripts/repro.sh" reverify <RUN_DIR> <BUG_ID> <REQUEST_PATH>` for every original regression test. Preserve each separate `fix_reverified` receipt.
+5. Upsert unresolved findings and the combined follow-up frontier into the project's
    documented tracker with stable keys and readback receipts. Escrow and discard any exact
    run branch that cannot land, following the independent deletion check.
-5. End only after exact readback proves every run-owned branch/worktree is absent. Do not
+6. End only after exact readback proves every run-owned branch/worktree is absent. Do not
    push as part of Bugsweep closeout; never force-push or skip a failed gate.
 
 Constraints: never touch the user's real branch/tree from inside a subagent (that's what
@@ -296,8 +297,8 @@ rather than reordering blindly, then record and close out the remaining branches
 ```
 
 This encodes the four required elements: **up to 5 subagents** (step 1 / opening line),
-**orchestrator does not hunt** (opening line, step 2), **review fixes before push+merge to
-main** (steps 3-4), and **follow-up planning** (step 5).
+**orchestrator does not hunt** (opening line, step 2), **review and final-tree reverify
+before optional delivery** (steps 3-5), and **follow-up planning** (step 5).
 
 ## Orchestrator checklist
 
@@ -306,16 +307,17 @@ main** (steps 3-4), and **follow-up planning** (step 5).
       or agree a shared `RUN_ID` for self-claim mode.
 - [ ] Dispatch each subagent with its batch-id list; each runs
       `preflight.sh --worktree --concurrent` → normal hunt/fix loop →
-      `BUGSWEEP_ROLLUP_FILE="$ORCH_DIR/rollup.log" bash scripts/finalize.sh "<its RUN_DIR>"`.
+      `BUGSWEEP_ROLLUP_FILE="$ORCH_DIR/rollup.log" bash "$SKILL_ROOT/scripts/finalize.sh" "<its RUN_DIR>"`.
 - [ ] Do not hunt. Read `$ORCH_DIR/rollup.log` for fast triage (`ACTION=`), then each
       subagent's `run-summary.json` for `root_cause_clusters`/`follow_up`/full findings.
-- [ ] `git checkout "$TARGET_BRANCH" && bash scripts/run_checks.sh baseline "$ORCH_DIR"`
+- [ ] `git checkout "$TARGET_BRANCH" && bash "$SKILL_ROOT/scripts/run_checks.sh" baseline "$ORCH_DIR"`
       once, before the first integrate call.
 - [ ] Decide integration order from the findings just read.
-- [ ] `bash scripts/integrate.sh --run-dir "$ORCH_DIR" "$TARGET_BRANCH" <branches...>`.
-- [ ] Review the diff/report for every merged branch before pushing.
+- [ ] `bash "$SKILL_ROOT/scripts/integrate.sh" --run-dir "$ORCH_DIR" "$TARGET_BRANCH" <branches...>`.
+- [ ] For each original test: `python3 -B "$SKILL_ROOT/scripts/_prepare_execution.py" reverify "<ORIGINAL_RUN_DIR>" <BUG_ID> <SHA>`, then `bash "$SKILL_ROOT/scripts/repro.sh" reverify "$ORCH_DIR" <BUG_ID> <REQUEST_PATH>`.
+- [ ] Review the diff/report and final-tree reverify receipt for every merged branch before optional delivery.
 - [ ] `git push` (no `--force`) only after review passes.
-- [ ] Run `bash scripts/closeout.sh <RUN_DIR> landed|recorded` for every subagent.
+- [ ] Run `bash "$SKILL_ROOT/scripts/closeout.sh" <RUN_DIR> landed|recorded` for every subagent.
 - [ ] Upsert the combined follow-up frontier and unresolved findings in the documented tracker.
 - [ ] Read back tracker receipts and prove every exact run branch/worktree is absent.
 
@@ -328,10 +330,10 @@ token, that's called out explicitly rather than invented.
 
 | Code / signal | Emitted by | Meaning | Orchestrator action |
 |---|---|---|---|
-| `NO_CHECKS` | `scripts/run_checks.sh:424` (`echo "NO_CHECKS"`, exit 0) | No test/build/typecheck/lint command configured or auto-detected. | Do not auto-integrate. Ticket the fix with recovery escrow, then close out the exact branch. |
+| `NO_CHECKS` | `scripts/run_checks.sh:424` (`echo "NO_CHECKS"`, exit 0) | No test/build/typecheck/lint command configured or auto-detected. | Do not auto-integrate. Record the blocked finding and preserve recovery state; a provider-verified suite receipt is required for an automatic fix. |
 | `REGRESSION` | `scripts/run_checks.sh:554` (exit 1) | A check newly fails vs. baseline and survived the flaky-reclassification reruns. | Per SKILL.md's trust-contract rule 5 (`SKILL.md:342-346`), the subagent itself reverts the fix and emits a `quarantine` ledger event — this is not something the orchestrator handles directly, but it's why a run's `quarantined[]` is non-empty. |
 | `quarantine` (ledger event) | Written by the subagent per SKILL.md's fix protocol (`SKILL.md:44,342-346`), consumed by `bench/scorer/run_summary.py:363,440` into `quarantined[]` | The real, end-to-end path for "regression → quarantined": `run_checks.sh` prints `REGRESSION` → subagent reverts + appends `{"event":"quarantine",...}` to `ledger.jsonl` → `run-summary.json`'s `quarantined[]` array. There is no single fused "REGRESSION_QUARANTINED" token — it's this two-step chain. | Treat `quarantined[]` entries as `follow_up[kind=quarantined]` candidates (`schemas/run-summary.schema.json:125`) for the next session, not as something to fix now. |
-| `FLAKY=<n>` / `FLAKY_TEST=<id>` | `scripts/run_checks.sh:562-568` | A newly-failing test was reclassified flaky by strict majority of reruns; the fix still landed (`OK`), but this is surfaced loudly, never silently. | Not a stop condition, but flag the branch for human review per the trust-contract's own caveat (shared-environment reruns, not a proven flaky/deterministic distinction). |
+| `FLAKY=<n>` / `FLAKY_TEST=<id>` | `scripts/run_checks.sh:562-568` | A rerun classification is not immutable proof that the test is flaky. | Block automatic integration, tracker-route the finding, and preserve the exact branch or recovery bundle for human resolution. |
 | `OK` | `scripts/run_checks.sh:570` (exit 0) | Verify passed clean, no regression, no flaky reclassification needed. | Normal — proceed. |
 | `status: "complete"` | `bench/scorer/run_summary.py:185` (report.md was written; `report_is_stub=false`) | The subagent finished normally and wrote a real report. `stop_reason` is `null`. | Normal — read `findings`/`fixed`/`quarantined` as usual. |
 | `status: "partial"` | `bench/scorer/run_summary.py:186-187`, `stop_reason` = the fixed string at `bench/scorer/run_summary.py:118-121` | `report.md` was never written (stub), but **some** hunt batches were covered before stopping. The candidate name "PARTIAL_TIMEOUT" is **not accurate as literally named** — this status is not specifically about a timeout; it fires for any mid-hunt stop (context-build stall, crash, etc.) as long as `covered > 0`. | Treat as a run that needs a follow-up pass on its uncovered batches (`follow_up[kind=uncovered_batch]`); do not assume it exhausted its frontier. |
