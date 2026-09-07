@@ -42,7 +42,7 @@ def test_real_git_merge_export_accepts_a_trusted_provider_result(tmp_path: Path,
     monkeypatch.setattr(module, "_check_record", lambda _run, request, _entry, _index: record(request, request["source_file_sha256"]))
     import scripts._execution as execution
     monkeypatch.setattr(execution, "validate_execution_receipt", lambda *_args: [])
-    result = module.run_integration_checks(run, repo, merge_sha, "bugsweep/fix", Path(shutil.which("git") or "git"))
+    result = module.run_integration_checks(run, repo, merge_sha, "bugsweep/fix", Path(shutil.which("git") or "git").resolve())
     assert result["status"] == "verified"
     receipt = json.loads(Path(result["receipt_path"]).read_text())
     assert receipt["merge_sha"] == merge_sha

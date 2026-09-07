@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016,SC2030,SC2031
 # Current source-bound integration contract. These fixtures use real Git only;
 # provider execution is exercised in bench/tests/unit/test_integration_checks.py.
 
@@ -11,6 +12,7 @@ setup() {
   cat >"${HELPER}/_integration_checks.py" <<'PY'
 import argparse, hashlib, json, pathlib, sys
 p=argparse.ArgumentParser(); p.add_argument('--run-dir'); p.add_argument('--repo-root'); p.add_argument('--merge-sha'); p.add_argument('--branch'); p.add_argument('--git-path'); a=p.parse_args()
+if pathlib.Path(a.git_path).is_symlink(): sys.exit(2)
 if a.branch.endswith('/bad'): sys.exit(1)
 d=pathlib.Path(a.run_dir)/'integration-check-results'; d.mkdir(exist_ok=True)
 n=f'{a.merge_sha}-{hashlib.sha256(a.branch.encode()).hexdigest()[:16]}.json'
@@ -66,6 +68,12 @@ teardown() { rm -rf "$TMP"; }
   _branch bugsweep/one one one.txt; _branch bugsweep/two two two.txt
   run bash -c 'cd "$1" && bash "$2" --run-dir "$3" main bugsweep/one bugsweep/two' _ "$REPO" "${HELPER}/integrate.sh" "$RUN_DIR"
   [ "$status" -eq 0 ]; [[ "$output" == *'MERGED_COUNT=2'* ]]; [ -f "${REPO}/one.txt" ]; [ -f "${REPO}/two.txt" ]
+}
+
+@test "integrate: a PATH git symlink is canonicalized for the trusted provider" {
+  mkdir "${TMP}/git-bin"; ln -s "$(command -v git)" "${TMP}/git-bin/git"
+  run env PATH="${TMP}/git-bin:${PATH}" bash -c 'cd "$1" && bash "$2" --run-dir "$3" main bugsweep/fix' _ "$REPO" "${HELPER}/integrate.sh" "$RUN_DIR"
+  [ "$status" -eq 0 ]; [[ "$output" == *'bugsweep/fix:merged'* ]]
 }
 
 @test "integrate: provider failure preserves the bad and remaining branches after prior success" {

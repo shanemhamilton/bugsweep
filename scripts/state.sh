@@ -78,7 +78,11 @@ except Exception:
 PY
   else
     local size
-    size="$(stat -f '%z' "$META" 2>/dev/null || stat -c '%s' "$META" 2>/dev/null || printf '')"
+    if stat --version >/dev/null 2>&1; then
+      size="$(stat -c '%s' "$META" 2>/dev/null || true)"
+    else
+      size="$(stat -f '%z' "$META" 2>/dev/null || true)"
+    fi
     case "$size" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
     [ "$size" -le "$META_MAX_BYTES" ] || { printf '0'; return 0; }
     grep -o '"runs"[[:space:]]*:[[:space:]]*[0-9]*' "$META" 2>/dev/null \

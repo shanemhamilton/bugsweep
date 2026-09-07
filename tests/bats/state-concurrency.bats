@@ -571,6 +571,35 @@ ENV
   [ "$risk_lines" -eq 1504 ]
 }
 
+@test "state.sh persist (no-python fallback): reads a GNU stat file size without BSD output contamination" {
+  local fakebin="${BATS_TMP}/fake-gnu-stat"
+  mkdir -p "$fakebin"
+  cat > "${fakebin}/stat" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf 'stat (GNU coreutils)\n' ;;
+  -c) wc -c < "$3" | tr -d '[:space:]' ;;
+  -f) printf 'filesystem output, not a byte count\n'; exit 1 ;;
+  *) exit 2 ;;
+esac
+SH
+  chmod +x "${fakebin}/stat"
+
+  local one="${BATS_TMP}/run-nopy-size-1" two="${BATS_TMP}/run-nopy-size-2"
+  _make_run_dir "$one" "nopy-size-1" "nopy-size-1.txt"
+  _make_run_dir "$two" "nopy-size-2" "nopy-size-2.txt"
+
+  run env PATH="${fakebin}:$PATH" BUGSWEEP_NO_PYTHON=1 bash "$STATE_SH" persist "$one"
+  [ "$status" -eq 0 ]
+  run env PATH="${fakebin}:$PATH" BUGSWEEP_NO_PYTHON=1 bash "$STATE_SH" persist "$two"
+  [ "$status" -eq 0 ]
+
+  local runs
+  runs="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["runs"])' \
+    "${REPO}/.bugsweep/state/meta.json")"
+  [ "$runs" -eq 2 ]
+}
+
 @test "state.sh persist: python-harvest failure fallback does not rewrite meta.json" {
   # Deterministic single-process variant of BLOCKER A. Seed meta.json with an
   # extra canary key: the locked (python) ordinal reserve preserves unknown

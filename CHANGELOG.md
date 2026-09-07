@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use portable SHA-256 commands and deterministic native-output test fixtures
   across Linux and macOS.
 - Accept equivalent macOS run-directory paths without changing run ownership.
+- Resolve symlinked Git installations before the integration executable check.
+- Read fallback run counters with the correct GNU/BSD `stat` syntax, preserving
+  run counts when Python is unavailable.
 - Allow fresh and repeated installations: an absent recovery journal is normal,
   installer metadata is excluded from Git dirt, and updates invoke Bash directly
   without modifying tracked executable bits.
