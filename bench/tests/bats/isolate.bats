@@ -8,7 +8,15 @@ load helpers
 
 setup() {
   BATS_TMP="$(mktemp -d)"
+  BASH_BIN="$(command -v bash)"
+  mkdir "${BATS_TMP}/bin"
+  # Dry-run and no-launch paths only check docker is discoverable. This sentinel
+  # must never be executed; an invocation turns the fixture failure loud.
+  printf '#!/usr/bin/env bash\necho "test docker sentinel executed" >&2\nexit 99\n' > "${BATS_TMP}/bin/docker"
+  chmod +x "${BATS_TMP}/bin/docker"
+  PATH="${BATS_TMP}/bin:${PATH}"
   export BATS_TMP
+  export PATH
 }
 
 teardown() {
@@ -143,7 +151,8 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "isolate fails closed (exit 1) when docker is absent" {
-  BENCH_FAKE_NO_DOCKER=1 run "$ISOLATE_SH" --print-cmd bench/img:latest
+  mkdir "${BATS_TMP}/empty"
+  run env PATH="${BATS_TMP}/empty" "$BASH_BIN" "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 1 ]
   assert_contains "$output" "docker"
 }
@@ -226,7 +235,8 @@ teardown() {
 
 @test "proxy fails closed (exit 1) when docker is absent" {
   cd "$BATS_TMP"
-  BENCH_PROXY_NO_LAUNCH=1 BENCH_FAKE_NO_DOCKER=1 run "$PROXY_SH" start run-nodock-789
+  mkdir "${BATS_TMP}/empty"
+  BENCH_PROXY_NO_LAUNCH=1 run env PATH="${BATS_TMP}/empty" "$BASH_BIN" "$PROXY_SH" start run-nodock-789
   [ "$status" -eq 1 ]
   assert_contains "$output" "docker"
 }

@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resolve symlinked Git installations before the integration executable check.
 - Read fallback run counters with the correct GNU/BSD `stat` syntax, preserving
   run counts when Python is unavailable.
+- Make dry-run Docker fixtures independent of installed runtimes and use portable
+  monotonic timestamps for lock contention checks.
 - Allow fresh and repeated installations: an absent recovery journal is normal,
   installer metadata is excluded from Git dirt, and updates invoke Bash directly
   without modifying tracked executable bits.
