@@ -122,7 +122,13 @@ def _identity(state: dict[str, str]) -> dict[str, str]:
 
 
 def _state_for_run(run_dir: Path, state: dict[str, str]) -> None:
-    if state.get("BUGSWEEP_RUN_DIR") != str(run_dir):
+    # Preserve exact run ownership while accepting equivalent absolute paths
+    # (for example macOS's /var -> /private/var compatibility alias).
+    try:
+        recorded_run_dir = Path(state["BUGSWEEP_RUN_DIR"]).resolve(strict=True)
+    except (KeyError, OSError):
+        raise LifecycleError("run directory identity mismatch") from None
+    if recorded_run_dir != run_dir:
         raise LifecycleError("run directory identity mismatch")
 
 

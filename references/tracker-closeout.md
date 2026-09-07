@@ -32,7 +32,7 @@ Create or update work for:
 
 - confirmed bugs not fixed because the run was detect-only or below the fix floor;
 - quarantined fixes, regressions, unavailable execution/native-review evidence, approval
-  declines/timeouts, and fixes with `NO_CHECKS` or a flaky classification;
+  declines/timeouts, and provider check `PROOF_ERROR` results;
 - a landing/cleanup failure that leaves actionable code work;
 - `closeout_unexpected_dirt` escrowed by `finalize.sh`;
 - one run-level follow-up item for an incomplete audited frontier when the project expects

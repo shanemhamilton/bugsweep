@@ -389,8 +389,9 @@ PY
 
 @test "SKILL.md documents the --worktree preflight contract" {
   grep -q -- '--worktree' "$SKILL_MD"
-  grep -q 'BUGSWEEP_LEASE_PID' "$SKILL_MD"
-  grep -q '\.bugsweep/worktrees' "$SKILL_MD"
+  grep -qi 'Use `preflight.sh --worktree`' "$SKILL_MD"
+  grep -qi 'worktree identity' "$SKILL_MD"
+  grep -qi 'Only an orchestrator intentionally starting sibling runs adds `--concurrent`' "$SKILL_MD"
 }
 
 # ---------------------------------------------------------------------------
@@ -440,8 +441,6 @@ PY
 # preflight/finalize must use exact per-run closeout instead.
 # ---------------------------------------------------------------------------
 
-@test "SKILL.md limits --reap-worktrees to manual crash recovery" {
-  grep -qi 'Crash recovery' "$SKILL_MD"
-  grep -qi 'manual' "$SKILL_MD"
-  grep -q -- '--reap-worktrees' "$SKILL_MD"
+@test "SKILL.md keeps normal runs out of repository-wide reaping" {
+  grep -qi 'Normal runs never invoke a repository-wide reaper' "$SKILL_MD"
 }

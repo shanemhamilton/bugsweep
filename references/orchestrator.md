@@ -171,8 +171,9 @@ For fix ordering and root-cause judgment, read every subagent's
   look next" handoff: `kind` is one of `uncovered_batch` / `stale_file` / `high_risk_file` /
   `quarantined`, ordered exactly that way and capped at `FOLLOW_UP_CAP` (50,
   `bench/scorer/run_summary.py:132`). Union every subagent's `follow_up[]` for Step 6.
-- **`flaky[]`** (optional) — one entry per `flaky_test` ledger event. It blocks automatic
-  integration and requires tracker routing; it is not a waiver for a landed fix.
+- **`flaky[]`** is retained in the summary schema for old runs only. The current structured
+  check gate does not classify later passes as a waiver: a newly observed failing, missing, or
+  skipped native identity remains a regression.
 
 ## Step 5 — Decide fix order, then integrate: `scripts/integrate.sh`
 
@@ -191,33 +192,25 @@ Real usage (`scripts/integrate.sh:36`):
 bash scripts/integrate.sh [--run-dir RUN_DIR] [--delete-merged] <target-branch> <branch1> [branch2 ...]
 ```
 
-**Always pass `--run-dir "$ORCH_DIR"`.** The script's own header documents exactly why this
-is the required orchestrator convention, and names this bead directly
-(`scripts/integrate.sh:386-388`, the fix for bugsweep-l2r):
-
-> "the orchestrator avoids the leak entirely by passing `--run-dir` (k3f doc convention)"
-
-Without `--run-dir`, `integrate.sh` writes `integrate-results.json` into a `mktemp -d`
-sidecar next to the repo (`scripts/integrate.sh:391-395`) that nothing ever cleans up except
-`bugsweep-cleanup.sh --reap-worktrees`'s incidental sweep. With `--run-dir`, results land at
-`<ORCH_DIR>/integrate-results.json`, a directory the orchestrator already owns and can read
-back deterministically.
-
-**Precondition the taxonomy table below depends on:** `integrate.sh`'s default quality gate
-is `bash scripts/run_checks.sh verify "<RUN_DIR>"` when `--run-dir` is given
-(`scripts/integrate.sh:163-169`), and `run_checks.sh verify` compares against
-`<RUN_DIR>/baseline.json`, which only exists if `run_checks.sh baseline <RUN_DIR>` was run
-first (`scripts/run_checks.sh:1-4,429-438`). **Run this once, on the target branch, before
-your first `integrate.sh` call:**
+**Always pass a dedicated provider-prepared `--run-dir "$INTEGRATION_RUN_DIR"`.** It is not
+the plain coordination directory. Before merging, start an isolated worktree from the target
+branch with the operator-owned execution policy, then use that run's prepared `check-plan.json`
+and provider-verified `baseline.json`. `integrate.sh` requires both files and rejects a plain
+directory (`scripts/integrate.sh:112-116`):
 
 ```bash
 git checkout "$TARGET_BRANCH"
-bash scripts/run_checks.sh baseline "$ORCH_DIR"
+bash scripts/preflight.sh --worktree --execution-policy /absolute/external-policy.json
+# Read RUN_DIR and WORKTREE from preflight output.
+INTEGRATION_RUN_DIR="<RUN_DIR>"
+bash scripts/run_checks.sh baseline "$INTEGRATION_RUN_DIR"
 ```
 
-Skipping this means the first `verify` compares against a missing baseline (defaults to
-`base_overall=0`, i.e. "everything was green") — any pre-existing red check on the target
-branch would then misreport as a regression caused by the first merged branch.
+The frozen plan records the native check commands, source identity, and required-untrusted
+provider policy. `integrate.sh` exports each merged tree and runs those same frozen native
+checks through that provider; it does not run a host shell command or accept a legacy quality
+gate override. Keep `ORCH_DIR` for partitioning and rollups, and read integration receipts from
+`$INTEGRATION_RUN_DIR/integration-check-results/`.
 
 `integrate.sh` runs from the orchestrator's own main-repo checkout (not inside any
 subagent's worktree) — branches created in a linked worktree are ordinary refs, visible and
@@ -279,7 +272,7 @@ hunt for bugs yourself. Each subagent runs its own full hunt/fix/finalize loop
    quarantined/confirmed_unfixed findings to build the next-session frontier.
 3. Review every subagent's fixes (diff + report.md) before integrating — do not blind-merge.
    Decide integration order yourself, then integrate the verified branches with
-   bash "$SKILL_ROOT/scripts/integrate.sh" --run-dir <ORCH_DIR> <target> <branch1> [branch2 ...],
+   bash "$SKILL_ROOT/scripts/integrate.sh" --run-dir <INTEGRATION_RUN_DIR> <target> <branch1> [branch2 ...],
    which re-runs the quality gate after every merge and stops cleanly on the first conflict
    or regression.
 4. After each integration, run `python3 -B "$SKILL_ROOT/scripts/_prepare_execution.py" reverify <RUN_DIR> <BUG_ID> <SHA>` and then `bash "$SKILL_ROOT/scripts/repro.sh" reverify <RUN_DIR> <BUG_ID> <REQUEST_PATH>` for every original regression test. Preserve each separate `fix_reverified` receipt.
@@ -290,7 +283,7 @@ hunt for bugs yourself. Each subagent runs its own full hunt/fix/finalize loop
    push as part of Bugsweep closeout; never force-push or skip a failed gate.
 
 Constraints: never touch the user's real branch/tree from inside a subagent (that's what
---worktree isolation is for); never bypass run_checks.sh verify; never delete by prefix;
+--worktree isolation is for); never bypass the frozen provider check gate; never delete by prefix;
 delete an uncontained exact run branch only after verified recovery escrow, tracker/outbox
 receipt, and independent review; on the first INTEGRATE_RESULT=stopped, stop integrating
 rather than reordering blindly, then record and close out the remaining branches.
@@ -310,10 +303,10 @@ before optional delivery** (steps 3-5), and **follow-up planning** (step 5).
       `BUGSWEEP_ROLLUP_FILE="$ORCH_DIR/rollup.log" bash "$SKILL_ROOT/scripts/finalize.sh" "<its RUN_DIR>"`.
 - [ ] Do not hunt. Read `$ORCH_DIR/rollup.log` for fast triage (`ACTION=`), then each
       subagent's `run-summary.json` for `root_cause_clusters`/`follow_up`/full findings.
-- [ ] `git checkout "$TARGET_BRANCH" && bash "$SKILL_ROOT/scripts/run_checks.sh" baseline "$ORCH_DIR"`
-      once, before the first integrate call.
+- [ ] Create the dedicated target-based provider run, then keep its frozen plan and verified
+      baseline in `$INTEGRATION_RUN_DIR` before the first integration.
 - [ ] Decide integration order from the findings just read.
-- [ ] `bash "$SKILL_ROOT/scripts/integrate.sh" --run-dir "$ORCH_DIR" "$TARGET_BRANCH" <branches...>`.
+- [ ] `bash "$SKILL_ROOT/scripts/integrate.sh" --run-dir "$INTEGRATION_RUN_DIR" "$TARGET_BRANCH" <branches...>`.
 - [ ] For each original test: `python3 -B "$SKILL_ROOT/scripts/_prepare_execution.py" reverify "<ORIGINAL_RUN_DIR>" <BUG_ID> <SHA>`, then `bash "$SKILL_ROOT/scripts/repro.sh" reverify "$ORCH_DIR" <BUG_ID> <REQUEST_PATH>`.
 - [ ] Review the diff/report and final-tree reverify receipt for every merged branch before optional delivery.
 - [ ] `git push` (no `--force`) only after review passes.
@@ -330,11 +323,10 @@ token, that's called out explicitly rather than invented.
 
 | Code / signal | Emitted by | Meaning | Orchestrator action |
 |---|---|---|---|
-| `NO_CHECKS` | `scripts/run_checks.sh:424` (`echo "NO_CHECKS"`, exit 0) | No test/build/typecheck/lint command configured or auto-detected. | Do not auto-integrate. Record the blocked finding and preserve recovery state; a provider-verified suite receipt is required for an automatic fix. |
-| `REGRESSION` | `scripts/run_checks.sh:554` (exit 1) | A check newly fails vs. baseline and survived the flaky-reclassification reruns. | Per SKILL.md's trust-contract rule 5 (`SKILL.md:342-346`), the subagent itself reverts the fix and emits a `quarantine` ledger event — this is not something the orchestrator handles directly, but it's why a run's `quarantined[]` is non-empty. |
-| `quarantine` (ledger event) | Written by the subagent per SKILL.md's fix protocol (`SKILL.md:44,342-346`), consumed by `bench/scorer/run_summary.py:363,440` into `quarantined[]` | The real, end-to-end path for "regression → quarantined": `run_checks.sh` prints `REGRESSION` → subagent reverts + appends `{"event":"quarantine",...}` to `ledger.jsonl` → `run-summary.json`'s `quarantined[]` array. There is no single fused "REGRESSION_QUARANTINED" token — it's this two-step chain. | Treat `quarantined[]` entries as `follow_up[kind=quarantined]` candidates (`schemas/run-summary.schema.json:125`) for the next session, not as something to fix now. |
-| `FLAKY=<n>` / `FLAKY_TEST=<id>` | `scripts/run_checks.sh:562-568` | A rerun classification is not immutable proof that the test is flaky. | Block automatic integration, tracker-route the finding, and preserve the exact branch or recovery bundle for human resolution. |
-| `OK` | `scripts/run_checks.sh:570` (exit 0) | Verify passed clean, no regression, no flaky reclassification needed. | Normal — proceed. |
+| `PROOF_ERROR` | `scripts/_proof.py` check gate | The frozen plan, source identity, provider receipt, native result, or baseline cannot be verified. | Do not integrate. Preserve the run and route the missing evidence or provider failure for human action. No host-shell or degraded fallback is allowed. |
+| `REGRESSION` | `scripts/_proof.py` check gate | A native check/test identity is newly failing, missing, or changed from a prior pass. A later passing run does not waive the observed regression. | Quarantine the owned change as required by `prompts/fix.md`; preserve the receipt and recovery state. |
+| `quarantine` (ledger event) | Recorded by the fix/closeout flow and reduced into `run-summary.json` | An attempted fix cannot land because its required evidence or final verification failed. | Treat it as a tracker follow-up with its immutable proof or failure receipt; do not retry by weakening the provider requirements. |
+| `OK` | `scripts/_proof.py` check gate | The provider verified the frozen check plan against the current source with no newly failing native identity. | Continue only to the separate immutable repro and review gates; `OK` alone never authorizes a fix or integration. |
 | `status: "complete"` | `bench/scorer/run_summary.py:185` (report.md was written; `report_is_stub=false`) | The subagent finished normally and wrote a real report. `stop_reason` is `null`. | Normal — read `findings`/`fixed`/`quarantined` as usual. |
 | `status: "partial"` | `bench/scorer/run_summary.py:186-187`, `stop_reason` = the fixed string at `bench/scorer/run_summary.py:118-121` | `report.md` was never written (stub), but **some** hunt batches were covered before stopping. The candidate name "PARTIAL_TIMEOUT" is **not accurate as literally named** — this status is not specifically about a timeout; it fires for any mid-hunt stop (context-build stall, crash, etc.) as long as `covered > 0`. | Treat as a run that needs a follow-up pass on its uncovered batches (`follow_up[kind=uncovered_batch]`); do not assume it exhausted its frontier. |
 | `status: "stalled"` | `bench/scorer/run_summary.py:186,188`, `stop_reason` = the fixed string at `bench/scorer/run_summary.py:114-117` | `report.md` was never written **and** zero batches were covered. This is the real analog of the candidate name "STALLED_NO_REPORT." | The subagent made no progress at all — re-dispatch its whole shard rather than treating it as partially done. |

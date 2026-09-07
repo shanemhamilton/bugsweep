@@ -33,14 +33,17 @@ _make_run_dir() {
   git -C "$repo" checkout -b "$branch" -q 2>/dev/null || true
 
   cat > "${run_dir}/state.env" <<ENV
-BUGSWEEP_TS="${ts}"
-BUGSWEEP_BRANCH="${branch}"
-BUGSWEEP_ORIG_BRANCH="${orig_branch}"
-BUGSWEEP_STASH_REF="none"
-BUGSWEEP_START_EPOCH="$(date +%s)"
-BUGSWEEP_SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts"
-BUGSWEEP_MODE="detect-only"
-BUGSWEEP_WORKTREE="${repo}"
+BUGSWEEP_TS=${ts}
+BUGSWEEP_RUN_ID=${ts}
+BUGSWEEP_RUN_DIR=${run_dir}
+BUGSWEEP_REPO_ROOT=${repo}
+BUGSWEEP_BRANCH=${branch}
+BUGSWEEP_ORIG_BRANCH=${orig_branch}
+BUGSWEEP_ORIG_HEAD=$(git -C "$repo" rev-parse HEAD)
+BUGSWEEP_STASH_REF=none
+BUGSWEEP_START_EPOCH=$(date +%s)
+BUGSWEEP_MODE=detect-only
+BUGSWEEP_WORKTREE=${repo}
 ENV
 
   touch "${run_dir}/ledger.jsonl"
@@ -184,6 +187,10 @@ assert d['coverage'] == {'covered': 0, 'total': 10}, d['coverage']
 @test "finalize.sh: emits run-summary.json on the stub/partial report path" {
   _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
   _make_recon_json "$RUN_DIR" 0 10
+
+  run python3 -B "$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/_terminal_lifecycle.py" get "$RUN_DIR" BUGSWEEP_BRANCH
+  [ "$status" -eq 0 ]
+  [ "$output" = "bugsweep/20991231T000000Z" ]
 
   run bash "$FINALIZE_SH" "$RUN_DIR"
   [ "$status" -eq 0 ]

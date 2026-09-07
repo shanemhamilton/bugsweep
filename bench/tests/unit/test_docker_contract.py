@@ -68,6 +68,7 @@ def test_benchmark_arms_are_prompt_bound_to_detect_only_skill_excerpts() -> None
         assert "IMMUTABLE BENCHMARK SKILL EXCERPT" in runner
         assert "first-finding-unix-seconds.txt" in runner
         assert "adapter-metadata.json" in runner
+        assert "command -v sha256sum" in runner and "shasum -a 256" in runner
         assert "--sandbox read-only" in runner or 'allowed_tools="Read"' in runner
 
 
@@ -79,7 +80,7 @@ def test_review_adapter_streams_fake_native_json_without_scratch_artifacts(tmp_p
     output.mkdir()
     for host, endpoint, binary in (("claude", "ANTHROPIC_BASE_URL", "claude"), ("codex", "CODEX_BENCH_BASE_URL", "codex")):
         executable = fake_bin / binary
-        executable.write_text("#!/bin/sh\nprintf '{\\\"type\\\":\\\"safe-event\\\"}\\n'\n")
+        executable.write_text("#!/bin/sh\nprintf '%s\\n' '{\"type\":\"safe-event\"}'\n")
         executable.chmod(0o755)
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", endpoint: "http://owned-proxy:8888",
                "BENCH_INERT_CLIENT_ID": "benchmark-inert-client-credential", "BUGSWEEP_OUTPUT_DIR": str(output)}
@@ -93,7 +94,7 @@ def test_benchmark_adapter_imports_fake_native_json_and_metadata(tmp_path: Path)
     output = tmp_path / "output"; output.mkdir()
     for host, endpoint, binary in (("claude", "ANTHROPIC_BASE_URL", "claude"), ("codex", "CODEX_BENCH_BASE_URL", "codex")):
         executable = fake_bin / binary
-        executable.write_text("#!/bin/sh\nprintf '{\\\"text\\\":\\\"FINDING: app.py:1\\\"}\\n'\n")
+        executable.write_text("#!/bin/sh\nprintf '%s\\n' '{\"text\":\"FINDING: app.py:1\"}'\n")
         executable.chmod(0o755)
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", endpoint: "http://owned-proxy:8888",
                "BENCH_INERT_CLIENT_ID": "benchmark-inert-client-credential", "BUGSWEEP_OUTPUT_DIR": str(output)}

@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2164,SC2129
 
 ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 CLOSEOUT_SH="${ROOT}/scripts/closeout.sh"
-INTEGRATE_SH="${ROOT}/scripts/integrate.sh"
 
 setup() {
   START_CWD="$(pwd)"
@@ -34,18 +34,34 @@ BUGSWEEP_STASH_REF='none'
 BUGSWEEP_WORKTREE='${WT}'
 ENV
   : > "${RUN_DIR}/ledger.jsonl"
-  printf '{"confirmed_unfixed":[],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '[]' '[]' '[]'
   printf '{"state":"PENDING_CLOSEOUT"}\n' > "${REPO}/.bugsweep/state/closeout-blocked/${RUN_ID}.json"
 }
 
 teardown() {
-  cd "$START_CWD"
+  cd "$START_CWD" || return
   rm -rf "$TMP"
 }
 
+_write_summary() {
+  local fixed="$1" quarantined="$2" confirmed_unfixed="$3" degraded="${4:-false}"
+  printf '{"schema_version":1,"mode":"detect","status":"complete","stop_reason":null,"coverage":{"covered":0,"total":0},"counts":{"critical":0,"high":0,"medium":0,"low":0,"architectural":0},"fixed":%s,"quarantined":%s,"confirmed_unfixed":%s,"findings":[],"degraded":%s,"follow_up":[]}\n' \
+    "$fixed" "$quarantined" "$confirmed_unfixed" "$degraded" > "${RUN_DIR}/run-summary.json"
+}
+
 _set_fixed_summary() {
-  printf '{"fixed":["BUG-1"],"confirmed_unfixed":[],"quarantined":[],"follow_up":[]}\n' \
-    > "${RUN_DIR}/run-summary.json"
+  _write_summary '["BUG-1"]' '[]' '[]'
+}
+
+_seed_synthetic_integration_receipt() {
+  # Test fixture only: bind real fixture refs so downstream rejection guards
+  # run before the separate full provider-proof validation.
+  git -C "$REPO" merge -q --no-ff "$BRANCH" -m 'fixture merge'
+  local source target
+  source="$(git -C "$REPO" rev-parse "$BRANCH")"
+  target="$(git -C "$REPO" rev-parse "$ORIG")"
+  printf '{"target_branch":"%s","quality_gate_command":"provider:frozen-check-plan","result":"complete","branches":[{"branch":"%s","status":"merged","quality_gate_passed":true,"source_tip":"%s","target_tip":"%s"}]}' \
+    "$ORIG" "$BRANCH" "$source" "$target" > "${RUN_DIR}/integrate-results.json"
 }
 
 @test "closeout: clean recorded run removes only its exact branch and worktree" {
@@ -67,7 +83,7 @@ _set_fixed_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): test'
-  printf '{"confirmed_unfixed":["BUG-1"],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '[]' '[]' '["BUG-1"]'
 
   cd "$REPO"
   run bash "$CLOSEOUT_SH" "$RUN_DIR" recorded
@@ -83,7 +99,7 @@ _set_fixed_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): test'
-  printf '{"confirmed_unfixed":["BUG-1"],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '[]' '[]' '["BUG-1"]'
   git -C "$REPO" bundle create "${RUN_DIR}/recovery.bundle" "refs/heads/${BRANCH}"
   tip="$(git -C "$REPO" rev-parse "$BRANCH")"
   sha="$(shasum -a 256 "${RUN_DIR}/recovery.bundle" | awk '{print $1}')"
@@ -106,7 +122,7 @@ _set_fixed_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): test'
-  printf '{"degraded":false,"fixed":[],"confirmed_unfixed":["BUG-1"],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '[]' '[]' '["BUG-1"]'
   git -C "$REPO" bundle create "${RUN_DIR}/recovery.bundle" "refs/heads/${ORIG}"
   tip="$(git -C "$REPO" rev-parse "$BRANCH")"
   sha="$(shasum -a 256 "${RUN_DIR}/recovery.bundle" | awk '{print $1}')"
@@ -125,7 +141,7 @@ _set_fixed_summary() {
 }
 
 @test "closeout: degraded summary cannot silently erase tracker obligations" {
-  printf '{"degraded":true,"fixed":[],"confirmed_unfixed":[],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '[]' '[]' '[]' true
 
   cd "$REPO"
   run bash "$CLOSEOUT_SH" "$RUN_DIR" recorded
@@ -163,8 +179,7 @@ _set_fixed_summary() {
 
 @test "closeout: landed rejects a run with no fixed findings" {
   cd "$REPO"
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
-  [ "$status" -eq 0 ]
+  _seed_synthetic_integration_receipt
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -178,7 +193,7 @@ _set_fixed_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): contained fix'
-  printf '{"fixed":["BUG-1"],"confirmed_unfixed":[],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _set_fixed_summary
   git -C "$REPO" merge -q --no-ff "$BRANCH" -m 'manual merge fixed work'
 
   cd "$REPO"
@@ -191,10 +206,9 @@ _set_fixed_summary() {
 }
 
 @test "closeout: landed still requires tracker receipts for unresolved bugs" {
-  printf '{"degraded":false,"fixed":["BUG-FIX"],"confirmed_unfixed":["BUG-1"],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '["BUG-FIX"]' '[]' '["BUG-1"]'
   cd "$REPO"
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
-  [ "$status" -eq 0 ]
+  _seed_synthetic_integration_receipt
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -210,8 +224,7 @@ _set_fixed_summary() {
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): first tip'
   cd "$REPO"
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
-  [ "$status" -eq 0 ]
+  _seed_synthetic_integration_receipt
 
   printf 'second fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
@@ -234,8 +247,7 @@ _set_fixed_summary() {
   printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   cd "$REPO"
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
-  [ "$status" -eq 0 ]
+  _seed_synthetic_integration_receipt
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -255,8 +267,7 @@ _set_fixed_summary() {
   printf '{"event":"approval","bug_id":"BUG-1","approved":true}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium"}\n' >> "${RUN_DIR}/ledger.jsonl"
   cd "$REPO"
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
-  [ "$status" -eq 0 ]
+  _seed_synthetic_integration_receipt
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -266,6 +277,7 @@ _set_fixed_summary() {
 }
 
 @test "closeout: high-severity Referee votes appended after mutation cannot authorize landing" {
+  _set_fixed_summary
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): late votes'
@@ -274,10 +286,8 @@ _set_fixed_summary() {
   printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"high","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"high","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"high","verdict":"NOT_CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
-  printf '{"degraded":false,"fixed":["BUG-1"],"confirmed_unfixed":[],"quarantined":[],"follow_up":[],"findings":[{"bug_id":"BUG-1","fixed":true,"severity":"high","vote_split":{"confirmed":2,"total":3,"eligible":true}}]}\n' > "${RUN_DIR}/run-summary.json"
   cd "$REPO"
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
-  [ "$status" -eq 0 ]
+  _seed_synthetic_integration_receipt
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -294,8 +304,7 @@ _set_fixed_summary() {
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"fix_committed","bug_id":"BUG-1"}\n' >> "${RUN_DIR}/ledger.jsonl"
   cd "$REPO"
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
-  [ "$status" -eq 0 ]
+  _seed_synthetic_integration_receipt
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 

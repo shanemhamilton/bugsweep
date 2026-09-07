@@ -63,5 +63,6 @@ shellcheck install.sh scripts/update-install.sh scripts/quality-check.sh
 if $FULL_GIT_CI; then
   [ "${BUGSWEEP_FULL_GIT_CI:-}" = 1 ] || { echo 'full Git CI requires BUGSWEEP_FULL_GIT_CI=1' >&2; exit 2; }
   python3 -B -m pytest -p no:cacheprovider bench/tests/unit/test_mark_batch_covered.py
+  python3 -B -m pytest -p no:cacheprovider bench/tests/git
   bats tests/bats bench/tests/bats
 fi

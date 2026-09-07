@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Use portable SHA-256 commands and deterministic native-output test fixtures
+  across Linux and macOS.
+- Accept equivalent macOS run-directory paths without changing run ownership.
+- Allow fresh and repeated installations: an absent recovery journal is normal,
+  installer metadata is excluded from Git dirt, and updates invoke Bash directly
+  without modifying tracked executable bits.
+- Migrate legacy shell tests to the structured evidence contracts, retaining
+  regression checks in the Python proof suites and real Git installer fixtures.
+
+Stable promotion still requires the outstanding live evaluation and acceptance
+evidence; these compatibility fixes do not establish those results.
+
 ## [0.7.0-rc.1] - 2026-09-06
 
 Development prerelease for review and validation. This release does not establish

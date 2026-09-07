@@ -38,8 +38,9 @@ Separate investigation, review, executable proof, and operational completion.
    judgment. Different prompts or repeated votes do not prove independence.
 8. Track every planned batch, including deferred work. Ranking and analyzer hints
    may reorder investigation, never narrow scope or confirm a bug.
-9. Respect iteration, runtime and fix caps. A fix cap stops mutation while detection
-   continues; other stops proceed to artifact finalization and closeout.
+9. Respect iteration, runtime and fix caps. A fix cap stops mutation, not discovery:
+   `STOP fix_cap_reached DETECT_ONLY_REMAINDER=1` continues detect-and-record mode;
+   other stops proceed to artifact finalization and closeout.
 10. Success requires a verified terminal receipt, no closeout blocker, and exact
     branch/worktree absence. Preserve ambiguous or dirty resources for recovery.
     Follow the independent destructive-action check in
@@ -60,6 +61,10 @@ Separate investigation, review, executable proof, and operational completion.
 Updates default to a stable release. Edge and exact-version installation are explicit
 installer choices. Preserve `CLAUDE_SKILLS_DIR` / `CODEX_DIR` and active-install metadata;
 see [installation](README.md#install). Do not update during an active audit.
+
+Use `/bugsweep --recall` to retain Near misses (review, never auto-fixed). Recall stays
+visible alongside repro status and the vote split for high/critical findings; it never
+changes fix eligibility.
 
 ## Prepare
 
@@ -125,7 +130,7 @@ At every expensive phase boundary and after each context batch, run:
 bash "$SKILL_ROOT/scripts/guard.sh" "$RUN_DIR"
 ```
 
-`STOP fix_cap_reached` switches to detect-and-record. Any other `STOP` goes to closeout.
+`STOP fix_cap_reached DETECT_ONLY_REMAINDER=1` switches to detect-and-record. Any other `STOP` goes to closeout.
 The execution provider enforces subprocess deadlines; model reasoning still depends
 on these checkpoints. A hard kill leaves a recoverable pending run, not success.
 
@@ -176,8 +181,9 @@ limitations, checks and stop reason. Incomplete coverage is PARTIAL. Then:
 bash "$SKILL_ROOT/scripts/finalize.sh" "$RUN_DIR"
 ```
 
-Finalization writes audit artifacts and a pending closeout handoff. It is not operational
-completion. Follow [tracker-closeout.md](references/tracker-closeout.md) to upsert and
+Finalization writes audit artifacts and a pending closeout handoff: an artifact checkpoint, not the terminal success signal.
+It is not operational completion. Never claim "done" while the exact branch or worktree remains.
+Follow [tracker-closeout.md](references/tracker-closeout.md) to upsert and
 read back unresolved actionable work, land only eligible local fixes through the
 existing integration gate, or preserve unique work in verified recovery escrow.
 Close only the exact run-owned resources with `closeout.sh "$RUN_DIR" landed|recorded`.

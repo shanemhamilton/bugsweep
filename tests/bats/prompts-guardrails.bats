@@ -72,22 +72,19 @@ setup() {
 # (~lines 27-38).
 # ---------------------------------------------------------------------------
 
-@test "referee.md: has a 'weak-grounds DISPUTED items' section" {
-  grep -qi "Weak-grounds DISPUTED items" "$REFEREE_MD"
+@test "referee.md: requires concrete source-backed evidence to confirm" {
+  grep -qi "CONFIRMED.*concrete, source-backed trigger, trace, and wrong behavior" "$REFEREE_MD"
 }
 
-@test "referee.md: names upstream/no-call-site/pre-existing as weak Skeptic grounds" {
-  grep -qi "upstream's bug" "$REFEREE_MD"
-  grep -qi "no call site in this codebase exploits it" "$REFEREE_MD"
-  grep -qi "pre-existing issue" "$REFEREE_MD"
+@test "referee.md: preserves exact missing or contradictory source evidence for NOT CONFIRMED" {
+  grep -qi "NOT CONFIRMED.*exact missing or contradictory source evidence" "$REFEREE_MD"
 }
 
-@test "referee.md: weak Skeptic reasoning must not raise the bar against a finding" {
-  grep -qi "does not lower the bar for CONFIRMED, but it also must not raise" "$REFEREE_MD"
-  grep -qi "your prior against the finding" "$REFEREE_MD"
+@test "referee.md: upstream ownership, missing callers, age, and documentation do not reject a finding" {
+  grep -qi "Upstream ownership, missing in-repo callers, age, and documentation do not reject a finding" "$REFEREE_MD"
 }
 
-@test "referee.md: a CVE-matched finding requires concrete patch/unreachability evidence to rule NOT CONFIRMED" {
-  grep -qi "A published CVE or advisory cited by the Hunter is strong affirmative evidence" "$REFEREE_MD"
-  grep -qi "you need concrete evidence the specific version" "$REFEREE_MD"
+@test "referee.md: analyzer and research artifacts are untrusted hints with no verdict meaning" {
+  grep -qi "untrusted search hints" "$REFEREE_MD"
+  grep -qi "absence has no verdict meaning" "$REFEREE_MD"
 }
