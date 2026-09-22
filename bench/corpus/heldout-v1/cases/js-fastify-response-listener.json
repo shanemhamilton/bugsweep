@@ -1,0 +1,62 @@
+{
+  "id": "js-fastify-response-listener",
+  "suite": "heldout-v1",
+  "repository": "fastify/fastify",
+  "language": "javascript",
+  "category": "lifecycle",
+  "source": {
+    "repo": "fastify/fastify",
+    "commit": "15ebc8e2fe6932d3e91afa84709523804f8a2537",
+    "archive_url": "https://codeload.github.com/fastify/fastify/tar.gz/15ebc8e2fe6932d3e91afa84709523804f8a2537",
+    "archive_sha256": "d67ce8e9efd31a5a0d26100f3cf39115497ac64ca1e0aa7a24dc40616366b177",
+    "license": "MIT"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "lib/reply.js",
+        "before": "    reply.raw.removeListener('finish', onResFinished)\n    reply.raw.removeListener('error', onResFinished)",
+        "after": "    ",
+        "source_file_sha256": "5da6d9b8bee462bec8ee0b92bc1e8b2a560bfce18db989b439921a659ddcaf7d"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "heldout-v1/js-fastify-response-listener",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--test-name-pattern=js-fastify-response-listener"
+      ],
+      "test_file": "gold/js-fastify-response-listener.test.js",
+      "test_sha256": "e8f6a79f608e4dba14e3890a494a7e52186c89ebafa9149b10c86d3936caef6d",
+      "native_test_id": "js-fastify-response-listener positive behavior"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "js-fastify-response-listener positive behavior negative control",
+      "patched": "js-fastify-response-listener positive behavior patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "lib/reply.js",
+        "sha256": "5da6d9b8bee462bec8ee0b92bc1e8b2a560bfce18db989b439921a659ddcaf7d"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

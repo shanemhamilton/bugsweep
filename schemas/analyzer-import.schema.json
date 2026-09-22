@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/schemas/analyzer-import.schema.json",
+  "title": "Bugsweep imported SARIF analyzer hints",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "analysis_ran", "ranking_hints_only", "count", "hits", "imports", "availability", "capabilities"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "analysis_ran": {"const": false},
+    "ranking_hints_only": {"const": true},
+    "count": {"type": "integer", "minimum": 0, "maximum": 2000},
+    "hits": {"type": "array", "maxItems": 2000, "items": {"$ref": "#/$defs/hit"}},
+    "imports": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/import"}},
+    "availability": {
+      "type": "object",
+      "maxProperties": 2,
+      "propertyNames": {"enum": ["codeql", "semgrep"]},
+      "additionalProperties": {"$ref": "#/$defs/availability"}
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["languages"],
+      "properties": {
+        "languages": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "additionalProperties": {"enum": ["precise_semantic", "heuristic_file"]}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason"],
+      "properties": {
+        "state": {"enum": ["imported", "unavailable", "rejected"]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "tool_version", "artifact_sha256", "artifact_bytes", "source_manifest_sha256", "source_manifest_current", "accepted_results", "rejected_results", "analysis_receipt_sha256", "execution_receipt_sha256", "command_sha256"],
+      "properties": {
+        "tool": {"enum": ["codeql", "semgrep"]},
+        "tool_version": {"type": "string", "minLength": 1, "maxLength": 256},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_bytes": {"type": "integer", "minimum": 0, "maximum": 16777216},
+        "source_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "source_manifest_current": {"type": "boolean"},
+        "accepted_results": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "rejected_results": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "analysis_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "execution_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "command_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "trace_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "column"],
+      "properties": {
+        "file": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "line": {"type": ["integer", "null"], "minimum": 1, "maximum": 10000000},
+        "column": {"type": ["integer", "null"], "minimum": 1, "maximum": 10000000}
+      }
+    },
+    "hit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "rule_id", "severity", "file", "line", "message", "evidence_status", "provenance"],
+      "properties": {
+        "tool": {"enum": ["codeql", "semgrep"]},
+        "rule_id": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "severity": {"enum": ["critical", "high", "medium", "low"]},
+        "file": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "line": {"type": ["integer", "null"], "minimum": 1, "maximum": 10000000},
+        "message": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "evidence_status": {"enum": ["verified", "unverified"]},
+        "evidence_reason": {"type": "string", "minLength": 1, "maxLength": 256},
+        "trace": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/trace_step"}},
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tool", "tool_version", "artifact_sha256", "source_manifest_sha256", "analysis_receipt_sha256", "execution_receipt_sha256", "command_sha256"],
+          "properties": {
+            "tool": {"enum": ["codeql", "semgrep"]},
+            "tool_version": {"type": "string", "minLength": 1, "maxLength": 256},
+            "artifact_sha256": {"$ref": "#/$defs/sha256"},
+            "source_manifest_sha256": {"$ref": "#/$defs/sha256"},
+            "analysis_receipt_sha256": {"$ref": "#/$defs/sha256"},
+            "execution_receipt_sha256": {"$ref": "#/$defs/sha256"},
+            "command_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      }
+    }
+  }
+}

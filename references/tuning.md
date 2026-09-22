@@ -37,15 +37,19 @@ Examples:
   `max_iterations` sized to your budget, `no_progress_streak_to_stop: 2`.
 - **Pre-release gate, no edits:** `/bugsweep` (detect-only) over the whole repo.
 
-## Adversarial review (new)
+## Execution and native review
 
-- `adversarial.challenge_enabled` — run the Skeptic pass that tries to disprove each
-  finding. Keep on; it is the main false-positive filter.
-- `adversarial.referee_enabled` — run the neutral Referee to resolve disputed findings and
-  independently rule every surviving candidate. Turning it off makes fix modes stop before
-  mutation; it is only a detect-mode reporting option.
-- `adversarial.referee_spotchecks_upheld` — legacy compatibility setting. Current fix modes
-  adjudicate every UPHELD item regardless of this value.
+- Automatic fixes require an external `required-untrusted` Docker execution policy. It
+  must use a digest-pinned image and denied network for checks, repro, and analyzers. If it
+  is absent or cannot produce a verified receipt, the run may detect and record findings but
+  must not fix them automatically.
+- `adversarial.hosts` defaults to `{}`. Set only explicit operator-approved `claude` and/or
+  `codex` model IDs. Preflight records that map and the installed review-prompt hash; each
+  fresh native review must match both. An empty map means native review is unavailable for
+  automatic fixes.
+- Multiple fresh verdicts determine eligibility; they are not statistically independent and
+  their confidence is uncalibrated. Static analyzers and research can seed investigation but
+  never confirm a candidate, narrow the required proof, or authorize a fix.
 
 ## Anti-pattern research (new)
 

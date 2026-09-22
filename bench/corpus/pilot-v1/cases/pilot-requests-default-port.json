@@ -1,0 +1,61 @@
+{
+  "id": "pilot-requests-default-port",
+  "suite": "pilot-v1",
+  "repository": "psf/requests",
+  "language": "python",
+  "category": "logic",
+  "source": {
+    "repo": "psf/requests",
+    "commit": "dae7ef63b4df6eded86637f251fc4e3a06c3b479",
+    "archive_url": "https://codeload.github.com/psf/requests/tar.gz/dae7ef63b4df6eded86637f251fc4e3a06c3b479",
+    "archive_sha256": "55999922723576238c243ca02183f2c367c9b0c197a3c1afc671b35c2daf96c2",
+    "license": "Apache-2.0"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "src/requests/sessions.py",
+        "before": "        default_port = (DEFAULT_PORTS.get(old_parsed.scheme, None), None)",
+        "after": "        default_port = (None,)",
+        "source_file_sha256": "3d2089736ced93b2b405624a943f866d22652b17df06a85eb010f86272fc3e7d"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "pilot-v1/pilot-requests-default-port",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "pytest",
+        "-q",
+        "gold/pilot-requests-default-port_oracle.py"
+      ],
+      "test_file": "gold/pilot-requests-default-port_oracle.py",
+      "test_sha256": "51956ebab7e2153f3d8f2872f9a306d433d11f78e331a8ea6d37ac6536f428ae",
+      "native_test_id": "gold/pilot-requests-default-port_oracle.py::test_pilot_requests_default_port_positive"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "gold/pilot-requests-default-port_oracle.py::test_pilot_requests_default_port_positive negative control",
+      "patched": "gold/pilot-requests-default-port_oracle.py::test_pilot_requests_default_port_positive patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "src/requests/sessions.py",
+        "sha256": "3d2089736ced93b2b405624a943f866d22652b17df06a85eb010f86272fc3e7d"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

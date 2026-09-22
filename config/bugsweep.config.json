@@ -13,12 +13,13 @@
     "Pods/**", ".next/**", "coverage/**", "*.lock", "*.min.js", "**/__generated__/**"
   ],
   "adversarial": {
-    "_comment": "bugsweep-hcj: referee_votes (K) is the number of independent Referee adjudications (same rubric, varied framing) required for a severity >= high/critical finding to become fix-eligible -- it needs a STRICT MAJORITY of CONFIRMED verdicts (see prompts/referee.md and bench/scorer/run_summary.py's majority_gate). referee_votes_cap is a hard ceiling on K so a misconfigured value can't blow up adjudication cost on an unattended run -- effective K = min(referee_votes, referee_votes_cap). Severity below high (medium/low) is unaffected: single-pass adjudication, unchanged.",
+    "_comment": "K is the number of fresh native Referee executions for high/critical findings. First assessments are verdict-blind and must have a strict CONFIRMED majority. Different prompts do not establish statistical independence; confidence is uncalibrated. Every fix also requires executable red/green proof. Effective K is capped at referee_votes_cap.",
     "challenge_enabled": true,
     "referee_enabled": true,
     "referee_spotchecks_upheld": true,
     "referee_votes": 3,
-    "referee_votes_cap": 5
+    "referee_votes_cap": 5,
+    "hosts": {}
   },
   "research": {
     "antipattern_priming": true,
@@ -53,14 +54,23 @@
     "signal_files": [".bugsweep/priority-signals.jsonl"]
   },
   "recall": {
-    "_comment": "bugsweep-dxh: --recall mode. Lowers the bar ONLY for what gets reported — the Referee additionally records near-misses (confidence 50-67: genuinely plausible but not >67% CONFIRMED) to run-summary.json's near_misses[] for human review. It NEVER lowers the auto-fix threshold: near-misses are never promoted into fixed/quarantined/confirmed_unfixed/findings (enforced in bench/scorer/run_summary.py, independent of this config value). Overridable per-invocation via 'scripts/summarize.sh <RUN_DIR> <REPORT_IS_STUB> [MODE] --recall'.",
+    "_comment": "Recall mode retains plausible unresolved findings for human review. Legacy confidence values are uncalibrated judgments, not probabilities. Near misses never authorize fixes or bypass executable proof.",
     "enabled": false
   },
   "analyzers": {
-    "_comment": "Optional pre-hunt step (scripts/analyzers.sh): runs off-the-shelf static analyzers (semgrep, gosec, bandit, ...) to seed the Hunter with candidate locations and give the Referee a corroboration signal. Defaults to disabled — a reproducibility default: bugsweep's own findings are the audited, adversarially-reviewed output; auto-running third-party tools changes run behavior based on what happens to be installed on the machine, which would make two runs of the identical repo diverge. Opt in explicitly once you've reviewed what's installed.",
+    "_comment": "Explicit CodeQL/Semgrep configurations may produce bounded SARIF through the execution provider. Importers only read coordinator-captured artifacts. No tool/rule downloads or PATH discovery. Hits guide investigation; they never confirm bugs, raise confidence, or narrow scope. Missing evidence is unavailable, not a zero-hit scan.",
     "enabled": false,
     "timeout_seconds": 300,
-    "max_hits": 200
+    "max_hits": 200,
+    "imports": [],
+    "max_import_bytes": 16777216,
+    "max_results_per_import": 1000,
+    "max_trace_steps": 32,
+    "max_string_bytes": 4096
+  },
+  "execution": {
+    "_comment": "Absolute path to an operator-owned policy outside the target. Empty means target execution unavailable. Automatic fixes require a pinned Docker image/engine with verified isolation, denied network, limits, deadline and trusted artifact capture. No host-shell fallback.",
+    "policy_file": ""
   },
   "commands": {
     "test": "",
@@ -69,7 +79,7 @@
     "lint": ""
   },
   "verify": {
-    "_comment": "flaky_reruns: how many times run_checks.sh verify reruns a newly-failing 'test' check. It is classified flaky (and excluded from the revert) ONLY on a strict majority of rerun passes; a tie or a majority of rerun failures still reverts. Reruns share the working tree/environment, so this is not full isolation — see scripts/run_checks.sh header for the accurate safety claim, the state-pollution caveat, and the baseline-flaky limitation.",
+    "_comment": "Legacy flaky_reruns is retained for configuration compatibility. Structured proof does not excuse a regression after a later pass. Missing/skipped previously passing tests and new failing identities block automatic landing.",
     "flaky_reruns": 3
   }
 }

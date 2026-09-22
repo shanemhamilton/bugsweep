@@ -1,58 +1,53 @@
-# Contributing to bugsweep
+# Contributing to Bugsweep
 
-Thanks for your interest. bugsweep is a Claude Code skill: Markdown instructions plus a
-small deterministic shell layer. Contributions are welcome — please keep the design
-principle below intact.
+Bugsweep combines Claude/Codex instructions with deterministic Bash and Python helpers.
+Keep changes narrow and verify the observable behavior, especially across producer and
+consumer boundaries. Read [SERVICE-INVENTORY.md](SERVICE-INVENTORY.md) before adding a
+helper; reuse the execution provider, canonical serialization and proof validators.
 
-## The one invariant
+The model investigates and proposes edits. Coordinator code owns execution, immutable
+evidence and exact resource cleanup. Target commands must not execute in a host-shell
+fallback. Preserve unrelated files and the user's checkout; no prefix-based deletion,
+remote mutation or fabricated evidence.
 
-**The AI finds and fixes; deterministic shell scripts own every irreversible action.**
-Anything that touches git state, the user's working tree, or branches must live in
-`scripts/` as plain, auditable shell — never be left to model judgment. A change that
-moves an irreversible operation into a prompt, or that lets the tool push/merge/delete or
-work on the user's original branch, will not be accepted. See
-`references/safety-rationale.md`.
+## Local checks
 
-## Layout
-
-- `SKILL.md` — the entry point and orchestration the model follows.
-- `scripts/` — deterministic layer: `preflight` (branch/stash), `run_checks`
-  (tests/build), `guard` (stop conditions), `session` (continuity), `finalize` (safe
-  return), `common.sh` (shared helpers).
-- `prompts/` — the separated phases: `context-build`, `research`, `hunt`, `challenge`
-  (Skeptic), `referee`, `fix`.
-- `references/` — rationale, no-tests playbook, tuning, continuity model, and
-  `antipatterns/` (per-stack catalogs).
-- `config/bugsweep.config.json` — user-tunable settings.
-
-## Testing changes
-
-The scripts are testable without an LLM. Create a throwaway git repo with a known bug and
-a test that catches it, then exercise the flow:
+The default gate excludes Git-backed fixtures and uses temporary coverage files:
 
 ```bash
-# in a scratch repo with a planted bug + failing test
-bash scripts/preflight.sh                 # cuts bugsweep/<ts>, stashes work
-bash scripts/run_checks.sh baseline <RUN_DIR>
-# apply a fix, then:
-bash scripts/run_checks.sh verify <RUN_DIR>   # OK or REGRESSION
-bash scripts/guard.sh <RUN_DIR>               # CONTINUE or STOP <reason>
-bash scripts/session.sh checkpoint <RUN_DIR>  # refreshes SESSION.md
-bash scripts/finalize.sh <RUN_DIR>            # returns you to your branch
+BUGSWEEP_BATS_VERSION=1.10.0 BUGSWEEP_SHELLCHECK_VERSION=0.10.0 bash scripts/quality-check.sh
 ```
 
-Verify the safety properties: a regression is reverted, your original branch and
-uncommitted work are untouched, and the run never pushes or deletes anything.
+The gate measures Coverage.py aggregate line-and-branch coverage for the scorer and
+installer helper separately, requiring at least 80% in each. It does not report a
+separate function-coverage percentage.
 
-Scripts target bash 3.2 (stock macOS) — avoid bash 4+ features (associative arrays,
-`mapfile`, `${var,,}`). Run `bash -n scripts/*.sh` before submitting.
+Those variables declare the installed versions; they do not install anything. CI supplies
+checksum-verified tools. For focused Python changes, use cache-disabled tests:
 
-## Adding an anti-pattern catalog
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m pytest -p no:cacheprovider bench/tests/unit/test_fix_proof.py
+```
 
-Add `references/antipatterns/<stack>.md` (one-liners: the *smell* and *why it bites*),
-then add a routing row to `references/antipatterns/index.md`.
+`common.sh` performs Git discovery when sourced. Do not source it, run the complete Bats
+suite, or run `test_mark_batch_covered.py` in sessions that prohibit Git. Authorized CI
+uses the separate `BUGSWEEP_FULL_GIT_CI=1 ... quality-check.sh --full-git-ci` path for those
+fixtures. Bash targets 3.2 compatibility; use `bash -n` and ShellCheck for changed scripts.
 
-## Pull requests
+Mocks can prove that parsers and orchestration reject specific counterexamples. They do
+not establish actual Docker containment, host compatibility, budget enforcement, human
+calibration, or held-out benchmark outcomes. Release evidence must come from the frozen
+protocol's real producers and survive independent artifact verification.
 
-Keep changes focused. Describe what you changed and how you tested the safety properties.
-By contributing you agree your work is licensed under the repository's MIT License.
+## Changes and review
+
+Keep the main skill short and put detailed phase behavior in existing prompts/references.
+If a contract changes, update its real producer, consumer, schema, documentation and the
+smallest regression check that exposes the failure. Do not patch only a synthetic fixture.
+
+For anti-pattern catalogs, add the focused stack entry under `references/antipatterns/`
+and route it in `index.md`. Catalogs guide investigation; they never confirm a bug.
+
+A pull request should state the resulting behavior, relevant checks, and remaining real
+verification limits. Do not present source landing as deployment or release. Contributions
+use the repository's MIT license.

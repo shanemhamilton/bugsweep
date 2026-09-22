@@ -48,6 +48,15 @@
 
 set -euo pipefail
 
+# WU6 uses a frozen, redacted manifest and a slot-first schedule.  Keep the
+# historical pilot command below for reading old artifacts, but route explicit
+# evaluation/preflight/dry-run requests through the new coordinator before it
+# can touch a clone, a model CLI, or an ambient credential.
+if [[ "${1:-}" == "evaluation" ]]; then
+  shift
+  exec python3 -B "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/harness.py" "$@"
+fi
+
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly BENCH_DIR
 REPO_ROOT="$(cd "${BENCH_DIR}/.." && pwd)"

@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep.dev/schemas/review-evidence.schema.json",
+  "title": "Coordinator-captured first review assessment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "bug_id",
+    "execution_id",
+    "role",
+    "host",
+    "model",
+    "source_sha256",
+    "prior_verdict_blind",
+    "provenance",
+    "request",
+    "execution",
+    "recorded_at",
+    "started_at",
+    "finished_at",
+    "session_id",
+    "native_invocation_id",
+    "command",
+    "raw_output_sha256",
+    "verdict",
+    "trigger",
+    "trace",
+    "evidence",
+    "confidence_calibrated"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "bug_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "execution_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "role": {
+      "enum": [
+        "skeptic",
+        "referee"
+      ]
+    },
+    "host": {
+      "enum": [
+        "claude",
+        "codex"
+      ]
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prior_verdict_blind": {
+      "const": true
+    },
+    "provenance": {
+      "const": "host_execution"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "recorded_at": {
+      "type": "number",
+      "minimum": 0
+    },
+    "started_at": {
+      "type": "number",
+      "minimum": 0
+    },
+    "finished_at": {
+      "type": "number",
+      "minimum": 0
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "native_invocation_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    },
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "maxLength": 65536
+      }
+    },
+    "raw_output_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "verdict": {
+      "enum": [
+        "CONFIRMED",
+        "NOT_CONFIRMED",
+        "UPHELD",
+        "REJECTED",
+        "DISPUTED"
+      ]
+    },
+    "trigger": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "trace": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 8192
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 8192
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "confidence_calibrated": {
+      "const": false
+    }
+  }
+}

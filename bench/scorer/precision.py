@@ -20,6 +20,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Collection, Mapping, Sequence
 
+from bench.scorer.evidence import verify_packet
+
 from bench.scorer.judge import JudgeClient
 from bench.scorer.parse_report import Finding
 
@@ -53,6 +55,7 @@ class PrecisionJudgement:
     reason: str
     model: str
     prompt_hash: str
+    status: str = "unverified"  # reviewed evidence is distinct from raw model output
 
 
 @dataclass(frozen=True)
@@ -75,20 +78,45 @@ class PrecisionCaseResult:
     total_confirmed: int  # unique bug_ids in the confirmed section (before GT exclusion)
     sampled: int  # findings judged by the precision judge
     real: int  # judged as real
-    precision: float  # real / sampled; 0.0 when sampled == 0
+    precision: float | None  # reviewed real / reviewed; unknown when no verified review
     findings: tuple[SampledFinding, ...]
+    unverified: int = 0
+    reviewed: int = 0
 
 
 def judge_finding_real(
     finding: Mapping[str, Any],
     client: JudgeClient,
     model: str,
+    trusted_sources: Mapping[str, Any] | None = None,
 ) -> PrecisionJudgement:
     """Ask client whether finding is a real, reproducible bug."""
     prompt = _build_precision_prompt(finding)
     prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     response = client.complete(model=model, temperature=PRECISION_JUDGE_TEMPERATURE, prompt=prompt)
-    return _parse_precision_response(response, model=model, prompt_hash=prompt_hash)
+    judgement = _parse_precision_response(response, model=model, prompt_hash=prompt_hash)
+    evidence = finding.get("evidence")
+    source = evidence.get("source") if isinstance(evidence, Mapping) else None
+    trusted = trusted_sources.get(source.get("path")) if isinstance(source, Mapping) and trusted_sources else None
+    trusted_source = trusted if isinstance(trusted, str) else None
+    trusted_excerpt = trusted if isinstance(trusted, Mapping) else None
+    if not isinstance(evidence, Mapping) or verify_packet(evidence, trusted_source=trusted_source, trusted_excerpt=trusted_excerpt, expected_candidate_id=str(finding.get("bug_id", "")), expected_source_path=str(finding.get("file", ""))):
+        return PrecisionJudgement(
+            is_real=judgement.is_real,
+            confidence=judgement.confidence,
+            reason=judgement.reason,
+            model=model,
+            prompt_hash=prompt_hash,
+            status="unverified",
+        )
+    return PrecisionJudgement(
+        is_real=judgement.is_real,
+        confidence=judgement.confidence,
+        reason=judgement.reason,
+        model=model,
+        prompt_hash=prompt_hash,
+        status="reviewed",
+    )
 
 
 def deduplicate_by_bug_id(findings: Sequence[Finding]) -> list[Finding]:
@@ -121,6 +149,8 @@ def score_precision(
     client: JudgeClient,
     model: str,
     max_sample: int = DEFAULT_PRECISION_SAMPLE,
+    evidence_by_bug_id: Mapping[str, Mapping[str, Any]] | None = None,
+    trusted_sources: Mapping[str, Any] | None = None,
 ) -> tuple[int, list[SampledFinding]]:
     """Judge a sample of non-GT findings; return (total_unique_confirmed, judged).
 
@@ -133,8 +163,13 @@ def score_precision(
     sampled = sample_non_gt_findings(unique, gt_matched_bug_ids, max_sample)
     judged: list[SampledFinding] = []
     for f in sampled:
-        finding_map = {"bug_id": f.bug_id, "file": f.file, "rationale": f.rationale}
-        judgement = judge_finding_real(finding_map, client, model)
+        finding_map = {
+            "bug_id": f.bug_id,
+            "file": f.file,
+            "rationale": f.rationale,
+            "evidence": (evidence_by_bug_id or {}).get(f.bug_id),
+        }
+        judgement = judge_finding_real(finding_map, client, model, trusted_sources)
         judged.append(
             SampledFinding(
                 bug_id=f.bug_id,
@@ -150,8 +185,16 @@ def _build_precision_prompt(finding: Mapping[str, Any]) -> str:
     bug_id = _sanitize(str(finding.get("bug_id", "")))
     file = _sanitize(str(finding.get("file", "")))
     rationale = _sanitize(str(finding.get("rationale", "")))
+    evidence = finding.get("evidence")
+    source = evidence.get("source", {}) if isinstance(evidence, Mapping) else {}
+    trigger = evidence.get("trigger", {}) if isinstance(evidence, Mapping) else {}
+    repro = evidence.get("repro") if isinstance(evidence, Mapping) else None
+    excerpt = _sanitize(str(source.get("excerpt", "unavailable"))) if isinstance(source, Mapping) else "unavailable"
     data_block = (
-        f"{DATA_OPEN}\nBUG_ID: {bug_id}\nFILE: {file}\nRATIONALE: {rationale}\n{DATA_CLOSE}"
+        f"{DATA_OPEN}\nBUG_ID: {bug_id}\nFILE: {file}\nRATIONALE: {rationale}\n"
+        f"SOURCE_PATH: {_sanitize(str(source.get('path', 'unavailable')) if isinstance(source, Mapping) else 'unavailable')}\n"
+        f"SOURCE_EXCERPT:\n{excerpt}\nTRIGGER: {_sanitize(json.dumps(trigger, sort_keys=True))}\n"
+        f"REPRO: {_sanitize(json.dumps(repro, sort_keys=True)) if repro else 'unavailable'}\n{DATA_CLOSE}"
     )
     return f"{_INSTRUCTIONS}\n\n{data_block}"
 

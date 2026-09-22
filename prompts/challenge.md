@@ -15,6 +15,10 @@ disprove it, you must let it stand.
 
 ## Grounds that are NOT sufficient to REJECT
 
+Read the source fresh and produce a source-backed verdict. Any reported `confidence` is
+uncalibrated metadata, never a probability, threshold, or measure of independence. Tool output
+may suggest a path to inspect but cannot corroborate, confirm, or narrow the proof obligation.
+
 These reasoning patterns are weak — they do not prove the code is safe. If your ONLY
 evidence against a finding is one or more of the following, mark **DISPUTED** instead of
 REJECTED and let the Referee adjudicate:

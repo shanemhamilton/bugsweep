@@ -29,6 +29,16 @@
       "type": "string",
       "enum": ["complete", "partial", "stalled"]
     },
+    "operational_status": {
+      "type": "string",
+      "enum": ["complete", "partial", "stalled"],
+      "description": "Execution/finalization state; audit coverage is reported separately in audit_progress."
+    },
+    "audit_progress": {
+      "type": "string",
+      "enum": ["not_started", "partial", "complete"],
+      "description": "Verified audit coverage only; this never claims terminal closeout."
+    },
     "stop_reason": {
       "type": ["string", "null"]
     },

@@ -23,15 +23,36 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
+
+
+def _object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
 
 
 def _load_summary(path: str) -> dict | None:
     try:
         with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+            data = json.load(f, object_pairs_hook=_object)
     except (OSError, json.JSONDecodeError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    try:
+        import jsonschema
+    except ImportError:
+        return None
+    try:
+        schema = json.loads((Path(__file__).resolve().parents[1] / "schemas" / "run-summary.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator(schema).validate(data)
+    except (OSError, ValueError, json.JSONDecodeError, jsonschema.ValidationError):
+        return None
+    return data
 
 
 def main() -> int:
@@ -41,9 +62,10 @@ def main() -> int:
     out_path = sys.argv[1]
     input_paths = sys.argv[2:]
 
-    summaries = [s for s in (_load_summary(p) for p in input_paths) if s is not None]
+    loaded = [_load_summary(path) for path in input_paths]
+    summaries = [summary for summary in loaded if summary is not None]
 
-    session = merge_summaries(summaries)
+    session = merge_summaries(summaries, invalid_input_count=len(loaded) - len(summaries))
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(session, f, indent=2)

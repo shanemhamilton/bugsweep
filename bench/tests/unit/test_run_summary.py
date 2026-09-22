@@ -175,6 +175,8 @@ def test_partial_run_when_report_is_stub_and_some_coverage(tmp_path: Path) -> No
     )
 
     assert summary["status"] == "partial"
+    assert summary["operational_status"] == "partial"
+    assert summary["audit_progress"] == "partial"
     assert summary["stop_reason"] is not None
     assert "stalled" not in summary["stop_reason"].lower() or True  # message may vary
     assert summary["coverage"] == {"covered": 2, "total": 10}
@@ -204,6 +206,7 @@ def test_stalled_run_when_report_is_stub_and_no_coverage(tmp_path: Path) -> None
     )
 
     assert summary["status"] == "stalled"
+    assert summary["audit_progress"] == "not_started"
     assert summary["stop_reason"] is not None
     assert summary["coverage"] == {"covered": 0, "total": 10}
     assert summary["findings"] == []

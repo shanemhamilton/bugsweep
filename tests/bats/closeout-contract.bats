@@ -19,6 +19,12 @@ TRACKER_MD="${ROOT}/references/tracker-closeout.md"
   grep -qi "mutation, not discovery" "$SKILL_MD"
 }
 
+@test "skill: one audit reuses one worktree unless concurrent isolation is recorded" {
+  grep -q "One Bugsweep invocation owns exactly one RUN_DIR, worktree, and branch" "$SKILL_MD"
+  grep -q "reuse that exact worktree and never invoke preflight themselves" "$SKILL_MD"
+  grep -q "isolation reason, owner, base SHA, branch, and retirement trigger" "$SKILL_MD"
+}
+
 @test "tracker closeout: requires one documented tracker and verified readback" {
   grep -q "Resolve one system of record before preflight" "$TRACKER_MD"
   grep -q "Hosting is not evidence of tracker use" "$TRACKER_MD"

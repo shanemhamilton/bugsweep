@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from bench.scorer.parse_report import Finding
+from bench.scorer.evidence import build_packet
 from bench.scorer.precision import (
     DEFAULT_PRECISION_SAMPLE,
     PrecisionCaseResult,  # noqa: F401  # exported public surface (downstream I/O task)
@@ -103,6 +104,28 @@ def test_judge_real_all_fields_inside_data_region() -> None:
     close_idx = prompt.index("</UNTRUSTED_DATA>")
     for mark in ("BUG_MARK", "FILE_MARK", "RATIONALE_MARK"):
         assert open_idx < prompt.index(mark) < close_idx
+
+
+def test_judge_uses_verified_source_packet_and_marks_only_that_reviewed() -> None:
+    source = "safe = False\n"
+    evidence = build_packet(
+        candidate_id="B1", source_path="app.py", source=source,
+        source_sha256=hashlib.sha256(source.encode()).hexdigest(), excerpt_start=1,
+        excerpt_end=1, trigger={"kind": "request", "value": "/x"}, repro=None,
+    )
+    client = FakeClient(['{"is_real": true, "confidence": 90, "reason": "shown"}'])
+    judgement = judge_finding_real(
+        {"bug_id": "B1", "file": "app.py", "rationale": "r", "evidence": evidence}, client, MODEL,
+        {"app.py": source},
+    )
+    assert judgement.status == "reviewed"
+    assert "safe = False" in client.calls[0]
+
+
+def test_missing_source_evidence_stays_unverified() -> None:
+    client = FakeClient(['{"is_real": true, "confidence": 90, "reason": "raw"}'])
+    judgement = judge_finding_real({"bug_id": "B1", "file": "app.py", "rationale": "r"}, client, MODEL)
+    assert judgement.status == "unverified"
 
 
 def test_judge_real_malformed_response_falls_through() -> None:

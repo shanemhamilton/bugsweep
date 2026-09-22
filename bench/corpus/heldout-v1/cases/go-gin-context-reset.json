@@ -1,0 +1,63 @@
+{
+  "id": "go-gin-context-reset",
+  "suite": "heldout-v1",
+  "repository": "gin-gonic/gin",
+  "language": "go",
+  "category": "concurrency",
+  "source": {
+    "repo": "gin-gonic/gin",
+    "commit": "dcaa4296d111981ffb31ac3eba90bb63e1eb5ab9",
+    "archive_url": "https://codeload.github.com/gin-gonic/gin/tar.gz/dcaa4296d111981ffb31ac3eba90bb63e1eb5ab9",
+    "archive_sha256": "a3abd4625f6565a660ec49595fc0fabfa3df4f5a529dba38b59375ee84dcb26d",
+    "license": "MIT"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "gin.go",
+        "before": "\tc.reset()\n\n\tengine.handleHTTPRequest(c)",
+        "after": "\t\n\n\tengine.handleHTTPRequest(c)",
+        "source_file_sha256": "7489e54df8c18c20bb60c30ff82c0aed2f72332ba7c124be000502645fc12be8"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "heldout-v1/go-gin-context-reset",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "go",
+        "test",
+        "./...",
+        "-run",
+        "TestGoGinContextResetPositive"
+      ],
+      "test_file": "gold/go-gin-context-reset_oracle_test.go",
+      "test_sha256": "938e5605edcfbf8c82c4279a956675fd79d0b1ac201a1f7262c1b1d9b82455c7",
+      "native_test_id": "TestGoGinContextResetPositive"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "TestGoGinContextResetPositive negative control",
+      "patched": "TestGoGinContextResetPositive patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "gin.go",
+        "sha256": "7489e54df8c18c20bb60c30ff82c0aed2f72332ba7c124be000502645fc12be8"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

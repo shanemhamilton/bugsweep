@@ -1,0 +1,62 @@
+{
+  "id": "pilot-express-request-prototype",
+  "suite": "pilot-v1",
+  "repository": "expressjs/express",
+  "language": "javascript",
+  "category": "data-integrity",
+  "source": {
+    "repo": "expressjs/express",
+    "commit": "023767fe9872e029271df1418f73401bff20ff40",
+    "archive_url": "https://codeload.github.com/expressjs/express/tar.gz/023767fe9872e029271df1418f73401bff20ff40",
+    "archive_sha256": "4a6edf667c4e33f786409c67d6bdf016c370f81de913cdbe97946f7949672934",
+    "license": "MIT"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "lib/application.js",
+        "before": "  Object.setPrototypeOf(req, this.request)",
+        "after": "  ",
+        "source_file_sha256": "6d7e08355025786982d17042fc0355b6a5e9339545dc27e2782b3aaa28a7bc04"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "pilot-v1/pilot-express-request-prototype",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--test-name-pattern=pilot-express-request-prototype"
+      ],
+      "test_file": "gold/pilot-express-request-prototype.test.js",
+      "test_sha256": "613f485fe9f4f692c6482cc840f7e0b9f9554cb12f1a2918cd131acd56105df2",
+      "native_test_id": "pilot-express-request-prototype positive behavior"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "pilot-express-request-prototype positive behavior negative control",
+      "patched": "pilot-express-request-prototype positive behavior patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "lib/application.js",
+        "sha256": "6d7e08355025786982d17042fc0355b6a5e9339545dc27e2782b3aaa28a7bc04"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/bench/schemas/evaluation-protocol.schema.json",
+  "title": "Bugsweep frozen host evaluation protocol",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "seed",
+    "cap_approval",
+    "cap_approval_id",
+    "limit_profile",
+    "limits",
+    "rate_table",
+    "hosts",
+    "core_arms",
+    "ablation_blocks",
+    "repetitions",
+    "evaluation_mode",
+    "schedule_sha256",
+    "execution_order_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "cap_approval": {
+      "const": "operator-approved"
+    },
+    "cap_approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "limit_profile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repetitions": {
+      "type": "integer",
+      "minimum": 3
+    },
+    "evaluation_mode": {
+      "const": "reduced_detect_only_prompt_methodology"
+    },
+    "schedule_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "execution_order_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "rate_table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "sha256"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wall_clock_seconds",
+        "max_turns",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_spend_usd"
+      ],
+      "properties": {
+        "wall_clock_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_turns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "max_input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "max_output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "max_spend_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "hosts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claude",
+        "codex"
+      ],
+      "properties": {
+        "claude": {
+          "$ref": "#/$defs/host"
+        },
+        "codex": {
+          "$ref": "#/$defs/host"
+        }
+      }
+    },
+    "core_arms": {
+      "const": [
+        "current_skill",
+        "previous_release",
+        "no_skill_baseline"
+      ]
+    },
+    "ablation_blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/stage_block"
+      },
+      "uniqueItems": true,
+      "minItems": 2
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skill_revision",
+        "skill_content_sha256",
+        "skill_entrypoint_sha256",
+        "adapter_sha256",
+        "prompt_sha256",
+        "config_sha256"
+      ],
+      "properties": {
+        "skill_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_content_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "skill_entrypoint_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "adapter_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "prompt_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "model_version",
+        "arms"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "current_skill",
+            "previous_release",
+            "no_skill_baseline"
+          ],
+          "properties": {
+            "current_skill": {
+              "$ref": "#/$defs/arm"
+            },
+            "previous_release": {
+              "$ref": "#/$defs/arm"
+            },
+            "no_skill_baseline": {
+              "$ref": "#/$defs/arm"
+            }
+          }
+        }
+      }
+    },
+    "stage_block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "stages"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "hunter",
+              "skeptic",
+              "referee",
+              "synthesis"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        }
+      }
+    }
+  }
+}

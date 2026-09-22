@@ -1,0 +1,62 @@
+{
+  "id": "js-express-locals-prototype",
+  "suite": "heldout-v1",
+  "repository": "expressjs/express",
+  "language": "javascript",
+  "category": "data-integrity",
+  "source": {
+    "repo": "expressjs/express",
+    "commit": "023767fe9872e029271df1418f73401bff20ff40",
+    "archive_url": "https://codeload.github.com/expressjs/express/tar.gz/023767fe9872e029271df1418f73401bff20ff40",
+    "archive_sha256": "4a6edf667c4e33f786409c67d6bdf016c370f81de913cdbe97946f7949672934",
+    "license": "MIT"
+  },
+  "mutation": {
+    "kind": "seeded",
+    "edits": [
+      {
+        "path": "lib/application.js",
+        "before": "res.locals = Object.create(null);",
+        "after": "res.locals = {};",
+        "source_file_sha256": "6d7e08355025786982d17042fc0355b6a5e9339545dc27e2782b3aaa28a7bc04"
+      }
+    ]
+  },
+  "gold": {
+    "storage": "external-private-gold-root",
+    "locator": "heldout-v1/js-express-locals-prototype",
+    "runtime_status": "UNVERIFIED_PENDING_SANDBOX_RUN",
+    "native": {
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--test-name-pattern=js-express-locals-prototype"
+      ],
+      "test_file": "gold/js-express-locals-prototype.test.js",
+      "test_sha256": "954e01e9fb662341b0deae1097df07e5b9df35a41eeefdd682235ae5486d7f39",
+      "native_test_id": "js-express-locals-prototype positive behavior"
+    },
+    "expected": {
+      "buggy": "fail",
+      "patched": "pass",
+      "assertion": "The positive oracle exercises the named upstream API; negative and patched controls stay distinct."
+    },
+    "controls": {
+      "negative": "js-express-locals-prototype positive behavior negative control",
+      "patched": "js-express-locals-prototype positive behavior patched control"
+    },
+    "source_bindings": [
+      {
+        "path": "lib/application.js",
+        "sha256": "6d7e08355025786982d17042fc0355b6a5e9339545dc27e2782b3aaa28a7bc04"
+      }
+    ],
+    "cross_file": false
+  },
+  "size_ceiling": {
+    "max_files": 30000,
+    "max_loc": 500000
+  },
+  "task_description": "private coordinator metadata"
+}

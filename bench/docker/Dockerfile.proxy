@@ -1,23 +1,18 @@
-# bugsweep-bench egress proxy image — an nginx REVERSE proxy to the model API.
-#
-# This is the load-bearing egress control for the key-in-container isolation
-# model. The analysis container attaches to an --internal docker network (no
-# internet) and is pointed at this proxy via ANTHROPIC_BASE_URL; nginx forwards
-# ONLY to https://api.anthropic.com (a hardcoded upstream) and nowhere else.
-#
-# Why a reverse proxy (not a CONNECT forward proxy): the `claude` CLI runs on
-# Bun and does NOT honor HTTP(S)_PROXY env vars, so a forward proxy is never
-# used. ANTHROPIC_BASE_URL is the SDK-level lever the CLI does honor — claude
-# treats this proxy as the API endpoint. Live-validated: claude -p reaches
-# Anthropic through it and gets a 200.
-#
-# Trade-off vs the forward-proxy design: the claude->proxy leg is plaintext on
-# the private --internal network, so the proxy sees the (dedicated, revocable)
-# key. That is no new exposure — the key already lives in the container — and
-# egress stays hard-restricted to api.anthropic.com.
-#
-# proxy.sh generates and mounts the per-run nginx config at runtime.
+# The pinned Python base is supplied by the operator.  The stdlib-only proxy is
+# the sole process that reads /run/secrets/provider-key and injects it upstream.
+ARG BENCH_PROXY_BASE_IMAGE
+FROM ${BENCH_PROXY_BASE_IMAGE}
 
-FROM nginx:alpine
+ARG PROXY_SOURCE_SHA256
+LABEL org.bugsweep.proxy.source.sha256=${PROXY_SOURCE_SHA256}
 
+USER root
+COPY provider_proxy.py /usr/local/lib/bugsweep/provider_proxy.py
+COPY provider_proxy_entrypoint.sh /usr/local/bin/bugsweep-provider-proxy
+RUN test -n "${PROXY_SOURCE_SHA256}" \
+ && test "$(sha256sum /usr/local/lib/bugsweep/provider_proxy.py | awk '{print $1}')" = "${PROXY_SOURCE_SHA256}" \
+ && chmod 0555 /usr/local/bin/bugsweep-provider-proxy /usr/local/lib/bugsweep/provider_proxy.py
+USER 65534:65534
+WORKDIR /
 EXPOSE 8888
+ENTRYPOINT ["/usr/local/bin/bugsweep-provider-proxy"]

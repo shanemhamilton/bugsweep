@@ -9,8 +9,20 @@ run_dir="${1:-}"
 [ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: finalize.sh <RUN_DIR>"
 # Resolve to absolute so appends still work after we switch branches/cwd.
 run_dir="$(cd "$run_dir" && pwd)"
-# shellcheck disable=SC1090
-. "${run_dir}/state.env"
+
+# Run state is attacker-controlled artifact data, never shell input.
+_lifecycle_py="${BUGSWEEP_SCRIPT_DIR}/_terminal_lifecycle.py"
+_state_get() { python3 -B "$_lifecycle_py" get "$run_dir" "$1"; }
+BUGSWEEP_TS="$(_state_get BUGSWEEP_TS)"
+BUGSWEEP_RUN_ID="$(_state_get BUGSWEEP_RUN_ID)"
+BUGSWEEP_REPO_ROOT="$(_state_get BUGSWEEP_REPO_ROOT)"
+BUGSWEEP_BRANCH="$(_state_get BUGSWEEP_BRANCH)"
+BUGSWEEP_ORIG_BRANCH="$(_state_get BUGSWEEP_ORIG_BRANCH)"
+BUGSWEEP_ORIG_HEAD="$(_state_get BUGSWEEP_ORIG_HEAD)"
+BUGSWEEP_STASH_REF="$(_state_get BUGSWEEP_STASH_REF)"
+BUGSWEEP_WORKTREE="$(_state_get BUGSWEEP_WORKTREE)"
+BUGSWEEP_MODE="$(_state_get BUGSWEEP_MODE)"
+python3 -B "$_lifecycle_py" init "$run_dir" PENDING_FINALIZATION >/dev/null
 
 require_git_repo
 
@@ -650,6 +662,7 @@ printf '{"run_id":"%s","run_dir":"%s","branch":"%s","worktree":"%s","state":"PEN
   "$(_bsw_json_escape "$BUGSWEEP_BRANCH")" \
   "$(_bsw_json_escape "${BUGSWEEP_WORKTREE:-}")" \
   > "${closeout_dir}/${BUGSWEEP_RUN_ID:-$BUGSWEEP_TS}.json"
+python3 -B "$_lifecycle_py" advance "$run_dir" PENDING_CLOSEOUT >/dev/null
 
 echo "ARTIFACTS_FINALIZED"
 echo "CLOSEOUT_REQUIRED=bash scripts/closeout.sh ${run_dir} <landed|recorded>"

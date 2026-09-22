@@ -35,18 +35,17 @@
 # Usage:
 #   bash integrate.sh [--run-dir RUN_DIR] [--delete-merged] <target-branch> <branch1> [branch2 ...]
 #
-# Settings (override via environment variables):
-#   BUGSWEEP_QUALITY_GATE_COMMAND   command to re-run after each merge.
-#                                   Default: bash scripts/run_checks.sh verify <RUN_DIR>
-#                                   (same convention as finalize.sh / bugsweep-cleanup.sh)
-#   BUGSWEEP_FORCE_NO_PYTHON        set to 1 to force the degraded no-python3 JSON path
-#                                   (test hook; also an operator escape hatch).
+# Integration gates always reuse the frozen RUN_DIR check plan and external
+# execution policy. Legacy BUGSWEEP_QUALITY_GATE_COMMAND text is never evaluated
+# on the host and cannot replace those frozen gates.
 #
 # Never force-merges, force-pushes, or force-deletes. Never pushes (the orchestrator
 # pushes). Deletes a branch only after merge-base containment proof AND only when
 # --delete-merged is passed (default: preserve every branch).
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Logs go to stderr (matching common.sh's log): integrate_one's stdout is
 # captured as the outcome code, so any log line on stdout would corrupt it.
@@ -110,9 +109,16 @@ done
 if [ -n "$RUN_DIR" ] && [ ! -d "$RUN_DIR" ]; then
   mkdir -p "$RUN_DIR" || die_usage "could not create --run-dir '$RUN_DIR'"
 fi
+[ -n "$RUN_DIR" ] || die_usage "--run-dir is required for source-bound integration evidence"
+RUN_DIR="$(cd "$RUN_DIR" && pwd)"
+[ -f "${RUN_DIR}/check-plan.json" ] || die_usage "RUN_DIR lacks frozen check-plan.json"
+[ -f "${RUN_DIR}/baseline.json" ] || die_usage "RUN_DIR lacks baseline.json"
+command -v python3 >/dev/null 2>&1 || die_usage "python3 is required for trusted integration checks"
 
 # --- Preconditions -------------------------------------------------------------
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die_usage "not inside a git repo"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+GIT_PATH="$(command -v git)"
 
 git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
 case "$git_common_dir" in
@@ -156,20 +162,21 @@ for b in "${BRANCHES[@]}"; do
 done
 
 # --- Quality gate command resolution --------------------------------------------
-# Same convention as finalize.sh's post-finalize-handoff quality_gate_command and
-# bugsweep-cleanup.sh's BUGSWEEP_TEST_CMD: an environment override wins, else fall
-# back to the documented run_checks.sh verify convention. MINOR 5: only interpolate
-# RUN_DIR into the default command when it is non-empty.
+# This label is evidence metadata. Target execution happens only inside the shared
+# provider, against the exact merged-tree export made by _integration_checks.py.
+QUALITY_GATE_COMMAND="provider:frozen-check-plan"
 if [ -n "${BUGSWEEP_QUALITY_GATE_COMMAND:-}" ]; then
-  QUALITY_GATE_COMMAND="$BUGSWEEP_QUALITY_GATE_COMMAND"
-elif [ -n "$RUN_DIR" ]; then
-  QUALITY_GATE_COMMAND="bash scripts/run_checks.sh verify \"${RUN_DIR}\""
-else
-  QUALITY_GATE_COMMAND="bash scripts/run_checks.sh verify"
+  log "ignoring legacy BUGSWEEP_QUALITY_GATE_COMMAND; frozen provider checks are mandatory"
 fi
 
 run_quality_gate() {
-  bash -c "$QUALITY_GATE_COMMAND"
+  local merge_sha="$1" branch="$2"
+  python3 -B "${SCRIPT_DIR}/_integration_checks.py" \
+    --run-dir "$RUN_DIR" \
+    --repo-root "$REPO_ROOT" \
+    --merge-sha "$merge_sha" \
+    --branch "$branch" \
+    --git-path "$GIT_PATH"
 }
 
 # --- Containment idiom -----------------------------------------------------------
@@ -209,12 +216,13 @@ record_result() {
 # iteration re-derives the tip from $TARGET_BRANCH, so there is no cross-iteration
 # state to carry.
 integrate_one() {
-  local branch="$1" tip merge_sha
+  local branch="$1" tip merge_sha gate_sha
 
   if branch_contained_in_target "$branch" "$TARGET_BRANCH"; then
     log "$branch is already contained in $TARGET_BRANCH — re-running the quality gate for a tip-bound receipt"
     local contained_output contained_status=0
-    contained_output="$(run_quality_gate 2>&1)" || contained_status=$?
+    gate_sha="$(git rev-parse "$TARGET_BRANCH")"
+    contained_output="$(run_quality_gate "$gate_sha" "$branch" 2>&1)" || contained_status=$?
     [ -n "$contained_output" ] && printf '%s\n' "$contained_output" | sed 's/^/integrate:   gate> /' >&2
     if ! tree_is_clean; then
       log "QUALITY GATE DIRTIED THE WORKING TREE for already-contained $branch — stopping"
@@ -255,7 +263,7 @@ integrate_one() {
   # (3) Run the quality gate against the merged tree.
   log "re-running quality gate after merging $branch: ${QUALITY_GATE_COMMAND}"
   local gate_output gate_status=0
-  gate_output="$(run_quality_gate 2>&1)" || gate_status=$?
+  gate_output="$(run_quality_gate "$merge_sha" "$branch" 2>&1)" || gate_status=$?
   [ -n "$gate_output" ] && printf '%s\n' "$gate_output" | sed 's/^/integrate:   gate> /' >&2
 
   # (3a) BLOCKER 2: a gate that mutated the tree (tracked OR untracked) is a
@@ -389,33 +397,9 @@ if [ "$DELETE_MERGED" -eq 1 ]; then
 fi
 
 # --- Write integrate-results.json -------------------------------------------------
-# Per the output contract: into RUN_DIR when given, else a CWD-adjacent temp
-# directory — deliberately NOT directly inside the target repo's working tree,
-# since that would leave an untracked file behind and make "working tree is
-# clean" checks (ours and the orchestrator's) lie about run state.
-#
-# CONCURRENCY (retry 2, MAJOR 1): `mktemp -d` already gives a unique per-run dir,
-# so we NEVER reap or glob-delete sibling bugsweep-integrate-results.* dirs. The
-# p74 topology runs many integrate.sh invocations in sibling worktrees under one
-# parent; an unconditional reaper would destroy a concurrent peer's live results
-# dir (and its unread integrate-results.json), and even a "reap then mktemp"
-# ordering is a TOCTOU against a peer's fresh dir. Cleanup of these sidecar temp
-# dirs is the orchestrator/teardown's job (bead 8d0 owns unattended-run
-# reclamation) — exactly like --run-dir, where the caller owns the directory.
-# This script must NOT self-delete the dir it advertised on stdout as
-# RESULTS_JSON=: a caller reads that path AFTER integrate.sh returns, so an
-# exit-time rm would make the advertised path point at a vanished file
-# (bugsweep-l2r review). Pre-existing orphans on this path are swept later by
-# bugsweep-cleanup.sh --reap-worktrees; the orchestrator avoids the leak
-# entirely by passing --run-dir (k3f doc convention).
-results_json_path=""
-if [ -n "$RUN_DIR" ]; then
-  results_json_path="${RUN_DIR}/integrate-results.json"
-else
-  results_parent="$(dirname "$(pwd)")"
-  results_json_tmpdir="$(mktemp -d "${results_parent}/bugsweep-integrate-results.XXXXXX" 2>/dev/null || mktemp -d)"
-  results_json_path="${results_json_tmpdir}/integrate-results.json"
-fi
+# RUN_DIR is mandatory because successful rows must bind immutable provider and
+# merged-source evidence held outside the target repository.
+results_json_path="${RUN_DIR}/integrate-results.json"
 
 # JSON string escaper for the degraded (no-python3) fallback: escapes backslash,
 # double-quote, and control chars so a branch name containing any of them still
@@ -454,7 +438,7 @@ json_escape() {
 }
 
 want_python() {
-  [ -z "${BUGSWEEP_FORCE_NO_PYTHON:-}" ] && command -v python3 >/dev/null 2>&1
+  command -v python3 >/dev/null 2>&1
 }
 
 write_results_json() {
@@ -472,7 +456,9 @@ write_results_json() {
     BSW_TARGET_TIPS="$(printf '%s\n' "${RESULT_TARGET_TIPS[@]}")" \
     BSW_GATE_PASSED="$(printf '%s\n' "${RESULT_GATE_PASSED[@]}")" \
     BSW_GATE_COMMAND="$QUALITY_GATE_COMMAND" \
+    BSW_RUN_DIR="$RUN_DIR" \
     python3 - "$out" <<'PY'
+import hashlib
 import json
 import os
 import sys
@@ -484,6 +470,30 @@ codes = os.environ["BSW_CODES"].splitlines()
 source_tips = os.environ["BSW_SOURCE_TIPS"].splitlines()
 target_tips = os.environ["BSW_TARGET_TIPS"].splitlines()
 gate_passed = os.environ["BSW_GATE_PASSED"].splitlines()
+run_dir = os.path.realpath(os.environ["BSW_RUN_DIR"])
+rows = []
+for branch, code, source, target, passed in zip(
+        branches, codes, source_tips, target_tips, gate_passed):
+    row = {"branch": branch, "status": code, "source_tip": source,
+           "target_tip": target, "quality_gate_passed": passed == "true"}
+    if passed == "true":
+        branch_hash = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:16]
+        receipt = os.path.join(run_dir, "integration-check-results", f"{target}-{branch_hash}.json")
+        if os.path.islink(receipt) or os.path.getsize(receipt) > 256 * 1024 * 1024:
+            raise SystemExit("integration suite receipt path is unsafe")
+        with open(receipt, "rb") as handle:
+            raw = handle.read()
+        suite = json.loads(raw)
+        if (suite.get("status") != "verified" or suite.get("merge_sha") != target
+                or suite.get("branch") != branch):
+            raise SystemExit("integration suite binding is invalid")
+        row.update({
+            "integration_suite_receipt_path": os.path.relpath(receipt, run_dir),
+            "integration_suite_receipt_sha256": hashlib.sha256(raw).hexdigest(),
+            "integration_merge_sha": suite["merge_sha"],
+            "integration_source_manifest_sha256": suite["source_manifest_sha256"],
+        })
+    rows.append(row)
 data = {
     "target_branch": os.environ["BSW_TARGET"],
     "quality_gate_command": os.environ["BSW_GATE_COMMAND"],
@@ -492,14 +502,9 @@ data = {
     "merged_count": int(os.environ["BSW_MERGED_COUNT"]),
     "already_contained_count": int(os.environ["BSW_ALREADY_CONTAINED_COUNT"]),
     "preserved_count": int(os.environ["BSW_PRESERVED_COUNT"]),
-    "branches": [
-        {"branch": b, "status": c, "source_tip": source, "target_tip": target,
-         "quality_gate_passed": passed == "true"}
-        for b, c, source, target, passed in
-        zip(branches, codes, source_tips, target_tips, gate_passed)
-    ],
+    "branches": rows,
 }
-with open(out_path, "w", encoding="utf-8") as f:
+with open(out_path, "x", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 PY

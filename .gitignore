@@ -34,3 +34,13 @@ coverage/
 # BEADS execution state (working files for context recovery)
 .beads/context/
 .beads/plans/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Local worktrees / tools
+.worktrees/
+.serena/

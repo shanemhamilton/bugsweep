@@ -182,13 +182,13 @@ teardown() {
   assert_contains "$output" "network_internal=true"
 }
 
-@test "proxy --print-cmd marks the key as living in the container" {
-  # The key rides in the container and is sent to the reverse proxy; the proxy
-  # forwards (does not inject) it. No MITM key-injection wiring.
+@test "proxy --print-cmd marks the provider key as proxy-only" {
+  # Analysis clients hold only an inert literal. The proxy injects its private
+  # mounted provider credential into the fixed upstream request.
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
-  assert_contains "$output" "key_in_container=true"
-  refute_contains "$output" "inject_key_from"
+  assert_contains "$output" "key_in_proxy_only=true"
+  assert_contains "$output" "secret_mount=/run/secrets/provider-key:ro"
 }
 
 @test "proxy --print-cmd does not leak any key-shaped env value" {

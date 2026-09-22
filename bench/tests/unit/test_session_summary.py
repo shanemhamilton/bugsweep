@@ -24,6 +24,7 @@ from bench.scorer.session_summary import (  # noqa: E402
     SESSION_SCHEMA_VERSION,
     merge_summaries,
 )
+from scripts._session_summary_reduce import _load_summary  # noqa: E402
 
 try:
     import jsonschema
@@ -131,7 +132,32 @@ def test_merge_run_count_reflects_number_of_runs() -> None:
     session = merge_summaries([_summary(status="complete"), _summary(status="stalled")])
 
     assert session["run_count"] == 2
+    assert session["input_count"] == 2
+    assert session["invalid_input_count"] == 0
     _validate_against_schema(session)
+
+
+def test_merge_counts_invalid_inputs_without_treating_them_as_runs() -> None:
+    session = merge_summaries([_summary()], invalid_input_count=2)
+
+    assert session["run_count"] == 1
+    assert session["input_count"] == 3
+    assert session["invalid_input_count"] == 2
+    _validate_against_schema(session)
+
+
+def test_duplicate_json_summary_is_invalid_input(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate.json"
+    path.write_text('{"status":"complete","status":"stalled"}', encoding="utf-8")
+
+    assert _load_summary(str(path)) is None
+
+
+def test_schema_fragment_is_invalid_input(tmp_path: Path) -> None:
+    path = tmp_path / "fragment.json"
+    path.write_text('{"schema_version": 1}', encoding="utf-8")
+
+    assert _load_summary(str(path)) is None
 
 
 # ---------------------------------------------------------------------------

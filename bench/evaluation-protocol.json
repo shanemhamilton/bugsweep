@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "experiment_id": "REPLACE_WITH_FROZEN_EXPERIMENT_ID",
+  "seed": 20260905,
+  "cap_approval": "operator-approved",
+  "cap_approval_id": "REPLACE_WITH_APPROVED_CAP_RECEIPT",
+  "limit_profile": "equal-budget-v1",
+  "limits": {
+    "wall_clock_seconds": 3600,
+    "max_turns": 0,
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "max_spend_usd": null
+  },
+  "hosts": {
+    "claude": {
+      "model": "REPLACE_WITH_PINNED_MODEL",
+      "model_version": "REPLACE_WITH_PINNED_VERSION",
+      "arms": {
+        "current_skill": {
+          "skill_revision": "REPLACE",
+          "skill_content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "adapter_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "prompt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "skill_entrypoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "previous_release": {
+          "skill_revision": "REPLACE",
+          "skill_content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "adapter_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "prompt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "skill_entrypoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "no_skill_baseline": {
+          "skill_revision": "none",
+          "skill_content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "adapter_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "prompt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "skill_entrypoint_sha256": null
+        }
+      }
+    },
+    "codex": {
+      "model": "REPLACE_WITH_PINNED_MODEL",
+      "model_version": "REPLACE_WITH_PINNED_VERSION",
+      "arms": {
+        "current_skill": {
+          "skill_revision": "REPLACE",
+          "skill_content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "adapter_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "prompt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "skill_entrypoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "previous_release": {
+          "skill_revision": "REPLACE",
+          "skill_content_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "adapter_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "prompt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "skill_entrypoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "no_skill_baseline": {
+          "skill_revision": "none",
+          "skill_content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "adapter_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "prompt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "skill_entrypoint_sha256": null
+        }
+      }
+    }
+  },
+  "core_arms": [
+    "current_skill",
+    "previous_release",
+    "no_skill_baseline"
+  ],
+  "ablation_blocks": [
+    {
+      "id": "full_pipeline",
+      "stages": [
+        "hunter",
+        "skeptic",
+        "referee",
+        "synthesis"
+      ]
+    },
+    {
+      "id": "without_skeptic",
+      "stages": [
+        "hunter",
+        "referee",
+        "synthesis"
+      ]
+    },
+    {
+      "id": "without_referee",
+      "stages": [
+        "hunter",
+        "skeptic",
+        "synthesis"
+      ]
+    },
+    {
+      "id": "hunter_only",
+      "stages": [
+        "hunter"
+      ]
+    }
+  ],
+  "rate_table": {
+    "version": "REPLACE_WITH_PINNED_RATE_VERSION",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

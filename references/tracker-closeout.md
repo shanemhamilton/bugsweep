@@ -31,8 +31,8 @@ closeout is incomplete.
 Create or update work for:
 
 - confirmed bugs not fixed because the run was detect-only or below the fix floor;
-- quarantined fixes, regressions, approval declines/timeouts, and fixes with `NO_CHECKS` or
-  a flaky-annotated `OK`;
+- quarantined fixes, regressions, unavailable execution/native-review evidence, approval
+  declines/timeouts, and fixes with `NO_CHECKS` or a flaky classification;
 - a landing/cleanup failure that leaves actionable code work;
 - `closeout_unexpected_dirt` escrowed by `finalize.sh`;
 - one run-level follow-up item for an incomplete audited frontier when the project expects
@@ -93,7 +93,10 @@ owned worktree and branch. Closeout also reads `integrate-results.json`, the Ref
 verdict events, and approved-mode approval events; Git ancestry alone is insufficient.
 The integration receipt must name the exact source tip, gated target tip, and gate command.
 An already-contained branch is re-gated to produce current evidence. Verdict and approval
-events must occur in the required order before reproduction or mutation.
+events must occur in the required order before reproduction or mutation. After every
+multi-fix integration, re-run each original regression test against the final combined tree
+with a new `reverify <RUN_DIR> <BUG_ID> <SHA>` request and preserve its separate
+`fix_reverified` receipt; it does not replace the original red/green proof.
 This is local only; never push as part of Bugsweep closeout.
 
 ### No unique commits

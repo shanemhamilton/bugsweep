@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/schemas/terminal-receipt.schema.json",
+  "title": "bugsweep terminal receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "outcome", "identity"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "outcome": {"enum": ["COMPLETED_LANDED", "COMPLETED_RECORDED"]},
+    "identity": {"$ref": "#/$defs/identity"}
+  },
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["BUGSWEEP_RUN_ID", "BUGSWEEP_RUN_DIR", "BUGSWEEP_REPO_ROOT", "BUGSWEEP_BRANCH", "BUGSWEEP_ORIG_BRANCH", "BUGSWEEP_ORIG_HEAD", "BUGSWEEP_WORKTREE", "state_sha256"],
+      "properties": {
+        "BUGSWEEP_RUN_ID": {"type": "string", "minLength": 1},
+        "BUGSWEEP_RUN_DIR": {"type": "string", "minLength": 1},
+        "BUGSWEEP_REPO_ROOT": {"type": "string", "minLength": 1},
+        "BUGSWEEP_BRANCH": {"type": "string", "pattern": "^bugsweep/"},
+        "BUGSWEEP_ORIG_BRANCH": {"type": "string", "minLength": 1},
+        "BUGSWEEP_ORIG_HEAD": {"type": "string", "minLength": 1},
+        "BUGSWEEP_WORKTREE": {"type": "string"},
+        "state_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    }
+  }
+}

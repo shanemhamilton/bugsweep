@@ -140,7 +140,7 @@ def _worst_status(statuses: list[str]) -> str:
     return "partial"
 
 
-def merge_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+def merge_summaries(summaries: list[dict[str, Any]], *, invalid_input_count: int = 0) -> dict[str, Any]:
     """Merge a list of run-summary.json dicts into one session-summary dict.
 
     Pure function: never raises on missing/malformed optional keys (mirrors
@@ -151,6 +151,7 @@ def merge_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     representative; totals/dedup/roll-up are order-independent aside from
     follow_up's documented first-occurrence-wins dedup).
     """
+    invalid_input_count = max(0, invalid_input_count) if isinstance(invalid_input_count, int) else 0
     statuses = [
         s.get("status") for s in summaries if isinstance(s.get("status"), str)
     ]
@@ -162,5 +163,7 @@ def merge_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "follow_up": _merge_follow_up(summaries),
         "runs": statuses,
         "run_count": len(statuses),
+        "input_count": len(summaries) + invalid_input_count,
+        "invalid_input_count": invalid_input_count,
         "worst_status": _worst_status(statuses),
     }

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/schemas/closeout-marker.schema.json",
+  "title": "bugsweep durable closeout marker",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "stage", "identity"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "stage": {"enum": ["PENDING_FINALIZATION", "PENDING_CLOSEOUT", "READY_FOR_CLEANUP", "WORKTREE_REMOVED", "BRANCH_REMOVED", "RECEIPT_PENDING", "COMPLETED_LANDED", "COMPLETED_RECORDED"]},
+    "identity": {"$ref": "terminal-receipt.schema.json#/$defs/identity"}
+  }
+}

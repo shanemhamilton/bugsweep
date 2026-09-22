@@ -26,9 +26,10 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from bench.scorer.extract import extract_findings
+from bench.scorer.evidence import load_packets
 from bench.scorer.judge import CodexClient, JudgeClient, OpenAIClient, judge_match
 from bench.scorer.parse_report import confirmed_section
 from bench.scorer.precision import (
@@ -40,6 +41,35 @@ from bench.scorer.precision import (
 ARM_BUGSWEEP = "bugsweep"
 DEFAULT_JUDGE_BACKEND = "openai"
 DEFAULT_JUDGE_MODEL = "gpt-4o-judge"
+MAX_TRUSTED_SNAPSHOT_BYTES = 10_000_000
+
+
+def load_trusted_sources(path: Path) -> Mapping[tuple[str, int], Mapping[str, Any]]:
+    """Load the coordinator-produced, frozen source excerpt snapshot for CLI scoring."""
+    try:
+        if not path.is_absolute() or path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_TRUSTED_SNAPSHOT_BYTES:
+            raise ValueError("trusted source snapshot must be an absolute bounded regular file")
+        snapshot = json.loads(path.read_bytes())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("trusted source snapshot is unreadable") from exc
+    if not isinstance(snapshot, Mapping) or snapshot.get("schema_version") != 1 or snapshot.get("authority") != "trusted_coordinator" or not isinstance(snapshot.get("cases"), Mapping):
+        raise ValueError("trusted source snapshot has invalid authority or shape")
+    result: dict[tuple[str, int], Mapping[str, Any]] = {}
+    for case_id, runs in snapshot["cases"].items():
+        if not isinstance(case_id, str) or not isinstance(runs, Mapping):
+            raise ValueError("trusted source snapshot case map is invalid")
+        for run, paths in runs.items():
+            try:
+                run_number = int(run)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("trusted source snapshot run is invalid") from exc
+            if run_number < 1 or not isinstance(paths, Mapping):
+                raise ValueError("trusted source snapshot path map is invalid")
+            for source_path, excerpt in paths.items():
+                if not isinstance(source_path, str) or not isinstance(excerpt, Mapping) or excerpt.get("path") != source_path or not isinstance(excerpt.get("start_line"), int) or not isinstance(excerpt.get("end_line"), int) or excerpt["start_line"] < 1 or excerpt["end_line"] < excerpt["start_line"] or not isinstance(excerpt.get("source_sha256"), str) or len(excerpt["source_sha256"]) != 64 or any(char not in "0123456789abcdef" for char in excerpt["source_sha256"]) or not isinstance(excerpt.get("text"), str):
+                    raise ValueError("trusted source snapshot excerpt is invalid")
+            result[(case_id, run_number)] = dict(paths)
+    return result
 
 
 def score_results_dir(
@@ -48,6 +78,7 @@ def score_results_dir(
     model: str,
     arm: str = ARM_BUGSWEEP,
     max_sample: int = DEFAULT_PRECISION_SAMPLE,
+    trusted_sources: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
 ) -> list[PrecisionCaseResult]:
     """Score precision for every case-run report under results_dir/arm.
 
@@ -77,6 +108,7 @@ def score_results_dir(
             report = run_dir / "report.md"
             if not report.is_file():
                 continue
+            evidence_by_bug_id = load_packets(run_dir / "precision-evidence.jsonl")
 
             section = confirmed_section(report)
             all_findings = extract_findings(section, client, model)
@@ -89,10 +121,14 @@ def score_results_dir(
                     gt_matched_bug_ids.add(f.bug_id)
 
             total, judged = score_precision(
-                all_findings, gt_matched_bug_ids, client, model, max_sample
+                all_findings, gt_matched_bug_ids, client, model, max_sample,
+                evidence_by_bug_id, (trusted_sources or {}).get((case_id, run_n)),
             )
-            real = sum(1 for sf in judged if sf.judgement.is_real)
-            precision = real / len(judged) if judged else 0.0
+            # Raw model output without source evidence is retained for audit only;
+            # it cannot become a precision numerator.
+            reviewed = sum(1 for sf in judged if sf.judgement.status == "reviewed")
+            real = sum(1 for sf in judged if sf.judgement.status == "reviewed" and sf.judgement.is_real)
+            precision = real / reviewed if reviewed else None
 
             results.append(
                 PrecisionCaseResult(
@@ -104,6 +140,8 @@ def score_results_dir(
                     real=real,
                     precision=precision,
                     findings=tuple(judged),
+                    unverified=sum(1 for sf in judged if sf.judgement.status != "reviewed"),
+                    reviewed=reviewed,
                 )
             )
     return results
@@ -124,6 +162,7 @@ def write_precision_track(
                 "sampled": r.sampled,
                 "real": r.real,
                 "precision": r.precision,
+                "reviewed": r.reviewed,
                 "findings": [
                     {
                         "bug_id": sf.bug_id,
@@ -132,9 +171,11 @@ def write_precision_track(
                         "is_real": sf.judgement.is_real,
                         "confidence": sf.judgement.confidence,
                         "reason": sf.judgement.reason,
+                        "status": sf.judgement.status,
                     }
                     for sf in r.findings
                 ],
+                "unverified": r.unverified,
             }
             fh.write(json.dumps(record) + "\n")
 
@@ -143,13 +184,30 @@ def main(argv: Sequence[str]) -> int:  # pragma: no cover
     """Run precision scoring on a results directory and re-render the leaderboard."""
     from bench.scorer.leaderboard import load_verdicts, render_leaderboard
 
-    if len(argv) != 1:
-        sys.stderr.write(
-            "usage: python3 -m bench.scorer.precision_score <results-dir>\n"
-        )
-        return 2
+    import argparse
 
-    results_dir = Path(argv[0])
+    parser = argparse.ArgumentParser(description="Score Bugsweep precision with optional trusted source excerpts")
+    parser.add_argument("results_dir", type=Path)
+    parser.add_argument("--trusted-sources", type=Path, help="absolute coordinator snapshot JSON; absent snapshots leave findings unverified")
+    parser.add_argument("--harness-results", type=Path, help="export native WU6 results for human review; results_dir must be new")
+    parser.add_argument("--frozen-dir", type=Path, help="frozen WU6 protocol/schedule/order directory")
+    parser.add_argument("--stage-block", default="full_pipeline", help="one frozen pipeline stage block to export (default: full_pipeline)")
+    args = parser.parse_args(argv)
+    results_dir = args.results_dir
+    if args.harness_results:
+        from bench.scorer.harness_results import import_harness_results, write_review_export
+        try:
+            if args.trusted_sources or args.frozen_dir is None:
+                raise ValueError("native import requires --frozen-dir and cannot use --trusted-sources")
+            bundle = import_harness_results(args.harness_results, args.frozen_dir, stage_block=args.stage_block)
+            write_review_export(bundle, results_dir)
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"precision_score: {exc}\n")
+            return 2
+        sys.stderr.write(f"precision_score: exported {len(bundle['frame'])} candidates for {bundle['stage_block']}; frame_complete={bundle['frame_complete']}\n")
+        return 0
+    if args.frozen_dir:
+        parser.error("--frozen-dir requires --harness-results")
     backend = os.environ.get("BENCH_JUDGE_BACKEND", DEFAULT_JUDGE_BACKEND)
     model = os.environ.get("BENCH_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
 
@@ -159,7 +217,12 @@ def main(argv: Sequence[str]) -> int:  # pragma: no cover
     else:
         client = OpenAIClient(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
-    precision_results = score_results_dir(results_dir, client, model)
+    try:
+        trusted_sources = load_trusted_sources(args.trusted_sources) if args.trusted_sources else None
+    except ValueError as exc:
+        sys.stderr.write(f"precision_score: {exc}\n")
+        return 2
+    precision_results = score_results_dir(results_dir, client, model, trusted_sources=trusted_sources)
 
     out_path = results_dir / "precision_track.jsonl"
     write_precision_track(precision_results, out_path)

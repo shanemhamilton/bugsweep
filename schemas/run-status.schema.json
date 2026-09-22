@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bugsweep/schemas/run-status.schema.json",
+  "title": "bugsweep read-only run status",
+  "oneOf": [
+    {"type": "object", "additionalProperties": false, "required": ["status", "outcome", "exit_code"], "properties": {"status": {"const": "verified_completed"}, "outcome": {"enum": ["COMPLETED_LANDED", "COMPLETED_RECORDED"]}, "exit_code": {"const": 0}}},
+    {"type": "object", "additionalProperties": false, "required": ["status", "stage", "exit_code"], "properties": {"status": {"const": "pending"}, "stage": {"enum": ["PENDING_FINALIZATION", "PENDING_CLOSEOUT", "READY_FOR_CLEANUP", "WORKTREE_REMOVED", "BRANCH_REMOVED", "RECEIPT_PENDING"]}, "exit_code": {"const": 10}}},
+    {"type": "object", "additionalProperties": false, "required": ["status", "reason", "exit_code"], "properties": {"status": {"const": "invalid"}, "reason": {"type": "string", "minLength": 1}, "exit_code": {"const": 2}}}
+  ]
+}

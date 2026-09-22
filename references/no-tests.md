@@ -1,21 +1,20 @@
-# When the project has no automated checks
+# When checks or executable proof are unavailable
 
-Auto-revert relies on tests/typecheck/build to detect regressions. If `run_checks.sh`
-reports `NO_CHECKS`, that safety net is absent, so behave more conservatively:
+Continue detecting and recording source-backed findings. Automatic fixes and landing
+require both the bug-specific expected-assertion red/green proof and a verified suite
+comparison. An obvious-looking edit, manual approval, a build-only pass, or model votes
+do not replace either gate.
 
-- **Prefer detect-only.** Recommend the user run without `--fix` and review findings by
-  hand, or add even a minimal check command in `config/bugsweep.config.json`
-  (`commands.typecheck` or `commands.build` is often enough to catch the worst
-  regressions).
-- **Only auto-fix the unambiguous.** Without checks, restrict autonomous fixes to
-  changes whose correctness is obvious by inspection and local in scope (e.g. a missing
-  null check, an inverted boolean, an off-by-one). Quarantine anything that touches
-  control flow broadly or changes a contract.
-- **Smaller commits, more detail.** Make each fix tiny and write a fuller commit message
-  and ledger note, since the human review is now the only verification.
-- **Suggest a check command.** In the report, point out that adding a test/typecheck/
-  build command would let bugsweep fix far more aggressively and safely next time.
+Configure the project's existing native checks in `config/bugsweep.config.json` and a
+pinned external execution policy. A command descriptor can name an argv array and its
+JUnit output path; that output must be written beneath `/bugsweep-output` and captured
+by the provider. No tests collected, setup/import errors, missing isolation, timeouts,
+malformed results, and missing outputs remain proof errors.
 
-A configured check command always overrides auto-detection, so even a one-line
-`tsc --noEmit`, `go build ./...`, or `python -m compileall .` meaningfully restores the
-auto-revert guarantee.
+If a check cannot emit stable native identities, its process result can be retained as
+an opaque check, but it cannot detect individual failure swaps. Add a supported native
+structured reporter before relying on test-level regression protection. Do not install
+or download tools automatically to turn an unavailable capability into a pass.
+
+Record the confirmed trigger, missing capability, existing project command, and next
+concrete action in the normal tracker closeout. Preserve attempted work and its evidence.
