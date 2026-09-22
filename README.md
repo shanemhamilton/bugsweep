@@ -41,7 +41,7 @@ bash /tmp/bugsweep-install.sh --claude
 ```
 
 The current installer defaults to the latest non-draft, non-prerelease stable release,
-resolves its exact commit, and records installation provenance. Use `--version v0.6.0`
+resolves its exact commit, and records installation provenance. Use `--version v0.7.0`
 for an exact release or `--edge` to explicitly select current main. The downloaded
 installer itself should also be pinned and reviewed when reproducible bootstrap matters.
 See the [published releases](https://github.com/shanemhamilton/bugsweep/releases).

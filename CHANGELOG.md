@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-22
+
+Baton-parity lifecycle contract and structured evidence pipeline: Bugsweep now enforces
+a single-worktree ownership invariant matching the Baton skill, preventing worktree and branch
+sprawl across multi-agent audits. Every Bugsweep invocation owns exactly one RUN_DIR, worktree,
+and branch; subagents (Hunters, Skeptics, Referees) and resumed sessions reuse that exact worktree
+and never call preflight themselves. Concurrent sibling audits require explicit recorded isolation
+justification.
+
+### Added
+
+- **Baton-parity worktree reuse contract.** SKILL.md and lifecycle specifications now explicitly
+  restrict preflight to invocation roots; internal phases, subagents, and resumptions reuse the
+  existing worktree, eliminating worktree sprawl.
+- **Concurrent isolation guards.** Sibling runs running concurrently must record their isolation reason,
+  owner, base SHA, branch, and retirement trigger before creation.
+- **Unified quality gate workflow.** Added `scripts/quality-check.sh` covering pytest unit test coverage
+  floors, installer verification, Bats lifecycle and install contracts, and ShellCheck in a single pass.
+- **Structured evidence pipeline.** Unified models and parsers for execution events, review evidence,
+  terminal lifecycle states, and fix verification receipts.
+
+### Changed
+
+- **Installer provenance and versioning.** Updated version tracking to v0.7.0 with reproducible
+  commit-bound installation and recovery.
+- **Audit closeout contract verification.** Expanded automated Bats contract coverage to assert single-worktree
+  reuse across subagents, artifact checkpoint handling, mutation budgeting, and verified tracker readback.
+
+### Fixed
+
+- **Worktree sprawl during subagent audits.** Subagents no longer create redundant worktrees or branches.
+- **Git cache tracking.** Removed lingering tracked bytecode (`.pyc`) files and strengthened `.gitignore`
+  with `.worktrees/`, `.serena/`, and Python cache patterns.
+
 ## [0.6.0] - 2026-08-29
 
 The closed-loop milestone: Bugsweep now finishes each run by locally landing verified fixes
@@ -270,7 +304,8 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.3.1...v0.4.0
