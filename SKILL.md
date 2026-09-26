@@ -55,7 +55,7 @@ Separate investigation, review, executable proof, and operational completion.
 | `--autonomous` | Repeat the fix workflow until the frontier or a cap ends the run. |
 | `--severity low\|medium\|high\|critical` | Apply the selected floor to fixes. |
 | `--recall` | Retain plausible unresolved findings; never lower fix gates. |
-| `--update` | Run the active installation's `scripts/update-install.sh`, then stop. |
+| `--update` | Run `bash scripts/update-install.sh` from the active installation, then stop. |
 
 Updates default to a stable release. Edge and exact-version installation are explicit
 installer choices. Preserve `CLAUDE_SKILLS_DIR` / `CODEX_DIR` and active-install metadata;

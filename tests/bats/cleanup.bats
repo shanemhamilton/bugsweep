@@ -271,7 +271,7 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
-@test "reap-worktrees: removes N contained bugsweep worktrees, prunes branches, and is idempotent" {
+@test "reap-worktrees: preserves mapped legacy finalized worktrees for exact closeout" {
   _make_bugsweep_branch "bugsweep/reap-one" "fix reap one"
   _merge_branch_to_main "bugsweep/reap-one"
   _make_bugsweep_branch "bugsweep/reap-two" "fix reap two"
@@ -299,20 +299,19 @@ teardown() {
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "REAP_RESULT=ok"
-  echo "$output" | grep -q "WORKTREES_REMOVED=2"
-  echo "$output" | grep -q "BRANCHES_PRUNED=2"
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREES_PRESERVED=2"
   echo "$output" | grep -q "LEASES_RELEASED=0"
-  [ ! -d "$wt1" ]
-  [ ! -d "$wt2" ]
-  ! _branch_exists "bugsweep/reap-one"
-  ! _branch_exists "bugsweep/reap-two"
-  ! git -C "$REPO" worktree list --porcelain | grep -q "${REPO}/.bugsweep/worktrees/"
+  [ -d "$wt1" ]
+  [ -d "$wt2" ]
+  _branch_exists "bugsweep/reap-one"
+  _branch_exists "bugsweep/reap-two"
 
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
     bash "$CLEANUP_SH" --reap-worktrees
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "WORKTREES_REMOVED=0"
-  echo "$output" | grep -q "BRANCHES_PRUNED=0"
+  echo "$output" | grep -q "WORKTREES_PRESERVED=2"
 }
 
 # bugsweep-06y regression lock: a run whose state.env is written in the
@@ -324,7 +323,7 @@ teardown() {
 # mapping" and PRESERVED even when finalized. This test finalizes such a run
 # and asserts it is actually REAPED (not just preserved), proving the parsing
 # reads the value back exactly.
-@test "reap-worktrees: maps and reaps a finalized run whose state.env is in the shipped quoted format (bugsweep-06y)" {
+@test "reap-worktrees: preserves a mapped quoted legacy finalized run for closeout" {
   _make_bugsweep_branch "bugsweep/reap-quoted" "fix reap quoted"
   _merge_branch_to_main "bugsweep/reap-quoted"
 
@@ -344,11 +343,10 @@ teardown() {
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "REAP_RESULT=ok"
-  echo "$output" | grep -q "WORKTREES_REMOVED=1"
-  echo "$output" | grep -q "BRANCHES_PRUNED=1"
-  [ ! -d "$wt" ]
-  ! _branch_exists "bugsweep/reap-quoted"
-  ! git -C "$REPO" worktree list --porcelain | grep -q "$wt"
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREES_PRESERVED=1"
+  [ -d "$wt" ]
+  _branch_exists "bugsweep/reap-quoted"
 }
 
 # bugsweep-06y: the per-worktree containment-target resolution
@@ -362,7 +360,7 @@ teardown() {
 # deleted; if it returned `'integration'` (raw-quoted, the pre-fix bug — a
 # nonexistent ref) or empty (falling back to `main`, which does not contain the
 # branch), the ref is PRESERVED. Either failure mode => BRANCHES_PRUNED=0.
-@test "reap-worktrees: reads quoted BUGSWEEP_ORIG_BRANCH as the per-run containment target (bugsweep-06y)" {
+@test "reap-worktrees: preserves quoted legacy state regardless of recorded containment target" {
   # A dedicated integration branch (never a protected/pinned branch — so the
   # per-run target can only come from the recorded state.env, not the pin).
   git -C "$REPO" branch integration main
@@ -394,11 +392,9 @@ teardown() {
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "TARGET_BRANCH=main"
-  echo "$output" | grep -q "WORKTREES_REMOVED=1"
-  echo "$output" | grep -q "BRANCHES_PRUNED=1"
-  # Deleted because it is contained in the correctly-read per-run target
-  # `integration` — proof the quoted value round-tripped without its quotes.
-  ! _branch_exists "bugsweep/reap-orig"
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREES_PRESERVED=1"
+  _branch_exists "bugsweep/reap-orig"
 }
 
 # bugsweep-06y RCE regression (reviewer's exact repro): the reaper globs
@@ -450,9 +446,9 @@ teardown() {
   # THE security assertion: no injected command executed while the reaper read
   # the hostile files.
   [ ! -e "$marker" ]
-  # The reaper still did its legitimate job on the real victim worktree.
-  echo "$output" | grep -q "WORKTREES_REMOVED=1"
-  [ ! -d "$vwt" ]
+  # The mapped legacy victim remains recoverable for exact closeout.
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  [ -d "$vwt" ]
 }
 
 @test "reap-worktrees: stale dirty worktree is preserved without broad staging" {
@@ -973,7 +969,7 @@ teardown() {
 # reaps its own worktree despite a fresh ledger / released lease).
 # ---------------------------------------------------------------------------
 
-@test "reap-worktrees: a .finalized run is reaped even with a fresh ledger and no live lease (MAJOR 1 done-evidence)" {
+@test "reap-worktrees: a mapped .finalized run is preserved for exact closeout" {
   _make_bugsweep_branch "bugsweep/finalized-run" "finished fix, merged"
   _merge_branch_to_main "bugsweep/finalized-run"
   local wt="${REPO}/.bugsweep/worktrees/finalized-run"
@@ -990,10 +986,10 @@ teardown() {
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "WORKTREES_REMOVED=1"
-  echo "$output" | grep -q "BRANCH_PRUNED=bugsweep/finalized-run"
-  [ ! -d "$wt" ]
-  ! _branch_exists "bugsweep/finalized-run"
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREES_PRESERVED=1"
+  [ -d "$wt" ]
+  _branch_exists "bugsweep/finalized-run"
 }
 
 # ---------------------------------------------------------------------------
@@ -1040,7 +1036,7 @@ teardown() {
   _branch_exists "bugsweep/dup-mapping"
 }
 
-@test "reap-worktrees: single state.env, .finalized, no live lease is still reaped (happy path unaffected by bugsweep-cv0 guard)" {
+@test "reap-worktrees: single mapped .finalized state remains preserved" {
   _make_bugsweep_branch "bugsweep/single-mapping-done" "genuinely finished single-mapping run"
   _merge_branch_to_main "bugsweep/single-mapping-done"
   local wt="${REPO}/.bugsweep/worktrees/single-mapping-done"
@@ -1054,10 +1050,10 @@ teardown() {
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "WORKTREES_REMOVED=1"
-  echo "$output" | grep -q "BRANCH_PRUNED=bugsweep/single-mapping-done"
-  [ ! -d "$wt" ]
-  ! _branch_exists "bugsweep/single-mapping-done"
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREES_PRESERVED=1"
+  [ -d "$wt" ]
+  _branch_exists "bugsweep/single-mapping-done"
 }
 
 # ---------------------------------------------------------------------------
@@ -1128,7 +1124,7 @@ teardown() {
   _branch_exists "bugsweep/lease-reclaimed-preserved"
 }
 
-@test "reap-worktrees: LEASES_RELEASED_REAPED equals LEASES_RELEASED for a worktree that was actually reaped (item 3 sanity)" {
+@test "reap-worktrees: stale lease on mapped run preserves resources for exact closeout" {
   _make_bugsweep_branch "bugsweep/lease-reclaimed-reaped" "genuinely dead run, actually reaped"
   local wt="${REPO}/.bugsweep/worktrees/lease-reclaimed-reaped"
   mkdir -p "${REPO}/.bugsweep/worktrees"
@@ -1142,10 +1138,10 @@ teardown() {
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "WORKTREES_REMOVED=1"
+  echo "$output" | grep -q "WORKTREES_REMOVED=0"
   echo "$output" | grep -q "LEASES_RELEASED=1"
-  echo "$output" | grep -q "LEASES_RELEASED_REAPED=1"
-  [ ! -d "$wt" ]
+  echo "$output" | grep -q "LEASES_RELEASED_REAPED=0"
+  [ -d "$wt" ]
 }
 
 @test "reap-worktrees: skipped_locked path emits LEASES_RELEASED_REAPED=0 alongside the other zeroed counters (item 3 contract)" {

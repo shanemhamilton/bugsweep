@@ -112,10 +112,10 @@ common="$1"; lock="$2"; windows="$3"; viol="$4"
 # shellcheck disable=SC1090
 . "$common"
 if bugsweep_lock_acquire "$lock" 100; then
-  start="$(date +%s%N 2>/dev/null || date +%s)"
+  start="$(python3 -c 'import time; print(time.monotonic_ns())')"
   # Hold long enough to make an overlap observable if one occurs.
   sleep 0.05
-  end="$(date +%s%N 2>/dev/null || date +%s)"
+  end="$(python3 -c 'import time; print(time.monotonic_ns())')"
   printf '%s %s %s\n' "$$" "$start" "$end" >> "$windows"
   bugsweep_lock_release "$lock"
 else
@@ -174,6 +174,7 @@ for i in range(1, len(rows)):
         sys.exit(1)
 print("OK")
 PY
+    [ "$status" -eq 0 ] || printf '%s\n' "$output" >&2
     [ "$status" -eq 0 ]
     [ "$output" = "OK" ]
 

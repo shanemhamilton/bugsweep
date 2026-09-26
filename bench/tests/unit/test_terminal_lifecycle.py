@@ -108,6 +108,18 @@ def test_missing_worktree_key_is_invalid_but_empty_is_allowed(tmp_path: Path) ->
     assert read_run_status(run)["exit_code"] == 2
 
 
+def test_run_directory_identity_accepts_an_absolute_symlink_alias(tmp_path: Path) -> None:
+    real_run = tmp_path / "real-run"
+    real_run.mkdir()
+    alias = tmp_path / "run-alias"
+    alias.symlink_to(real_run, target_is_directory=True)
+    state = _state(real_run)
+    state["BUGSWEEP_RUN_DIR"] = str(alias)
+
+    initialize_closeout(real_run, state, "PENDING_CLOSEOUT")
+    assert read_run_status(real_run, state)["exit_code"] == 10
+
+
 def test_complete_source_capture_detects_added_file(tmp_path: Path) -> None:
     from scripts._execution import _capture_source_files
 

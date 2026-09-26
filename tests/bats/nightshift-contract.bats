@@ -308,12 +308,20 @@ PY
 
   run bash "$FINALIZE_SH" "$run_dir"
   [ "$status" -eq 0 ]
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$run_dir" main "$branch"
-  [ "$status" -eq 0 ]
   run_id="$(sed -n "s/^BUGSWEEP_RUN_ID='\([^']*\)'$/\1/p" "${run_dir}/state.env")"
   printf '{"provider":"beads","item_id":"FOLLOW-UP","finding_key":"run:%s:follow-up","readback_verified":true}\n' \
     "$run_id" > "${run_dir}/tracker-receipts.jsonl"
-  run bash "$CLOSEOUT_SH" "$run_dir" landed
+  printf '{"provider":"beads","item_id":"BUG-fix.txt","finding_key":"BUG-fix.txt","readback_verified":true}\n' \
+    >> "${run_dir}/tracker-receipts.jsonl"
+  local bundle_sha bundle_tip
+  git -C "$REPO" bundle create "${run_dir}/recovery.bundle" "$branch"
+  bundle_sha="$(shasum -a 256 "${run_dir}/recovery.bundle" | awk '{print $1}')"
+  bundle_tip="$(git -C "$REPO" rev-parse "$branch")"
+  printf '{"approved":true,"branch":"%s","tip":"%s","bundle_sha256":"%s"}\n' \
+    "$branch" "$bundle_tip" "$bundle_sha" > "${run_dir}/deletion-review.json"
+  printf '{"provider":"beads","item_id":"RECOVERY","readback_verified":true,"recovery_bundle":"%s","recovery_sha256":"%s"}\n' \
+    "${run_dir}/recovery.bundle" "$bundle_sha" >> "${run_dir}/tracker-receipts.jsonl"
+  run bash "$CLOSEOUT_SH" "$run_dir" recorded
   [ "$status" -eq 0 ]
   [ ! -d "$wt" ]
 
@@ -350,7 +358,7 @@ BUGSWEEP_STASH_REF=none
 BUGSWEEP_START_EPOCH=1
 BUGSWEEP_MODE=detect-only
 BUGSWEEP_WORKTREE=${killed_wt}
-BUGSWEEP_SCRIPT_DIR=$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts
+BUGSWEEP_ORIG_HEAD=$(git -C "$REPO" rev-parse main)
 ENV
   touch "${killed_run_dir}/ledger.jsonl"
   _seed_recon_and_finding "$killed_run_dir" "killed.txt" "$killed_wt"
@@ -368,9 +376,19 @@ ENV
 
   run bash "$FINALIZE_SH" "$killed_run_dir"
   [ "$status" -eq 0 ]
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$killed_run_dir" main bugsweep/killed-run
-  [ "$status" -eq 0 ]
-  run bash "$CLOSEOUT_SH" "$killed_run_dir" landed
+  printf '{"provider":"beads","item_id":"FOLLOW-UP","finding_key":"run:killed-run:follow-up","readback_verified":true}\n' \
+    > "${killed_run_dir}/tracker-receipts.jsonl"
+  printf '{"provider":"beads","item_id":"BUG-killed.txt","finding_key":"BUG-killed.txt","readback_verified":true}\n' \
+    >> "${killed_run_dir}/tracker-receipts.jsonl"
+  local killed_bundle_sha killed_bundle_tip
+  git -C "$REPO" bundle create "${killed_run_dir}/recovery.bundle" bugsweep/killed-run
+  killed_bundle_sha="$(shasum -a 256 "${killed_run_dir}/recovery.bundle" | awk '{print $1}')"
+  killed_bundle_tip="$(git -C "$REPO" rev-parse bugsweep/killed-run)"
+  printf '{"approved":true,"branch":"bugsweep/killed-run","tip":"%s","bundle_sha256":"%s"}\n' \
+    "$killed_bundle_tip" "$killed_bundle_sha" > "${killed_run_dir}/deletion-review.json"
+  printf '{"provider":"beads","item_id":"RECOVERY","readback_verified":true,"recovery_bundle":"%s","recovery_sha256":"%s"}\n' \
+    "${killed_run_dir}/recovery.bundle" "$killed_bundle_sha" >> "${killed_run_dir}/tracker-receipts.jsonl"
+  run bash "$CLOSEOUT_SH" "$killed_run_dir" recorded
   [ "$status" -eq 0 ]
   [ ! -d "$killed_wt" ]
 

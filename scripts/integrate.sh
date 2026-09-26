@@ -118,7 +118,9 @@ command -v python3 >/dev/null 2>&1 || die_usage "python3 is required for trusted
 # --- Preconditions -------------------------------------------------------------
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die_usage "not inside a git repo"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-GIT_PATH="$(command -v git)"
+# _integration_checks.py accepts only a canonical regular executable. `command
+# -v git` may be a Homebrew symlink, so resolve it before the trusted handoff.
+GIT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$(command -v git)")"
 
 git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
 case "$git_common_dir" in

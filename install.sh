@@ -60,7 +60,9 @@ stage_source() {
   if [ "$CHANNEL" = edge ]; then git -C "$stage" fetch --quiet --depth=1 origin "$EXPECTED_COMMIT" || fail "could not fetch expected edge commit"
   else git -C "$stage" fetch --quiet --depth=1 origin "refs/tags/$SELECTED_TAG:refs/tags/$SELECTED_TAG" || fail "could not fetch expected release tag"; fi
   git -C "$stage" checkout --quiet --detach "$EXPECTED_COMMIT" || fail "could not check out expected commit"
-  validate_stage "$stage"; printf '%s\n' "$stage"
+  validate_stage "$stage"
+  printf '\n/install-metadata.json\n' >> "$stage/.git/info/exclude"
+  printf '%s\n' "$stage"
 }
 assert_clean_existing() {
   CONFIG_SOURCE=""; [ ! -e "$1" ] && return
@@ -106,7 +108,7 @@ PY
 recover_pending() {
   local dest="$1" journal recovery
   journal="$(dirname "$dest")/.${SKILL_NAME}.install-recovery.json"
-  [ -f "$journal" ] || return
+  [ -f "$journal" ] || return 0
   recovery="$(python3 "$SCRIPT_ROOT/scripts/installer_helper.py" recover "$journal" "$dest")" || fail "existing installer recovery requires manual attention: $journal"
   printf '%s\n' "$recovery" >> "$RECOVERY_FILE"
   rm -f "$journal"
@@ -142,7 +144,6 @@ install_host() {
     fail "metadata write failed; recover with the exact journal $journal"
   fi
   python3 "$SCRIPT_ROOT/scripts/installer_helper.py" commit "$journal" || fail "could not commit transaction journal: $journal"
-  chmod +x "$dest/install.sh" "$dest/scripts/"*.sh 2>/dev/null || true
   $original_exists && rm -rf "$backup"; $instructions_existed && rm -f "$registration_backup"; rm -f "$journal"; record "$host" "$dest"; RECOVERY_HINT=""
 }
 
