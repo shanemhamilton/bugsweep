@@ -238,20 +238,20 @@ for fix_index, event in enumerate(events):
                  and e.get("verdict") == "CONFIRMED"]
     if not confirmed:
         raise SystemExit(f"landed fix lacks a preceding Referee verdict: {bug}")
-    severity = event["severity"]
-    if severity in {"high", "critical"}:
-        verdict_index = confirmed[-1]
-        votes_before_verdict = [e.get("verdict") for e in events[:verdict_index]
-                                if str(e.get("bug_id")) == bug
-                                and e.get("event") == "referee_vote"]
-        votes_before_fix = [e for e in events[:fix_index]
+    # Every landed fix needs K votes, matching validate_review_set below.
+    # Gating on the model-written severity would let a downgrade skip this.
+    verdict_index = confirmed[-1]
+    votes_before_verdict = [e.get("verdict") for e in events[:verdict_index]
                             if str(e.get("bug_id")) == bug
                             and e.get("event") == "referee_vote"]
-        if len(votes_before_verdict) != required_votes or len(votes_before_fix) != required_votes:
-            raise SystemExit(f"high/critical fix lacks {required_votes} Referee votes before its verdict: {bug}")
-        confirmed_votes = sum(vote == "CONFIRMED" for vote in votes_before_verdict)
-        if confirmed_votes <= required_votes - confirmed_votes:
-            raise SystemExit(f"high/critical fix lacks a preceding Referee majority: {bug}")
+    votes_before_fix = [e for e in events[:fix_index]
+                        if str(e.get("bug_id")) == bug
+                        and e.get("event") == "referee_vote"]
+    if len(votes_before_verdict) != required_votes or len(votes_before_fix) != required_votes:
+        raise SystemExit(f"fix lacks {required_votes} Referee votes before its verdict: {bug}")
+    confirmed_votes = sum(vote == "CONFIRMED" for vote in votes_before_verdict)
+    if confirmed_votes <= required_votes - confirmed_votes:
+        raise SystemExit(f"fix lacks a preceding Referee majority: {bug}")
     if mode == "approve":
         approved = [i for i, e in enumerate(events[:fix_index])
                     if str(e.get("bug_id")) == bug and e.get("event") == "approval"

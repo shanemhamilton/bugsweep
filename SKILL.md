@@ -120,8 +120,9 @@ unavailable check a passing baseline. Follow [no-tests.md](references/no-tests.m
    First assessments use a frozen candidate/source packet without prior verdicts.
    Use `review-evidence.sh` for separate native host executions and immutable capture;
    fabricated ledger votes, invented session IDs or repeated sessions are ineligible.
-   High/critical findings need the configured strict majority of K verified first
-   assessments; other findings need a verified first assessment. Reveal prior
+   Every fix-eligible finding, at any severity, needs the configured strict majority
+   of K verified first assessments; closeout enforces this for every landed fix.
+   Check `review-evidence.sh verify` eligibility before starting Repro. Reveal prior
    verdicts only after those assessments have been captured.
 
 At every expensive phase boundary and after each context batch, run:
