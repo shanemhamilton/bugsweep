@@ -145,6 +145,23 @@ teardown() {
   ! _branch_exists "bugsweep/merged-normal"
 }
 
+@test "cleanup: refuses to merge or delete a non-bugsweep branch" {
+  git -C "$REPO" checkout -q -b feature/colleague
+  printf 'wip\n' > "${REPO}/wip.txt"
+  git -C "$REPO" add wip.txt
+  git -C "$REPO" commit -q -m 'wip'
+  git -C "$REPO" checkout -q main
+  main_before="$(git -C "$REPO" rev-parse main)"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" "feature/colleague"
+
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "refusing non-bugsweep branch: feature/colleague"
+  _branch_exists "feature/colleague"
+  [ "$(git -C "$REPO" rev-parse main)" = "$main_before" ]
+}
+
 @test "cleanup: merged branch in clean linked worktree removes worktree then deletes branch" {
   _make_bugsweep_branch "bugsweep/clean-worktree" "fix clean worktree"
   _merge_branch_to_main "bugsweep/clean-worktree"

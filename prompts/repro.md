@@ -11,6 +11,8 @@ test and the exact intended source files. Do not widen that set.
 
 ## Required sequence
 
+0. Confirm `review-evidence.sh verify` returned `eligible: true` for this bug with the
+   configured K. Without it, do not write the test; closeout would reject the fix.
 1. Write one small project-native test with a stable native test identity. It must assert
    the intended correct result, name the exact assertion failure expected before the fix,
    and use the repository's normal test discovery and assertion style. Do not write a

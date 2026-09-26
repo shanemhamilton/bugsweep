@@ -13,7 +13,7 @@
     "Pods/**", ".next/**", "coverage/**", "*.lock", "*.min.js", "**/__generated__/**"
   ],
   "adversarial": {
-    "_comment": "K is the number of fresh native Referee executions for high/critical findings. First assessments are verdict-blind and must have a strict CONFIRMED majority. Different prompts do not establish statistical independence; confidence is uncalibrated. Every fix also requires executable red/green proof. Effective K is capped at referee_votes_cap.",
+    "_comment": "K is the number of fresh native Referee executions required for every fix-eligible finding. First assessments are verdict-blind and must have a strict CONFIRMED majority. Different prompts do not establish statistical independence; confidence is uncalibrated. Every fix also requires executable red/green proof. Effective K is capped at referee_votes_cap.",
     "challenge_enabled": true,
     "referee_enabled": true,
     "referee_spotchecks_upheld": true,

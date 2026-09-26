@@ -262,6 +262,9 @@ _seed_synthetic_integration_receipt() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): approval order'
+  for _ in 1 2 3; do
+    printf '{"event":"referee_vote","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  done
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"repro_status","bug_id":"BUG-1","status":"unreproduced"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"approval","bug_id":"BUG-1","approved":true}\n' >> "${RUN_DIR}/ledger.jsonl"
