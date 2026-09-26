@@ -1,11 +1,31 @@
 """Static WU6 image-contract checks; no Docker build, CLI, or network use."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+def _fake_bin(tmp_path: Path, payload: str) -> Path:
+    """Fake native CLIs that print one JSON line portably under any /bin/sh.
+
+    The runners target the Linux bench image, which ships coreutils. macOS CI
+    runners lack sha256sum, so shim it with shasum when it is absent.
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for binary in ("claude", "codex"):
+        executable = fake_bin / binary
+        executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{payload}'\n")
+        executable.chmod(0o755)
+    if shutil.which("sha256sum") is None:
+        shim = fake_bin / "sha256sum"
+        shim.write_text('#!/bin/sh\nexec shasum -a 256 "$@"\n')
+        shim.chmod(0o755)
+    return fake_bin
 
 
 def test_analysis_image_requires_local_verified_binaries_and_provider_labels() -> None:
@@ -73,14 +93,10 @@ def test_benchmark_arms_are_prompt_bound_to_detect_only_skill_excerpts() -> None
 
 def test_review_adapter_streams_fake_native_json_without_scratch_artifacts(tmp_path: Path) -> None:
     """Review is stdout-only, so R3 can consume native JSON directly."""
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
+    fake_bin = _fake_bin(tmp_path, '{"type":"safe-event"}')
     output = tmp_path / "output"
     output.mkdir()
-    for host, endpoint, binary in (("claude", "ANTHROPIC_BASE_URL", "claude"), ("codex", "CODEX_BENCH_BASE_URL", "codex")):
-        executable = fake_bin / binary
-        executable.write_text("#!/bin/sh\nprintf '{\\\"type\\\":\\\"safe-event\\\"}\\n'\n")
-        executable.chmod(0o755)
+    for host, endpoint in (("claude", "ANTHROPIC_BASE_URL"), ("codex", "CODEX_BENCH_BASE_URL")):
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", endpoint: "http://owned-proxy:8888",
                "BENCH_INERT_CLIENT_ID": "benchmark-inert-client-credential", "BUGSWEEP_OUTPUT_DIR": str(output)}
         result = subprocess.run(["bash", str(ROOT / "bench/runners" / f"{host}_json.sh"), "pinned", "review prompt", "review"], env=env, check=True, text=True, capture_output=True)
@@ -89,12 +105,9 @@ def test_review_adapter_streams_fake_native_json_without_scratch_artifacts(tmp_p
 
 
 def test_benchmark_adapter_imports_fake_native_json_and_metadata(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    fake_bin = _fake_bin(tmp_path, '{"text":"FINDING: app.py:1"}')
     output = tmp_path / "output"; output.mkdir()
-    for host, endpoint, binary in (("claude", "ANTHROPIC_BASE_URL", "claude"), ("codex", "CODEX_BENCH_BASE_URL", "codex")):
-        executable = fake_bin / binary
-        executable.write_text("#!/bin/sh\nprintf '{\\\"text\\\":\\\"FINDING: app.py:1\\\"}\\n'\n")
-        executable.chmod(0o755)
+    for host, endpoint in (("claude", "ANTHROPIC_BASE_URL"), ("codex", "CODEX_BENCH_BASE_URL")):
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", endpoint: "http://owned-proxy:8888",
                "BENCH_INERT_CLIENT_ID": "benchmark-inert-client-credential", "BUGSWEEP_OUTPUT_DIR": str(output)}
         result = subprocess.run(["bash", str(ROOT / "bench/runners" / f"{host}_json.sh"), "pinned", "benchmark prompt", "no_skill_baseline"], env=env, check=True, text=True, capture_output=True)

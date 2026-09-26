@@ -28,8 +28,13 @@ _make_run_dir() {
   git -C "$REPO" commit -q -m "test: seed ${file}"
   cat > "${run_dir}/state.env" <<ENV
 BUGSWEEP_TS=${ts}
+BUGSWEEP_RUN_ID=${ts}
 BUGSWEEP_RUN_DIR=${run_dir}
+BUGSWEEP_REPO_ROOT=${REPO}
 BUGSWEEP_BRANCH=bugsweep/${ts}
+BUGSWEEP_ORIG_BRANCH=$(git -C "$REPO" symbolic-ref --short HEAD)
+BUGSWEEP_ORIG_HEAD=$(git -C "$REPO" rev-parse HEAD)
+BUGSWEEP_WORKTREE=
 ENV
   cat > "${run_dir}/recon.json" <<JSON
 {"batches":[{"id":1,"files":["${file}"]}],"covered":[1]}
@@ -240,15 +245,22 @@ JSON
   local rd="${BATS_TMP}/run-finalize"
   local ts="20991231T111111Z"
   local branch="bugsweep/${ts}"
+  local orig_branch orig_head
+  orig_branch="$(git -C "$REPO" symbolic-ref --short HEAD)"
+  orig_head="$(git -C "$REPO" rev-parse HEAD)"
   git -C "$REPO" checkout -b "$branch" -q
   mkdir -p "$rd"
   cat > "${rd}/state.env" <<ENV
-BUGSWEEP_TS="${ts}"
-BUGSWEEP_BRANCH="${branch}"
-BUGSWEEP_ORIG_BRANCH="master"
-BUGSWEEP_STASH_REF="none"
-BUGSWEEP_START_EPOCH="$(date +%s)"
-BUGSWEEP_SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts"
+BUGSWEEP_TS=${ts}
+BUGSWEEP_RUN_ID=${ts}
+BUGSWEEP_RUN_DIR=${rd}
+BUGSWEEP_REPO_ROOT=${REPO}
+BUGSWEEP_BRANCH=${branch}
+BUGSWEEP_ORIG_BRANCH=${orig_branch}
+BUGSWEEP_ORIG_HEAD=${orig_head}
+BUGSWEEP_STASH_REF=none
+BUGSWEEP_START_EPOCH=$(date +%s)
+BUGSWEEP_WORKTREE=
 ENV
   touch "${rd}/ledger.jsonl"
 
@@ -359,7 +371,15 @@ JSON
   local rd="${BATS_TMP}/run-guard-heartbeat"
   mkdir -p "$rd"
   cat > "${rd}/state.env" <<ENV
+BUGSWEEP_TS=guard-heartbeat
+BUGSWEEP_RUN_ID=guard-heartbeat
+BUGSWEEP_RUN_DIR=${rd}
+BUGSWEEP_REPO_ROOT=${REPO}
+BUGSWEEP_BRANCH=bugsweep/guard-heartbeat
+BUGSWEEP_ORIG_BRANCH=$(git -C "$REPO" symbolic-ref --short HEAD)
+BUGSWEEP_ORIG_HEAD=$(git -C "$REPO" rev-parse HEAD)
 BUGSWEEP_START_EPOCH=$(date +%s)
+BUGSWEEP_WORKTREE=
 ENV
   : > "${rd}/ledger.jsonl"
 
@@ -505,7 +525,16 @@ ENV
   # clobber the counter back to this process's own early ordinal.
   local big="${BATS_TMP}/run-big"
   mkdir -p "$big"
-  printf 'BUGSWEEP_TS=big\n' > "${big}/state.env"
+  cat > "${big}/state.env" <<ENV
+BUGSWEEP_TS=big
+BUGSWEEP_RUN_ID=big
+BUGSWEEP_RUN_DIR=${big}
+BUGSWEEP_REPO_ROOT=${REPO}
+BUGSWEEP_BRANCH=bugsweep/big
+BUGSWEEP_ORIG_BRANCH=$(git -C "$REPO" symbolic-ref --short HEAD)
+BUGSWEEP_ORIG_HEAD=$(git -C "$REPO" rev-parse HEAD)
+BUGSWEEP_WORKTREE=
+ENV
   : > "${big}/ledger.jsonl"
   local i
   # 1500 matching lines make the big run's fallback take seconds (measured
@@ -540,6 +569,35 @@ ENV
   local risk_lines
   risk_lines="$(wc -l < "${REPO}/.bugsweep/state/risk.jsonl" | tr -d ' ')"
   [ "$risk_lines" -eq 1504 ]
+}
+
+@test "state.sh persist (no-python fallback): reads a GNU stat file size without BSD output contamination" {
+  local fakebin="${BATS_TMP}/fake-gnu-stat"
+  mkdir -p "$fakebin"
+  cat > "${fakebin}/stat" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf 'stat (GNU coreutils)\n' ;;
+  -c) wc -c < "$3" | tr -d '[:space:]' ;;
+  -f) printf 'filesystem output, not a byte count\n'; exit 1 ;;
+  *) exit 2 ;;
+esac
+SH
+  chmod +x "${fakebin}/stat"
+
+  local one="${BATS_TMP}/run-nopy-size-1" two="${BATS_TMP}/run-nopy-size-2"
+  _make_run_dir "$one" "nopy-size-1" "nopy-size-1.txt"
+  _make_run_dir "$two" "nopy-size-2" "nopy-size-2.txt"
+
+  run env PATH="${fakebin}:$PATH" BUGSWEEP_NO_PYTHON=1 bash "$STATE_SH" persist "$one"
+  [ "$status" -eq 0 ]
+  run env PATH="${fakebin}:$PATH" BUGSWEEP_NO_PYTHON=1 bash "$STATE_SH" persist "$two"
+  [ "$status" -eq 0 ]
+
+  local runs
+  runs="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["runs"])' \
+    "${REPO}/.bugsweep/state/meta.json")"
+  [ "$runs" -eq 2 ]
 }
 
 @test "state.sh persist: python-harvest failure fallback does not rewrite meta.json" {

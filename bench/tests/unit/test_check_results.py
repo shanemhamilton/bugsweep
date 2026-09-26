@@ -72,3 +72,11 @@ def test_missing_or_skipped_previously_passing_test_is_a_regression() -> None:
     assert compare_check_results(baseline, {"check": "test", "status": "ok", "tests": {"a::test": "skipped"}}) == {
         "status": "regression", "regressions": ["a::test"]
     }
+
+
+def test_failure_already_present_at_baseline_is_not_a_regression() -> None:
+    baseline = {"check": "test", "status": "ok", "tests": {"a::test": "failure", "b::test": "pass"}}
+
+    result = compare_check_results(baseline, baseline)
+
+    assert result["regressions"] == []
