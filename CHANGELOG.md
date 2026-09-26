@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-26
+
+Hardened review-gate alignment, prompt injection defenses, and lifecycle test suite
+reconciliation. Low and medium severity findings now consistently require K native
+reviewer votes before landing, branch cleanup strictly validates ownership, prompt
+evaluators treat repository content as untrusted, and the Bats integration test suite
+is reconciled with the v0.7.0 single-worktree lifecycle contract.
+
+### Security
+
+- **Review gate parity & prompt injection hardening:** Closed review-gate drift where low and
+  medium fixes were documented to need 1 review but required K=3 votes at closeout. Aligned docs,
+  scripts, and Repro eligibility checks to require K native votes uniformly.
+- **Ledger vote verification:** Fixed ledger vote checking to avoid keying on model-written
+  fix severity, preventing bypasses via severity downgrade.
+- **Branch protection in cleanup:** `bugsweep-cleanup.sh` now strictly validates branch ownership
+  and refuses non-`bugsweep/*` branches before merging or deleting.
+- **Prompt injection hardening:** Hardened Hunt, Challenge, and Referee prompts to treat target
+  comments, docs, and repository instruction files as untrusted claims, preventing embedded
+  comments from misleading Skeptics into rejecting legitimate findings.
+
+### Fixed
+
+- **Bats test suite lifecycle reconciliation:** Reconciled Bats contract and integration test suite
+  with the v0.7.0 lifecycle contract, retiring legacy shell rerun assertions in favor of the
+  structured proof pipeline (resolves issue #8).
+- **CI test runner portability:** Fixed bench adapter contract tests to use POSIX-compliant
+  `printf` across shell variants (e.g. Ubuntu's dash) and added fallback shims for macOS runners
+  lacking `sha256sum`.
+
 ## [0.7.0] - 2026-09-22
 
 Baton-parity lifecycle contract and structured evidence pipeline: Bugsweep now enforces
@@ -304,7 +334,8 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.4.0...v0.5.0
