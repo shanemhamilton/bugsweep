@@ -7,6 +7,7 @@
 # regain arbitrary shell execution.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
+ROOT="$REPO_ROOT"
 REPRO_SH="${REPO_ROOT}/scripts/repro.sh"
 PREPARE_PY="${REPO_ROOT}/scripts/_prepare_execution.py"
 RUN_CHECKS_SH="${REPO_ROOT}/scripts/run_checks.sh"
@@ -191,6 +192,14 @@ _assert_proof_error() {
   [ "$status" -eq 1 ]
   [ "$output" = "REPRO=proof_error" ]
   grep -q '"invalid_bug_id"' "${RUN_DIR}/proofs/.._etc_passwd.json"
+  [ ! -e "${RUN_DIR}/escape.json" ]
+  [ ! -e "$(dirname "$RUN_DIR")/escape.json" ]
+}
+
+@test "repro documentation requires a frozen request and verified provider" {
+  grep -q 'never pass a raw command' "$ROOT/prompts/repro.md"
+  grep -q 'required-untrusted provider' "$ROOT/prompts/repro.md"
+  grep -q 'Do not use host evaluation, a shell fallback' "$ROOT/prompts/repro.md"
 }
 
 @test "missing run directories fail closed" {

@@ -13,12 +13,13 @@ setup() {
 }
 
 referee_has() {
-  printf '%s\n' "$REFEREE_TEXT" | grep -qi -- "$1"
+  printf '%s\n' "$REFEREE_TEXT" | grep -Eqi -- "$1"
 }
 
-@test "referee.md: defines the K-vote majority gate for high and critical findings" {
-  referee_has 'K-vote majority for severity >= high'
-  referee_has 'High and critical findings require the configured `K` fresh native first assessments'
+@test "referee.md: requires the configured blind native gate for every severity" {
+  referee_has 'Required blind native review gate'
+  referee_has '(all|every).*severit.*configured.*K'
+  referee_has 'configured `K` fresh native first assessments'
 }
 
 @test "referee.md: binds K to the configured knob and hard cap" {
@@ -40,9 +41,10 @@ assert adv['referee_votes'] <= adv['referee_votes_cap'], adv
   [ "$status" -eq 0 ]
 }
 
-@test "referee.md: medium and low use one verified native first assessment" {
-  referee_has 'Medium and low findings require `K=1`'
-  referee_has 'one verified native first assessment is sufficient'
+@test "referee.md: every fix needs configured K eligibility before Repro" {
+  referee_has 'Every fix-eligible finding, at any severity, requires the configured `K`'
+  referee_has 'Check `review-evidence.sh verify` eligibility before starting Repro'
+  referee_has 'same requirement for every landed fix'
 }
 
 @test "referee.md: first assessments are blind and use fresh sessions" {
@@ -72,9 +74,9 @@ assert adv['referee_votes'] <= adv['referee_votes_cap'], adv
   referee_has 'Strict majority'
   referee_has 'strictly greater than every other outcome combined'
   referee_has 'A tie, no strict majority'
-  referee_has 'lone CONFIRMED vote'
+  referee_has 'fewer than the configured K assessments'
   referee_has 'minority of CONFIRMED votes'
-  referee_has 'must never.*promote a high/critical finding'
+  referee_has 'must never.*promote a finding'
 }
 
 @test "referee.md: verifier output controls eligibility" {

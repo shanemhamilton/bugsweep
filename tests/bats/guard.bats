@@ -180,6 +180,17 @@ PY
   ! grep -q 'After context-build completes, run' "$SKILL_MD"
 }
 
+@test "SKILL.md requires guard checkpoints at expensive phase boundaries" {
+  grep -qi 'At every expensive phase boundary and after each context batch' "$SKILL_MD"
+  grep -q 'scripts/guard.sh' "$SKILL_MD"
+  grep -q 'STOP fix_cap_reached' "$SKILL_MD"
+  grep -qi 'Any other `STOP` goes to closeout' "$SKILL_MD"
+}
+
+@test "SKILL.md states that a hard kill leaves recovery pending, never successful" {
+  grep -qi 'hard kill leaves a recoverable pending run, not success' "$SKILL_MD"
+}
+
 # ---------------------------------------------------------------------------
 # MAJOR 5 (bugsweep-5ft review): preflight.sh's caps.max_runtime_minutes
 # sanitization branches. Code (scripts/preflight.sh):

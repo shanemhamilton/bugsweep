@@ -7,6 +7,7 @@
 # manufacture an OK/FLAKY result.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
+ROOT="$REPO_ROOT"
 RUN_CHECKS_SH="${REPO_ROOT}/scripts/run_checks.sh"
 PREPARE_PY="${REPO_ROOT}/scripts/_prepare_execution.py"
 FAKE_PROVIDER="${REPO_ROOT}/tests/bats/fake_execution_provider.py"
@@ -141,4 +142,9 @@ _prepare_with_policy() {
   [ "$output" = "PROOF_ERROR" ]
   [[ "$output" != *OK* ]]
   [[ "$output" != *FLAKY* ]]
+}
+
+@test "later passes do not excuse a newly observed regression" {
+  grep -q 'does not excuse a regression after a later pass' "$ROOT/config/bugsweep.config.json"
+  ! grep -q 'flaky_reruns' "$ROOT/scripts/_proof.py"
 }

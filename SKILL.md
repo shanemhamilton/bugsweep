@@ -57,7 +57,7 @@ Separate investigation, review, executable proof, and operational completion.
 | `--autonomous` | Repeat the fix workflow until the frontier or a cap ends the run. |
 | `--severity low\|medium\|high\|critical` | Apply the selected floor to fixes. |
 | `--recall` | Retain plausible unresolved findings; never lower fix gates. |
-| `--update` | Run the active installation's `scripts/update-install.sh`, then stop. |
+| `--update` | Run `bash scripts/update-install.sh` from the active installation, then stop. |
 
 Updates default to a stable release. Edge and exact-version installation are explicit
 installer choices. Preserve `CLAUDE_SKILLS_DIR` / `CODEX_DIR` and active-install metadata;
@@ -138,9 +138,10 @@ bash "$SKILL_ROOT/scripts/priority-context.sh" build "$RUN_DIR"
    First assessments use a frozen candidate/source packet without prior verdicts.
    Use `review-evidence.sh` for separate native host executions and immutable capture;
    fabricated ledger votes, invented session IDs or repeated sessions are ineligible.
-   High/critical findings need the configured strict majority of K verified first
-   assessments; other findings need a verified first assessment. Reveal prior
-   verdicts only after those assessments have been captured. Finish the slice's
+   Every fix-eligible finding, at any severity, needs the configured strict majority
+   of K verified first assessments; closeout enforces this for every landed fix.
+   Check `review-evidence.sh verify` eligibility before starting Repro. Reveal prior
+   verdicts only after those assessments have been captured. Finish the slice’s
    applicable proof/fix workflow and coverage checkpoint below before modeling the
    next slice. Keep unresolved cross-slice paths in the plan.
 

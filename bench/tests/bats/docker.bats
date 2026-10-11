@@ -25,3 +25,8 @@ load helpers
   run grep -E 'BENCH_ENTRY_(HOME|SKILL_SRC|WORK|REPO)' "$ENTRYPOINT_SH"
   [ "$status" -ne 0 ]
 }
+
+@test "docker entrypoint leaves arm selection to the host adapter" {
+  run grep -E 'current_skill|previous_release|no_skill_baseline' "$ENTRYPOINT_SH"
+  [ "$status" -ne 0 ]
+}

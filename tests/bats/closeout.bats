@@ -199,6 +199,9 @@ _write_summary() {
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): verified landed fixture'
   fix_commit="$(git -C "$REPO" rev-parse "$BRANCH")"
+  for _ in 1 2 3; do
+    printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"medium","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  done
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium","commit":"%s"}\n' "$fix_commit" >> "${RUN_DIR}/ledger.jsonl"
 
@@ -223,6 +226,9 @@ _write_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): malformed evidence boundary'
+  for _ in 1 2 3; do
+    printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"medium","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  done
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium"}\n' >> "${RUN_DIR}/ledger.jsonl"
 
@@ -339,6 +345,9 @@ _write_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): approval order'
+  for _ in 1 2 3; do
+    printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"medium","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  done
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"repro_status","bug_id":"BUG-1","status":"unreproduced"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"approval","bug_id":"BUG-1","approved":true}\n' >> "${RUN_DIR}/ledger.jsonl"

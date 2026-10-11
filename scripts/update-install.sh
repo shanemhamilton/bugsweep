@@ -10,5 +10,5 @@ assert d.get("schema_version")==1 and d.get("canonical_root")==os.path.realpath(
 print(d["host"])
 PY
 )" || { printf 'bugsweep updater: active install metadata is invalid\n' >&2; exit 1; }
-$ALL && exec "$ACTIVE_ROOT/install.sh" --all
-case "$HOST" in claude) CLAUDE_SKILLS_DIR="$(dirname "$ACTIVE_ROOT")" exec "$ACTIVE_ROOT/install.sh" --claude;; codex) CODEX_DIR="$(dirname "$(dirname "$ACTIVE_ROOT")")" exec "$ACTIVE_ROOT/install.sh" --codex;; esac
+$ALL && exec bash "$ACTIVE_ROOT/install.sh" --all
+case "$HOST" in claude) CLAUDE_SKILLS_DIR="$(dirname "$ACTIVE_ROOT")" exec bash "$ACTIVE_ROOT/install.sh" --claude;; codex) CODEX_DIR="$(dirname "$(dirname "$ACTIVE_ROOT")")" exec bash "$ACTIVE_ROOT/install.sh" --codex;; esac

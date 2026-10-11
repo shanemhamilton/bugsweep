@@ -94,3 +94,9 @@ referee_has() {
   referee_has 'textual vote is ineligible'
   referee_has 'only `eligible: true` makes a finding fix-eligible'
 }
+
+@test "referee.md: preserves upstream's untrusted-search-hint guard" {
+
+  grep -qi "untrusted search hints" "$REFEREE_MD"
+  grep -qi "absence has no verdict meaning" "$REFEREE_MD"
+}

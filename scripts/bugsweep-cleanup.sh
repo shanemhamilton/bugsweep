@@ -1066,6 +1066,12 @@ fi
   || fail_preserved "an exact bugsweep branch is required; refusing prefix-wide cleanup"
 
 LATEST="$SWEEP_ARG"
+# ponytail: namespace check only; binding to a RUN_DIR's recorded branch
+# (as closeout.sh does) is the stronger ownership proof.
+case "$LATEST" in
+  bugsweep/*) ;;
+  *) fail_preserved "refusing non-bugsweep branch: $LATEST" "$LATEST" ;;
+esac
 if ! branch_exists "$LATEST"; then
   fail_preserved "bugsweep branch not found: $LATEST" "$LATEST"
 fi

@@ -154,6 +154,23 @@ teardown() {
   ! _branch_exists "bugsweep/merged-normal"
 }
 
+@test "cleanup: refuses to merge or delete a non-bugsweep branch" {
+  git -C "$REPO" checkout -q -b feature/colleague
+  printf 'wip\n' > "${REPO}/wip.txt"
+  git -C "$REPO" add wip.txt
+  git -C "$REPO" commit -q -m 'wip'
+  git -C "$REPO" checkout -q main
+  main_before="$(git -C "$REPO" rev-parse main)"
+
+  run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
+    bash "$CLEANUP_SH" "feature/colleague"
+
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "refusing non-bugsweep branch: feature/colleague"
+  _branch_exists "feature/colleague"
+  [ "$(git -C "$REPO" rev-parse main)" = "$main_before" ]
+}
+
 @test "cleanup: merged branch in clean linked worktree removes worktree then deletes branch" {
   _make_bugsweep_branch "bugsweep/clean-worktree" "fix clean worktree"
   _merge_branch_to_main "bugsweep/clean-worktree"
@@ -280,7 +297,7 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
-@test "reap-worktrees: removes N contained bugsweep worktrees, prunes branches, and is idempotent" {
+@test "reap-worktrees: preserves mapped legacy finalized worktrees for exact closeout" {
   _make_bugsweep_branch "bugsweep/reap-one" "fix reap one"
   _merge_branch_to_main "bugsweep/reap-one"
   _make_bugsweep_branch "bugsweep/reap-two" "fix reap two"
@@ -319,6 +336,7 @@ teardown() {
     bash "$CLEANUP_SH" --reap-worktrees
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREES_PRESERVED=2"
   echo "$output" | grep -q "BRANCHES_PRUNED=0"
 }
 

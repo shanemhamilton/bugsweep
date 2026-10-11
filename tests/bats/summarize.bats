@@ -190,6 +190,10 @@ assert d['coverage'] == {'covered': 0, 'total': 10}, d['coverage']
   _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
   _make_recon_json "$RUN_DIR" 0 10
 
+  run python3 -B "$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/_terminal_lifecycle.py" get "$RUN_DIR" BUGSWEEP_BRANCH
+  [ "$status" -eq 0 ]
+  [ "$output" = "bugsweep/20991231T000000Z" ]
+
   run bash "$FINALIZE_SH" "$RUN_DIR"
   [ "$status" -eq 0 ]
 

@@ -10,6 +10,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def _fake_bin(tmp_path: Path, payload: str) -> Path:
+    """Create portable native-CLI fixtures for both adapter entrypoints."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True)
+    quoted_payload = shlex.quote(payload)
+    for binary in ("claude", "codex"):
+        executable = fake_bin / binary
+        executable.write_text(f"#!/bin/sh\nprintf '%s\\n' {quoted_payload}\n")
+        executable.chmod(0o755)
+    return fake_bin
+
+
 def test_analysis_image_requires_local_verified_binaries_and_provider_labels() -> None:
     dockerfile = (ROOT / "bench/docker/Dockerfile").read_text()
     assert "ARG BENCH_BASE_IMAGE" in dockerfile
@@ -76,14 +88,10 @@ def test_benchmark_arms_are_prompt_bound_to_detect_only_skill_excerpts() -> None
 
 def test_review_adapter_streams_fake_native_json_without_scratch_artifacts(tmp_path: Path) -> None:
     """Review is stdout-only, so R3 can consume native JSON directly."""
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
+    fake_bin = _fake_bin(tmp_path, '{"type":"safe-event"}')
     output = tmp_path / "output"
     output.mkdir()
-    for host, endpoint, binary in (("claude", "ANTHROPIC_BASE_URL", "claude"), ("codex", "CODEX_BENCH_BASE_URL", "codex")):
-        executable = fake_bin / binary
-        executable.write_text("#!/bin/sh\nprintf '%s\\n' '{\"type\":\"safe-event\"}'\n")
-        executable.chmod(0o755)
+    for host, endpoint in (("claude", "ANTHROPIC_BASE_URL"), ("codex", "CODEX_BENCH_BASE_URL")):
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", endpoint: "http://owned-proxy:8888",
                "BENCH_INERT_CLIENT_ID": "benchmark-inert-client-credential", "BUGSWEEP_OUTPUT_DIR": str(output)}
         result = subprocess.run(["bash", str(ROOT / "bench/runners" / f"{host}_json.sh"), "pinned", "review prompt", "review"], env=env, check=True, text=True, capture_output=True)
@@ -92,17 +100,16 @@ def test_review_adapter_streams_fake_native_json_without_scratch_artifacts(tmp_p
 
 
 def test_benchmark_adapter_imports_fake_native_json_and_metadata(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
-    output = tmp_path / "output"; output.mkdir()
-    for host, endpoint, binary in (("claude", "ANTHROPIC_BASE_URL", "claude"), ("codex", "CODEX_BENCH_BASE_URL", "codex")):
-        executable = fake_bin / binary
+    # Native provider envelopes contain strict JSON candidates; legacy textual
+    # FINDING markers are intentionally not part of this fixture.
+    for host, endpoint in (("claude", "ANTHROPIC_BASE_URL"), ("codex", "CODEX_BENCH_BASE_URL")):
         message = json.dumps({"candidates": [{"bug_id": "b1"}]})
         native = {"type": "result", "result": message} if host == "claude" else {
             "type": "item.completed", "item": {"type": "agent_message", "text": message}
         }
         native_line = json.dumps(native)
-        executable.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(native_line) + "\n")
-        executable.chmod(0o755)
+        fake_bin = _fake_bin(tmp_path / host, native_line)
+        output = tmp_path / f"output-{host}"; output.mkdir()
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", endpoint: "http://owned-proxy:8888",
                "BENCH_INERT_CLIENT_ID": "benchmark-inert-client-credential", "BUGSWEEP_OUTPUT_DIR": str(output)}
         result = subprocess.run(["bash", str(ROOT / "bench/runners" / f"{host}_json.sh"), "pinned", "benchmark prompt", "no_skill_baseline"], env=env, check=True, text=True, capture_output=True)

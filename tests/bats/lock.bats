@@ -176,6 +176,7 @@ for i in range(1, len(rows)):
         sys.exit(1)
 print("OK")
 PY
+    [ "$status" -eq 0 ] || printf '%s\n' "$output" >&2
     [ "$status" -eq 0 ]
     [ "$output" = "OK" ]
 
