@@ -228,10 +228,14 @@ teardown() {
   cd "$wt"
   run bash "$FINALIZE_SH" "$run_dir"
   [ "$status" -eq 0 ]
-  # A first-run finalizer stub has no uncovered recon or prior-coverage
-  # handoff, so recorded closeout does not require a synthetic follow-up
-  # receipt merely to dispose of this clean run.
-  grep -q '"follow_up": \[\]' "${run_dir}/run-summary.json"
+  # This deliberately unfinished audit has follow-up work. Its tracker
+  # obligation must remain enforced even when the checkout was entered
+  # through an alias.
+  python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["follow_up"]' \
+    "${run_dir}/run-summary.json"
+  run bash "$CLOSEOUT_SH" "$run_dir" recorded
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "verified tracker readback missing keys: run:${branch#bugsweep/}:follow-up"
 
   bundle="${run_dir}/recovery.bundle"
   git -C "$REPO" bundle create "$bundle" "refs/heads/${branch}" >/dev/null
@@ -239,6 +243,8 @@ teardown() {
   bundle_sha="$(shasum -a 256 "$bundle" | awk '{print $1}')"
   printf '{"provider":"beads","item_id":"RUN-CLOSEOUT","finding_key":"RUN-CLOSEOUT","readback_verified":true,"recovery_bundle":"%s","recovery_sha256":"%s"}\n' \
     "$bundle" "$bundle_sha" > "${run_dir}/tracker-receipts.jsonl"
+  printf '{"provider":"beads","item_id":"RUN-FOLLOW-UP","finding_key":"run:%s:follow-up","readback_verified":true}\n' \
+    "${branch#bugsweep/}" >> "${run_dir}/tracker-receipts.jsonl"
   printf '{"approved":true,"branch":"%s","tip":"%s","bundle_sha256":"%s"}\n' \
     "$branch" "$tip" "$bundle_sha" > "${run_dir}/deletion-review.json"
 

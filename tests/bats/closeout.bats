@@ -3,6 +3,7 @@
 ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 CLOSEOUT_SH="${ROOT}/scripts/closeout.sh"
 INTEGRATE_SH="${ROOT}/scripts/integrate.sh"
+LANDED_FIXTURE="${ROOT}/tests/bats/landed_fixture.py"
 
 load integration-fixture
 
@@ -14,16 +15,16 @@ setup() {
   git -C "$REPO" config user.email test@bugsweep
   git -C "$REPO" config user.name bugsweep-test
   printf 'base\n' > "${REPO}/app.txt"
-  git -C "$REPO" add app.txt
+  printf 'unchanged regression fixture\n' > "${REPO}/regression_fixture.txt"
+  git -C "$REPO" add app.txt regression_fixture.txt
   git -C "$REPO" commit -q -m init
   printf '.bugsweep/\n' >> "${REPO}/.git/info/exclude"
   ORIG="$(git -C "$REPO" symbolic-ref --short HEAD)"
   RUN_ID="test-run"
   BRANCH="bugsweep/${RUN_ID}"
   WT="${REPO}/.bugsweep/worktrees/${RUN_ID}"
-  # Integration authority is deliberately outside the source repository.  The
-  # production integration checker rejects an authority nested under either
-  # the repository or its source workspace; closeout still binds the run to
+  # Keep the authority beside this temporary checkout so the fixture exercises
+  # the ordinary sibling topology while closeout still binds the run to
   # REPO_ROOT through state.env below.
   RUN_DIR="${TMP}/integration-authority"
   mkdir -p "$(dirname "$WT")" "$RUN_DIR" "${REPO}/.bugsweep/state/closeout-blocked"
@@ -180,6 +181,66 @@ _write_summary() {
 
   [ "$status" -ne 0 ]
   echo "$output" | grep -q 'successful integration quality-gate receipt'
+  [ -d "$WT" ]
+  [ -n "$(git -C "$REPO" branch --list "$BRANCH")" ]
+}
+
+@test "closeout: verified landed evidence removes the exact branch and worktree" {
+  _set_fixed_summary
+  cd "$REPO"
+
+  # Reviews are prepared and captured against the untouched source snapshot;
+  # the fixture's run_command boundary is synthetic, while review validation is
+  # the production native-event and execution-receipt validator.
+  run "$REAL_PYTHON" "$LANDED_FIXTURE" prepare-reviews "$RUN_DIR" "$WT" "$RUN_ID" BUG-1
+  [ "$status" -eq 0 ]
+
+  printf 'fix\n' >> "${WT}/app.txt"
+  git -C "$WT" add app.txt
+  git -C "$WT" commit -q -m 'fix(bugsweep): verified landed fixture'
+  fix_commit="$(git -C "$REPO" rev-parse "$BRANCH")"
+  printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium","commit":"%s"}\n' "$fix_commit" >> "${RUN_DIR}/ledger.jsonl"
+
+  _write_integration_authority "$RUN_DIR" "$RUN_ID"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
+
+  run "$REAL_PYTHON" "$LANDED_FIXTURE" finalize-evidence "$RUN_DIR" "$REPO" "$WT" "$RUN_ID" "$BRANCH" BUG-1
+  [ "$status" -eq 0 ]
+
+  run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'OUTCOME=COMPLETED_LANDED'
+  [ ! -d "$WT" ]
+  [ -z "$(git -C "$REPO" branch --list "$BRANCH")" ]
+  [ ! -f "${REPO}/.bugsweep/state/closeout-blocked/${RUN_ID}.json" ]
+  grep -q '"outcome":"COMPLETED_LANDED"' "${RUN_DIR}/ledger.jsonl"
+}
+
+@test "closeout: malformed landed evidence reaches the trusted verifier from a subdirectory" {
+  _set_fixed_summary
+  printf 'fix\n' >> "${WT}/app.txt"
+  git -C "$WT" add app.txt
+  git -C "$WT" commit -q -m 'fix(bugsweep): malformed evidence boundary'
+  printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium"}\n' >> "${RUN_DIR}/ledger.jsonl"
+
+  cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
+
+  # source-digests.json is intentionally absent.  The test reaches the
+  # verifier from a nested checkout directory, then must fail closed before
+  # any branch or worktree cleanup.
+  mkdir -p "${REPO}/subdir"
+  cd "${REPO}/subdir"
+  run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
+
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q 'requires verified execution and review provenance'
+  ! echo "$output" | grep -q "No module named 'scripts'"
   [ -d "$WT" ]
   [ -n "$(git -C "$REPO" branch --list "$BRANCH")" ]
 }

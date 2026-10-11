@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aliases on macOS satisfy the same strict identity checks used on Linux.
 - Bind landed closeout to its run ID and load trusted proof modules independently
   of the audited checkout, preserving the integration receipt's proof fields.
+- Support preflight's sibling worktree and evidence layout during integration,
+  rejecting tracked paths that could overwrite evidence before Git changes trees.
 
 ### Evaluation
 

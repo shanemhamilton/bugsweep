@@ -155,3 +155,122 @@ def test_integration_receipts_are_scoped_to_immutable_attempt_ids(tmp_path: Path
     assert path.parent.name == attempt
     with pytest.raises(ValueError):
         module._receipt_path(run_dir, "not-an-attempt", merge_sha, "bugsweep/one")
+
+
+def test_authority_boundary_allows_ignored_run_sibling_of_frozen_worktree(tmp_path: Path) -> None:
+    module = _load_module()
+    repo = tmp_path / "repo"
+    worktree = repo / ".bugsweep" / "worktrees" / "run-x"
+    authority = repo / ".bugsweep" / "run-x"
+    repo.mkdir()
+    worktree.mkdir(parents=True)
+    authority.mkdir(parents=True)
+    plan = {
+        "target_root": str(worktree),
+        "execution_policy": {"target_root": str(worktree)},
+    }
+
+    module._validate_authority_boundary(
+        authority,
+        module._frozen_target_root(plan),
+        repo,
+        tracked_paths=("src/app.py",),
+    )
+
+
+@pytest.mark.parametrize(
+    "tracked_path",
+    [
+        ".bugsweep/run-x/check-plan.json",
+        ".bugsweep/run-x/child.txt",
+        ".bugsweep",
+    ],
+)
+def test_authority_boundary_rejects_tracked_authority_or_parent(
+    tmp_path: Path, tracked_path: str
+) -> None:
+    module = _load_module()
+    repo = tmp_path / "repo"
+    worktree = repo / ".bugsweep" / "worktrees" / "run-x"
+    authority = repo / ".bugsweep" / "run-x"
+    repo.mkdir()
+    worktree.mkdir(parents=True)
+    authority.mkdir(parents=True)
+    plan = {
+        "target_root": str(worktree),
+        "execution_policy": {"target_root": str(worktree)},
+    }
+
+    with pytest.raises(ValueError, match="tracked authority path"):
+        module._validate_authority_boundary(
+            authority,
+            module._frozen_target_root(plan),
+            repo,
+            tracked_paths=(tracked_path,),
+        )
+
+
+def test_authority_boundary_rejects_casefold_alias_and_symlink_redirect(tmp_path: Path) -> None:
+    module = _load_module()
+    repo = tmp_path / "repo"
+    worktree = repo / ".bugsweep" / "worktrees" / "run-x"
+    authority = repo / ".bugsweep" / "run-x"
+    repo.mkdir()
+    worktree.mkdir(parents=True)
+    authority.mkdir(parents=True)
+    (repo / "authority-alias").symlink_to(authority, target_is_directory=True)
+    plan = {
+        "target_root": str(worktree),
+        "execution_policy": {"target_root": str(worktree)},
+    }
+
+    for tracked_path in (
+        ".BUGSWEEP/RUN-X/check-plan.json",
+        "authority-alias/check-plan.json",
+    ):
+        with pytest.raises(ValueError, match="tracked authority path"):
+            module._validate_authority_boundary(
+                authority,
+                module._frozen_target_root(plan),
+                repo,
+                tracked_paths=(tracked_path,),
+            )
+
+
+def test_authority_boundary_rejects_target_overlap_and_git_metadata(tmp_path: Path) -> None:
+    module = _load_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "target"
+    target.mkdir()
+    authority = target / "authority"
+    authority.mkdir()
+    plan = {
+        "target_root": str(target),
+        "execution_policy": {"target_root": str(target)},
+    }
+
+    with pytest.raises(ValueError, match="target and authority overlap"):
+        module._validate_authority_boundary(
+            authority, module._frozen_target_root(plan), repo, tracked_paths=()
+        )
+
+    git_authority = repo / ".git" / "authority"
+    git_authority.mkdir(parents=True)
+    with pytest.raises(ValueError, match="Git metadata"):
+        module._validate_authority_boundary(
+            git_authority, module._frozen_target_root(plan), repo, tracked_paths=()
+        )
+
+
+def test_frozen_target_requires_plan_and_policy_roots_to_match(tmp_path: Path) -> None:
+    module = _load_module()
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    with pytest.raises(ValueError, match="target roots"):
+        module._frozen_target_root(
+            {"target_root": str(first), "execution_policy": {"target_root": str(second)}}
+        )

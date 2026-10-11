@@ -132,6 +132,19 @@ git_candidate="$(command -v git)" || die_usage "git is required for source-bound
 GIT_PATH="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve(strict=True))' "$git_candidate")" \
   || die_usage "could not resolve the canonical git executable"
 
+# Validate the authority layout and the exact candidate tree before any checkout.
+# The Python helper repeats this check after exporting the merged tree, so a
+# tracked path that appears only on an incoming branch cannot replace run state.
+validate_authority_tree() {
+  local tree_sha="$1"
+  python3 -B "${SCRIPT_DIR}/_integration_checks.py" \
+    --validate-authority \
+    --run-dir "$RUN_DIR" \
+    --repo-root "$REPO_ROOT" \
+    --git-path "$GIT_PATH" \
+    --tree-sha "$tree_sha" >/dev/null
+}
+
 git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
 case "$git_common_dir" in
   /*) : ;;
@@ -171,6 +184,19 @@ git show-ref --verify --quiet "refs/heads/${TARGET_BRANCH}" \
 
 for b in "${BRANCHES[@]}"; do
   branch_exists "$b" || die_usage "branch '$b' does not exist"
+done
+
+initial_target_sha="$(git rev-parse --verify "refs/heads/${TARGET_BRANCH}^{commit}")" \
+  || die_usage "could not resolve target branch '${TARGET_BRANCH}'"
+if ! validate_authority_tree "$initial_target_sha"; then
+  die_usage "frozen authority boundary rejects target branch '${TARGET_BRANCH}'"
+fi
+for b in "${BRANCHES[@]}"; do
+  candidate_sha="$(git rev-parse --verify "refs/heads/${b}^{commit}")" \
+    || die_usage "could not resolve branch '$b'"
+  if ! validate_authority_tree "$candidate_sha"; then
+    die_usage "frozen authority boundary rejects branch '$b'"
+  fi
 done
 
 # --- Quality gate command resolution --------------------------------------------
@@ -222,19 +248,38 @@ record_result() {
 }
 
 # --- Core per-branch integration -------------------------------------------------
-# Prints the outcome code on stdout (merged|already_contained|conflict|gate_failed|
-# gate_dirtied_tree|update_failed). Never moves the target branch to a bad state: it detaches HEAD
+# Prints the outcome code on stdout (merged|already_contained|authority_invalid|
+# conflict|gate_failed|gate_dirtied_tree|update_failed). Never moves the target branch to a bad state: it detaches HEAD
 # at the target's current tip, builds the merge commit there, gates it, and only
 # fast-forwards the real target ref onto a gate-passed commit. The next branch's
 # iteration re-derives the tip from $TARGET_BRANCH, so there is no cross-iteration
 # state to carry.
 integrate_one() {
-  local branch="$1" tip merge_sha gate_sha
+  local branch="$1" branch_tip="$2" tip merge_sha gate_sha
 
-  if branch_contained_in_target "$branch" "$TARGET_BRANCH"; then
+  # Re-resolve the target at each merge, but merge the exact source commit that
+  # the caller checked.  This keeps a moving branch ref from changing the tree
+  # after its authority inventory was validated.
+  tip="$(git rev-parse --verify "refs/heads/${TARGET_BRANCH}^{commit}")" || {
+    log "could not resolve target '$TARGET_BRANCH' while integrating $branch"
+    printf 'authority_invalid'
+    return 1
+  }
+  if ! validate_authority_tree "$tip"; then
+    log "frozen authority boundary rejects target '$TARGET_BRANCH' while integrating $branch"
+    printf 'authority_invalid'
+    return 1
+  fi
+  if ! validate_authority_tree "$branch_tip"; then
+    log "frozen authority boundary rejects source '$branch' at $branch_tip"
+    printf 'authority_invalid'
+    return 1
+  fi
+
+  if branch_contained_in_target "$branch_tip" "$tip"; then
     log "$branch is already contained in $TARGET_BRANCH — re-running the quality gate for a tip-bound receipt"
     local contained_output contained_status=0
-    gate_sha="$(git rev-parse "$TARGET_BRANCH")"
+    gate_sha="$tip"
     contained_output="$(run_quality_gate "$gate_sha" "$branch" 2>&1)" || contained_status=$?
     [ -n "$contained_output" ] && printf '%s\n' "$contained_output" | sed 's/^/integrate:   gate> /' >&2
     if ! tree_is_clean; then
@@ -251,8 +296,6 @@ integrate_one() {
     return 0
   fi
 
-  tip="$(git rev-parse "$TARGET_BRANCH")"
-
   # (1) Detach HEAD at the current target tip. The target ref itself does not move.
   # The tree was verified clean just before this in the main loop, so the checkout
   # cannot clobber work; guard anyway and bail safely if it somehow fails.
@@ -264,7 +307,7 @@ integrate_one() {
   fi
 
   # (2) Build the merge commit on the detached HEAD. Conflict -> abort, preserve, stop.
-  if ! git merge --no-ff -m "integrate(bugsweep): ${branch}" "$branch" >/dev/null 2>&1; then
+  if ! git merge --no-ff -m "integrate(bugsweep): ${branch}" "$branch_tip" >/dev/null 2>&1; then
     git merge --abort >/dev/null 2>&1 || true
     git checkout -q "$TARGET_BRANCH"      # target ref never moved; return HEAD to it
     log "CONFLICT merging $branch — aborted cleanly; branch preserved, remaining branches untouched"
@@ -335,7 +378,8 @@ integrate_one() {
 # step): the orchestrator drives this script and is responsible for whatever
 # happens next (push, further integration, etc.) — see the header note that this
 # script itself never pushes.
-git checkout -q "$TARGET_BRANCH" 2>/dev/null || die_usage "could not check out target branch '$TARGET_BRANCH'"
+git checkout -q --detach "$initial_target_sha" 2>/dev/null \
+  || die_usage "could not check out target branch '$TARGET_BRANCH' tip"
 
 STOP=0
 idx=0
@@ -371,8 +415,8 @@ while [ "$idx" -lt "$total" ]; do
   # echoes it. Because `|| true` disables set -e inside the substitution,
   # integrate_one checks its own critical exit statuses (e.g. update-ref CAS)
   # explicitly rather than relying on set -e — see MAJOR 2, retry 2.
-  source_tip="$(git rev-parse "$branch")"
-  code="$(integrate_one "$branch")" || true
+  source_tip="$(git rev-parse --verify "refs/heads/${branch}^{commit}")"
+  code="$(integrate_one "$branch" "$source_tip")" || true
   target_tip="$(git rev-parse "$TARGET_BRANCH")"
   gate_passed=false
   case "$code" in merged|already_contained) gate_passed=true ;; esac
@@ -381,7 +425,8 @@ while [ "$idx" -lt "$total" ]; do
     merged)            MERGED_COUNT=$((MERGED_COUNT + 1)) ;;
     already_contained) ALREADY_CONTAINED_COUNT=$((ALREADY_CONTAINED_COUNT + 1)) ;;
     *)
-      # conflict | gate_failed | gate_dirtied_tree | update_failed -> preserve, stop.
+      # authority_invalid | conflict | gate_failed | gate_dirtied_tree | update_failed
+      # -> preserve, stop.
       PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
       STOP=1
       STOPPED_AT="$branch"

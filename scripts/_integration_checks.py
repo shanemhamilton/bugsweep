@@ -100,6 +100,148 @@ def _relative_path(value: object) -> str:
     return path.as_posix()
 
 
+def _is_within(path: Path, parent: Path) -> bool:
+    return path == parent or parent in path.parents
+
+
+def _canonical_directory(value: object, label: str) -> Path:
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        raise ValueError(f"{label} must be an absolute directory")
+    try:
+        result = Path(value).resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable") from exc
+    if not result.is_dir():
+        raise ValueError(f"{label} must be a directory")
+    return result
+
+
+def _frozen_target_root(plan: Mapping[str, object]) -> Path:
+    policy = plan.get("execution_policy")
+    if not isinstance(policy, Mapping):
+        raise ValueError("frozen execution policy is missing")
+    target = _canonical_directory(plan.get("target_root"), "plan target_root")
+    policy_target = _canonical_directory(policy.get("target_root"), "policy target_root")
+    if target != policy_target:
+        raise ValueError("plan and policy target roots differ")
+    return target
+
+
+def _tracked_authority_conflict(
+    authority: Path, source_repo: Path, tracked_paths: Sequence[str]
+) -> str | None:
+    if source_repo not in authority.parents:
+        return None
+    relative_authority = authority.relative_to(source_repo).as_posix()
+    authority_key = relative_authority.casefold()
+    for raw_path in tracked_paths:
+        path = _relative_path(raw_path)
+        path_key = path.casefold()
+        if (
+            path_key == authority_key
+            or path_key.startswith(authority_key + "/")
+            or authority_key.startswith(path_key + "/")
+        ):
+            return path
+        # A pre-existing ignored symlink can redirect a tracked candidate path
+        # into the authority before Git replaces that path.  Resolve existing
+        # ancestors and reject either side of the resulting overlap.
+        candidate = source_repo.joinpath(*PurePosixPath(path).parts)
+        resolved_candidate = candidate.resolve(strict=False)
+        if _is_within(resolved_candidate, authority) or _is_within(authority, resolved_candidate):
+            return path
+    return None
+
+
+def _validate_authority_boundary(
+    authority: Path,
+    target: Path,
+    source_repo: Path,
+    *,
+    tracked_paths: Sequence[str] | None = None,
+    projection: Path | None = None,
+    scratch_root: Path | None = None,
+) -> None:
+    """Validate host-side authority separation from the frozen source boundary.
+
+    The provider mounts only ``projection``.  A linked-worktree run may therefore
+    be a sibling beneath the Git checkout, but only when the merged tracked tree
+    contains no authority path.  The pre-merge CLI supplies the candidate tree
+    inventory; the post-export call supplies the verified archive inventory.
+    """
+
+    authority = authority.resolve(strict=True)
+    target = target.resolve(strict=True)
+    source_repo = source_repo.resolve(strict=True)
+    if _is_within(authority, target) or _is_within(target, authority):
+        raise ValueError("target and authority overlap")
+    if authority == source_repo or authority in source_repo.parents:
+        raise ValueError("authority contains the source repository")
+    if source_repo in authority.parents:
+        relative_parts = authority.relative_to(source_repo).parts
+        if ".git" in relative_parts:
+            raise ValueError("authority is under Git metadata")
+        if tracked_paths is not None:
+            conflict = _tracked_authority_conflict(authority, source_repo, tracked_paths)
+            if conflict is not None:
+                raise ValueError(f"tracked authority path: {conflict}")
+    if projection is not None:
+        projection = projection.resolve(strict=True)
+        if _is_within(authority, projection) or _is_within(projection, authority):
+            raise ValueError("authority and exported projection overlap")
+    if scratch_root is not None:
+        scratch_root = scratch_root.resolve(strict=True)
+        if projection is not None and (
+            _is_within(projection, scratch_root) or _is_within(scratch_root, projection)
+        ):
+            raise ValueError("exported projection overlaps execution scratch")
+
+
+def _git_tree_paths(git_path: Path, repo: Path, tree_sha: str, output_dir: Path) -> tuple[str, ...]:
+    if not _SHA_RE.fullmatch(tree_sha):
+        raise ValueError("candidate tree identity is invalid")
+    output = output_dir / f".authority-tree-{uuid.uuid4().hex}.nul"
+    try:
+        _control(
+            git_path,
+            ["-C", str(repo), "ls-tree", "-r", "-z", "--name-only", tree_sha],
+            output,
+        )
+        raw = _read_bounded_bytes(output, MAX_INDEX_BYTES)
+    finally:
+        output.unlink(missing_ok=True)
+    if raw and not raw.endswith(b"\x00"):
+        raise ValueError("candidate tree inventory is truncated")
+    paths: list[str] = []
+    seen: set[str] = set()
+    for record in raw[:-1].split(b"\x00") if raw else []:
+        try:
+            path = _relative_path(record.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("candidate tree inventory is malformed") from exc
+        if path in seen or len(paths) >= MAX_FILES:
+            raise ValueError("candidate tree inventory is excessive")
+        seen.add(path)
+        paths.append(path)
+    return tuple(paths)
+
+
+def validate_authority_tree(
+    run_dir: Path, repo: Path, git_path: Path, tree_sha: str
+) -> dict[str, object]:
+    run = run_dir.resolve(strict=True)
+    source_repo = repo.resolve(strict=True)
+    executable = git_path.resolve(strict=True)
+    if git_path.is_symlink() or executable != git_path or not executable.is_file() or not os.access(executable, os.X_OK):
+        raise ValueError("integration source identity is invalid")
+    plan, _ = _read_json_with_sha(run / "check-plan.json")
+    target = _frozen_target_root(plan)
+    _validate_authority_boundary(run, target, source_repo)
+    tracked = _git_tree_paths(executable, source_repo, tree_sha, run)
+    _validate_authority_boundary(run, target, source_repo, tracked_paths=tracked)
+    return {"status": "valid", "tree_sha": tree_sha}
+
+
 def _extract_archive(archive_path: Path, destination: Path) -> tuple[dict[str, str], dict[str, str]]:
     """Extract regular Git archive members without tarfile's filesystem extractor."""
 
@@ -413,8 +555,6 @@ def run_integration_checks(
         or not os.access(executable, os.X_OK)
     ):
         raise ValueError("integration source identity is invalid")
-    if run == source_repo or run in source_repo.parents or source_repo in run.parents:
-        raise ValueError("integration authority must be outside the repository")
     plan_path, baseline_path = run / "check-plan.json", run / "baseline.json"
     plan, plan_sha256 = _read_json_with_sha(plan_path)
     baseline, baseline_sha256 = _read_json_with_sha(baseline_path)
@@ -441,10 +581,12 @@ def run_integration_checks(
     frozen_reasons = _frozen_plan_reasons(plan, baseline)
     if frozen_reasons:
         raise ValueError(";".join(frozen_reasons))
+    target_root = _frozen_target_root(plan)
     scratch_value = policy.get("scratch_root")
     if not isinstance(scratch_value, str):
         raise ValueError("frozen execution policy lacks scratch_root")
     scratch_root = Path(scratch_value).resolve(strict=True)
+    _validate_authority_boundary(run, target_root, source_repo, scratch_root=scratch_root)
     projection: Path | None = None
     destination = _receipt_path(run, attempt_id, merge_sha, branch)
     results_root = run / "integration-check-results"
@@ -458,6 +600,14 @@ def run_integration_checks(
     try:
         projection, sources, modes, inventory = _export_source(
             source_repo, run, scratch_root, merge_sha, executable
+        )
+        _validate_authority_boundary(
+            run,
+            target_root,
+            source_repo,
+            tracked_paths=tuple(sources),
+            projection=projection,
+            scratch_root=scratch_root,
         )
         identity = {
             "kind": "content-manifest-sha256",
@@ -560,25 +710,39 @@ def _main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run frozen integration checks on a merged-tree export")
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument("--repo-root", required=True, type=Path)
-    parser.add_argument("--merge-sha", required=True)
-    parser.add_argument("--branch", required=True)
+    parser.add_argument("--merge-sha")
+    parser.add_argument("--branch")
     parser.add_argument("--git-path", required=True, type=Path)
-    parser.add_argument("--attempt-id", required=True)
+    parser.add_argument("--attempt-id")
+    parser.add_argument("--validate-authority", action="store_true")
+    parser.add_argument("--tree-sha")
     arguments = parser.parse_args(argv)
     try:
-        result = run_integration_checks(
-            arguments.run_dir,
-            arguments.repo_root,
-            arguments.merge_sha,
-            arguments.branch,
-            arguments.git_path,
-            arguments.attempt_id,
-        )
+        if arguments.validate_authority:
+            if not arguments.tree_sha:
+                parser.error("--tree-sha is required with --validate-authority")
+            result = validate_authority_tree(
+                arguments.run_dir,
+                arguments.repo_root,
+                arguments.git_path,
+                arguments.tree_sha,
+            )
+        else:
+            if not arguments.merge_sha or not arguments.branch or not arguments.attempt_id:
+                parser.error("--merge-sha, --branch, and --attempt-id are required")
+            result = run_integration_checks(
+                arguments.run_dir,
+                arguments.repo_root,
+                arguments.merge_sha,
+                arguments.branch,
+                arguments.git_path,
+                arguments.attempt_id,
+            )
     except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError, tarfile.TarError) as exc:
         print(f"integration-checks: {exc}", file=sys.stderr)
         return 1
     print(canonical_json_bytes(result).decode("utf-8"))
-    return 0 if result["status"] == "verified" else 1
+    return 0 if result["status"] in {"verified", "valid"} else 1
 
 
 if __name__ == "__main__":

@@ -118,6 +118,9 @@ setup() {
   BATS_TMP="$(cd "$BATS_TMP" && pwd -P)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
+  # Integration authorities may live in the ignored main checkout beside a
+  # frozen audited worktree; keep that run state out of tree_is_clean.
+  printf '.bugsweep/\n' > "${REPO}/.git/info/exclude"
   GATE="${BATS_TMP}/stub-gate.sh"
   MARKER_GATE="${BATS_TMP}/marker-gate.sh"
   DIRTY_GATE="${BATS_TMP}/dirty-gate.sh"
@@ -196,6 +199,74 @@ teardown() {
   git -C "$REPO" merge-base --is-ancestor bugsweep/one main
   git -C "$REPO" merge-base --is-ancestor bugsweep/two main
   git -C "$REPO" merge-base --is-ancestor bugsweep/three main
+}
+
+@test "integrate: allows ignored main authority beside the frozen audited worktree" {
+  local audited_worktree="${REPO}/.bugsweep/worktrees/audited" run_id="nested-authority"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q -b bugsweep/audited-target "$audited_worktree" main
+  RUN_DIR="${REPO}/.bugsweep/run-${run_id}"
+  REPO="$audited_worktree" _write_integration_authority "$RUN_DIR" "$run_id"
+  _make_bugsweep_branch "bugsweep/nested-authority" "nested.txt" "nested fix"
+
+  run env BUGSWEEP_QUALITY_GATE_COMMAND="false" \
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/nested-authority
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "BRANCH_RESULT=bugsweep/nested-authority:merged"
+  [ -f "${REPO}/nested.txt" ]
+}
+
+@test "integrate: rejects an incoming tracked authority path before merge" {
+  local audited_worktree="${REPO}/.bugsweep/worktrees/tracked-authority" run_id="tracked-authority" incoming=".bugsweep/run-${run_id}/incoming.txt"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q -b bugsweep/audited-tracked-authority "$audited_worktree" main
+  RUN_DIR="${REPO}/.bugsweep/run-${run_id}"
+  REPO="$audited_worktree" _write_integration_authority "$RUN_DIR" "$run_id"
+  before_target="$(_current_sha main)"
+  before_state="$(cat "${RUN_DIR}/check-plan.json")"
+
+  git -C "$REPO" checkout -q -b bugsweep/tracked-authority main
+  printf 'must not be merged\n' > "${REPO}/${incoming}"
+  git -C "$REPO" add -f "$incoming"
+  git -C "$REPO" commit -q -m 'add tracked authority path'
+  git -C "$REPO" checkout -q main
+
+  run bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/tracked-authority
+
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -qi "tracked authority path"
+  [ "$(_current_sha main)" = "$before_target" ]
+  [ "$(cat "${RUN_DIR}/check-plan.json")" = "$before_state" ]
+  [ ! -e "${RUN_DIR}/integrate-results.json" ]
+}
+
+@test "integrate: rejects authority nested inside the frozen audited target" {
+  local audited_worktree="${REPO}/.bugsweep/worktrees/target-overlap"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q -b bugsweep/target-overlap "$audited_worktree" main
+  RUN_DIR="${audited_worktree}/.bugsweep/run-overlap"
+  REPO="$audited_worktree" _write_integration_authority "$RUN_DIR" target-overlap
+  _make_bugsweep_branch "bugsweep/overlap-fix" "overlap.txt" "overlap fix"
+
+  run bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/overlap-fix
+
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -qi "target and authority overlap"
+}
+
+@test "integrate: rejects authority under Git metadata" {
+  local audited_worktree="${REPO}/.bugsweep/worktrees/git-authority"
+  mkdir -p "${REPO}/.bugsweep/worktrees"
+  git -C "$REPO" worktree add -q -b bugsweep/audited-git-authority "$audited_worktree" main
+  RUN_DIR="${REPO}/.git/authority"
+  REPO="$audited_worktree" _write_integration_authority "$RUN_DIR" git-authority
+  _make_bugsweep_branch "bugsweep/git-authority" "git-authority.txt" "git authority fix"
+
+  run bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/git-authority
+
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -qi "Git metadata"
 }
 
 # --- Acceptance criterion 2: provider regresses AFTER a prior good merge ------
