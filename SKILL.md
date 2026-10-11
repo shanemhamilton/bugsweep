@@ -237,7 +237,7 @@ Use this stable report line for detected work so existing report consumers can r
 
 ```markdown
 ## Confirmed but not fixed (detect-only or below severity floor)
-- <BUG-ID> · <stable finding key> · <severity> · <category> · <file>:<line> · <repro status> · <vote split for high/critical> · <one-line cause>
+- <BUG-ID> · <stable finding key> · <severity> · <category> · <file>:<line> · <repro status> · <vote split> · <one-line cause>
 
 ## Near misses (review, never auto-fixed)
 <!-- Include only when /bugsweep --recall mode is active. -->

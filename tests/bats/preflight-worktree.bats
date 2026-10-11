@@ -436,6 +436,8 @@ PY
 
 @test "SKILL.md documents the --worktree preflight contract" {
   grep -q -- '--worktree' "$SKILL_MD"
+  grep -q 'BUGSWEEP_LEASE_PID' "$SKILL_MD"
+  grep -q '\.bugsweep/worktrees' "$SKILL_MD"
   grep -qi 'Use `preflight.sh --worktree`' "$SKILL_MD"
   grep -qi 'worktree identity' "$SKILL_MD"
   grep -qi 'Only an orchestrator intentionally starting a genuinely independent sibling audit adds `--concurrent`' "$SKILL_MD"
@@ -490,4 +492,7 @@ PY
 
 @test "SKILL.md keeps normal runs out of repository-wide reaping" {
   grep -qi 'Normal runs never invoke a repository-wide reaper' "$SKILL_MD"
+  grep -qi 'Crash recovery' "$SKILL_MD"
+  grep -qi 'manual' "$SKILL_MD"
+  grep -q -- '--reap-worktrees' "$SKILL_MD"
 }
