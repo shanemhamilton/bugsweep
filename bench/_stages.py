@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 
 
 STAGES = ("hunter", "skeptic", "referee", "synthesis")
+CONTEXT_MAX_BYTES = 64 * 1024
 
 
 def normalize_stage_blocks(value: object) -> tuple[dict[str, Any], ...]:
@@ -76,6 +77,16 @@ def stage_prompt(stage: str, *, assessments: Mapping[str, Sequence[Mapping[str, 
             + contract + "\nStage handoff:\n" + candidate_input)
 
 
+def context_prompt(source_manifest_sha256: str) -> str:
+    """Request a verdict-free, source-only context artifact for the factorial mode."""
+    if not isinstance(source_manifest_sha256, str) or len(source_manifest_sha256) != 64:
+        raise ValueError("context source manifest is invalid")
+    return ("STAGE: Context builder. Read only the mounted source archive and build a compact source-navigation context for later investigation. "
+            "Do not identify bugs, candidates, findings, gold labels, oracle results, verdicts, confidence, or review outcomes. "
+            "Return exactly one JSON object {\"context\":\"...\"} and nothing else. The context must be source-derived prose only, <= 64 KiB, and must not contain candidate or verdict metadata. "
+            f"The immutable source manifest SHA-256 is {source_manifest_sha256}; do not copy any data from outside the archive.")
+
+
 def validate_stage_candidates(stage: str, candidates: Sequence[Mapping[str, Any]], assessments: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
     """Every post-Hunter role must explicitly audit each original claim."""
     if stage == "hunter":
@@ -113,3 +124,19 @@ def parse_candidates(text: object) -> list[dict[str, Any]]:
         seen.add(item["bug_id"])
         candidates.append(dict(item))
     return candidates
+
+
+def parse_context(text: object) -> str:
+    """Validate the context envelope and size, not the semantic content of its prose."""
+    from scripts._review_evidence import _loads
+
+    try:
+        value = _loads(text) if isinstance(text, str) else None
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid context JSON") from exc
+    if not isinstance(value, Mapping) or set(value) != {"context"} or not isinstance(value["context"], str):
+        raise ValueError("context response must contain only a string context")
+    context = value["context"]
+    if not context.strip() or len(context.encode("utf-8")) > CONTEXT_MAX_BYTES:
+        raise ValueError("context is empty or oversized")
+    return context

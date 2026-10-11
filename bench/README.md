@@ -4,10 +4,11 @@ The development harness compares Claude and Codex separately across current-skil
 previous-release and no-skill arms. It freezes the schedule and seeded execution order,
 records every attempted slot, and retains missing results, errors and unknown costs.
 
-**Current evidence status:** local contract tests pass. Fresh native corpus oracles,
-actual host and Docker runs, calibrated human labels and final independent review are
-not complete. The 20 held-out and five pilot case records are unverified inventory;
-several oracle tests failed review because they did not exercise the stated defect.
+**Current evidence status:** this checkout does not claim a local test or CI run for
+the current harness changes. Fresh native corpus oracles, actual host and Docker runs,
+calibrated human labels and final independent review are not complete. The 20 held-out
+and five pilot case records are unverified inventory; several oracle tests failed review
+because they did not exercise the stated defect.
 Historical results under `results/` do not validate this new protocol.
 
 ## What this experiment measures
@@ -123,8 +124,9 @@ Create the three proxy/profile directories first. The source map maps case IDs t
 archive paths; each other map uses host names as keys and absolute file paths as values.
 Host templates contain `execution_policy` and `benchmark_static` (`analysis`, `client`,
 `arms`); the coordinator fills actual proxy identities from the startup receipt.
-Lifecycle contract tests pass locally; actual Docker execution and final cap/drain
-verification remain unavailable. Post-stop evidence preserves that limitation explicitly.
+Lifecycle contract tests were not run for the current harness changes; actual Docker
+execution and final cap/drain verification remain unavailable. Post-stop evidence
+preserves that limitation explicitly.
 
 ## Evidence and scoring
 
@@ -132,7 +134,8 @@ Invocation receipts bind the frozen order, source before/after hashes, actual ex
 raw response, effective prompt, configured/applied caps, usage and lifecycle. Per-stage
 artifacts live under `invocation-N/stages/NN-role/`; the importer verifies the complete
 stage chain. Pipeline accounting includes every stage and paid failure, spans the full
-execution interval, and retains the earliest observed finding time. Missing
+execution interval, and retains adapter completion candidate observations. Verified
+finding timing remains unavailable until an independent verifier exists. Missing
 native accounting stays unknown. Failed and skipped slots remain in attrition and cost
 accounting. A finding's source excerpt must come from the trusted source snapshot.
 
@@ -238,3 +241,53 @@ prevent release eligibility in this development build.
 The legacy two-arm `bench/run.sh` path and its test-only bypasses are retained for old
 fixtures; their outputs are not accepted as this evaluation's native receipts.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the pure local gate and separate Git-backed CI.
+
+## Optional context factorial pilot
+
+The default `reduced_detect_only_prompt_methodology` schedule remains unchanged. An
+operator may instead freeze `evaluation_mode: reduced_detect_only_context_factorial`.
+That mode adds four explicit cells to each frozen slot: `context=off,cold`,
+`context=off,warm`, `context=on,cold`, and `context=on,warm`. Context is part of the
+schedule and execution-order hashes. `context_factorial_scope` can narrow a descriptive
+pilot to one host, arm, and stage block (for example, `current_skill` and
+`full_pipeline`) without changing the default core comparison. Arm order is still the
+seeded frozen order.
+
+For a descriptive pilot, use six independently validated defect snapshots and six
+fixed snapshots, four cells, and three repetitions: 144 source/cell/repetition slots
+before any additional host, arm, or stage-block scope is selected. Validation requires
+an assertion that fails on each defect snapshot, passes on its fixed snapshot, and has
+meaningful controls. Those assertions are external prerequisites; model output cannot
+create oracle labels or runtime detection claims.
+
+`context=on,cold` runs one fresh native source-only context-builder call before the
+fresh Hunter/Skeptic/Referee/Synthesis calls. All calls share the slot deadline and
+proxy budget. The builder's immutable artifact, source manifest, prompt digest, raw
+response digest, and creation receipt are retained. `context=on,warm` requires an
+operator-supplied immutable artifact and a separate creation-receipt file whose bytes
+bind to the source manifest, builder prompt, host, and model. Warm creation cost is
+retained as provenance, but remains unknown in this pilot because a caller-supplied
+numeric receipt is not native provider accounting and is never added to benchmark
+totals. `context_artifacts` may use the legacy case-only key for a one-host pilot, or
+an explicit `case|host|arm` / `case|host|model|arm` key when a case is shared by
+multiple host or arm cells; mixed legacy and qualified keys for one case are rejected
+at freeze. Context text is requested as source-only
+navigation material, but it is untrusted prose and does not establish a finding.
+The string parser checks structure and size; it cannot certify that prose contains
+no leaked labels. Warm artifact and creation-receipt hashes also establish only
+consistency, not native execution of the frozen builder prompt. The reducer reports
+both limitations explicitly and keeps context comparisons inconclusive. A credible
+warm comparison still requires native creation evidence bound to the requested
+builder command and source-only inputs, plus independent contamination checks.
+This pilot does not validate the bounded-slice workflow, phase order, or time to a
+reviewed finding. Those claims require a separate end-to-end fixture with an
+independent verifier and explicit phase receipts.
+
+Candidate timing is available only from a nonempty adapter-captured JSON event file.
+The events are adapter completion observations captured after native output is
+parsed, so they estimate when a candidate was returned and cannot establish its
+exact discovery instant. The legacy `FINDING:` marker is ignored. The receipt
+reports candidate timing separately; verified-finding timing remains null until an
+independent verifier exists.
+Native malformed output, unknown cost, missing oracle evidence, and missing human
+precision labels remain unknown in the denominator.

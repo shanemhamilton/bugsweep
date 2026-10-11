@@ -64,6 +64,70 @@ def test_candidate_contract_rejects_free_form_or_bad_locations() -> None:
         raise AssertionError("bad locations must be rejected")
 
 
+def test_context_envelope_rejects_extra_fields_without_certifying_prose() -> None:
+    assert _stages.parse_context('{"context":"imports and call graph"}') == "imports and call graph"
+    # A JSON validator cannot prove that free-form prose is free of labels.
+    assert _stages.parse_context('{"context":"gold says B1 is real"}') == "gold says B1 is real"
+    for invalid in (
+        '{"context":"x","candidates":[]}',
+        '{"context":"x","gold":[]}',
+        '{"context":"x","verdict":"confirmed"}',
+        '{"context":[]}',
+    ):
+        with pytest.raises(ValueError):
+            _stages.parse_context(invalid)
+
+
+def test_failed_cold_context_is_fail_closed_and_does_not_become_a_stage_receipt(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source"; source.mkdir(); (source / "app.py").write_text("bug\n")
+    manifest = harness.source_manifest(source)["sha256"]
+    protocol = {**_protocol(), "evaluation_mode": harness.CONTEXT_FACTORIAL_MODE}
+    slot = {"host": "codex", "model": "codex-model", "arm": "current_skill", "stage_block": "hunter_only", "context": "on", "context_state": "cold", "source_manifest_sha256": manifest}
+    case = {"id": "c", "language": "python", "size_ceiling": {}, "task_description": "Inspect."}
+    profile = {"benchmark_profile": {"proxy": {"container_name": "owned"}}}
+    expected_arm = protocol["hosts"]["codex"]["arms"]["current_skill"]
+    calls = []
+
+    def failed_context(**kwargs):
+        calls.append(("context", kwargs["deadline"]))
+        return ({"mode": "cold", "context": "parseable but untrusted", "artifact_sha256": None, "amortized_cost_usd": None, "amortized_cost_source": "unknown"}, {"started_at": "2026-01-01T00:00:00Z"}, None, {"receipt": {"stage": "context_build", "role": "context_build", "lifecycle": "error", "native_session_id": "context-session"}, "metadata": {}})
+
+    monkeypatch.setattr(harness, "_run_context_build", failed_context)
+    import scripts._execution as execution
+    monkeypatch.setattr(execution, "run_command", lambda *_args, **_kwargs: calls.append(("stage", _args[3])) or pytest.fail("pipeline stage ran after failed context"))
+    receipts, _execution, _raw, run = harness._run_pipeline_stages(protocol=protocol, slot=slot, case=case, source_root=source, output=tmp_path / "out", profile=profile, expected_arm=expected_arm, endpoint_env={}, deadline=42.0)
+    assert receipts == [] and run["context_error"] is True and run["context_receipt"]["lifecycle"] == "error"
+    assert calls == [("context", 42.0)]
+
+
+def test_cold_context_shares_deadline_and_reserves_native_session_identity(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source"; source.mkdir(); (source / "app.py").write_text("bug\n")
+    manifest = harness.source_manifest(source)["sha256"]
+    protocol = {**_protocol(), "evaluation_mode": harness.CONTEXT_FACTORIAL_MODE}
+    slot = {"host": "codex", "model": "codex-model", "arm": "current_skill", "stage_block": "hunter_only", "context": "on", "context_state": "cold", "source_manifest_sha256": manifest}
+    case = {"id": "c", "language": "python", "size_ceiling": {}, "task_description": "Inspect."}
+    profile = {"benchmark_profile": {"proxy": {"container_name": "owned"}}}
+    expected_arm = protocol["hosts"]["codex"]["arms"]["current_skill"]
+    deadlines = []
+    def successful_context(**kwargs):
+        deadlines.append(kwargs["deadline"])
+        return ({"mode": "cold", "context": "source map", "artifact_sha256": "a" * 64, "amortized_cost_usd": None, "amortized_cost_source": "unknown"}, {"started_at": "2026-01-01T00:00:00Z"}, None, {"receipt": {"stage": "context_build", "role": "context_build", "lifecycle": "completed", "native_session_id": "same-session"}, "metadata": {}})
+    monkeypatch.setattr(harness, "_run_context_build", successful_context)
+    import scripts._execution as execution
+    def stage_run(_argv, _root, out, deadline, _profile, _env, _outputs):
+        deadlines.append(deadline)
+        text = json.dumps({"candidates": []})
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "response.jsonl").write_text("\n".join([json.dumps({"type": "thread.started", "thread_id": "same-session"}), json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": text}}), json.dumps({"type": "turn.completed"})]))
+        (out / "adapter-metadata.json").write_text(json.dumps({"effective_prompt_sha256": _hash("prompt"), "loaded_skill_sha256": expected_arm["skill_entrypoint_sha256"]}))
+        return {"termination": "exited", "exit_code": 0, "started_at": "2026-01-01T00:00:01Z", "finished_at": "2026-01-01T00:00:02Z"}
+    monkeypatch.setattr(execution, "run_command", stage_run)
+    receipts, _execution, _raw, run = harness._run_pipeline_stages(protocol=protocol, slot=slot, case=case, source_root=source, output=tmp_path / "out", profile=profile, expected_arm=expected_arm, endpoint_env={}, deadline=42.0)
+    assert deadlines == [42.0, 42.0] and run["context_error"] is False
+    assert receipts[0]["lifecycle"] == "error"
+    assert receipts[0]["reason_code"] == "native_stage_unverified:ValueError"
+
+
 @pytest.mark.parametrize("reused_stage", [None, 2, 4])
 def test_full_pipeline_runs_fresh_native_stages_under_one_deadline(tmp_path: Path, monkeypatch, reused_stage: int | None) -> None:
     source = tmp_path / "source"; source.mkdir(); (source / "app.py").write_text("bug\n")
@@ -79,7 +143,7 @@ def test_full_pipeline_runs_fresh_native_stages_under_one_deadline(tmp_path: Pat
         text = json.dumps({"candidates": [{"bug_id": "b", "file": "app.py", "location": "app.py:1", "line": 1, "rationale": "r", "trigger": "t", "severity": "high", "status": "confirmed"}]})
         session = 1 if reused_stage == len(deadlines) else len(deadlines)
         (out / "response.jsonl").write_text("\n".join([json.dumps({"type": "thread.started", "thread_id": f"native-{session}"}), json.dumps({"usage": {"input_tokens": 1, "output_tokens": 2, "cost_usd": .01}}), json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": text}}), json.dumps({"type": "turn.completed"})]))
-        (out / "adapter-metadata.json").write_text(json.dumps({"effective_prompt_sha256": _hash(str(len(deadlines))), "loaded_skill_sha256": arm["skill_entrypoint_sha256"], "first_finding_unix_seconds": 1767225600.5 if len(deadlines) == 1 else None}))
+        (out / "adapter-metadata.json").write_text(json.dumps({"effective_prompt_sha256": _hash(str(len(deadlines))), "loaded_skill_sha256": arm["skill_entrypoint_sha256"]}))
         start = (0, 2, 5, 7)[len(deadlines) - 1]
         finish = (1, 4, 6, 8)[len(deadlines) - 1]
         return {"termination": "exited", "exit_code": 0, "started_at": f"2026-01-01T00:00:0{start}Z", "finished_at": f"2026-01-01T00:00:0{finish}Z", "applied_limits": {**frozen["limits"], "enforced": False}}
@@ -97,7 +161,8 @@ def test_full_pipeline_runs_fresh_native_stages_under_one_deadline(tmp_path: Pat
     assert receipt["usage"]["output_tokens"] == 8
     assert receipt["usage"]["cost_usd"] == .04
     assert receipt["usage"]["wall_clock_seconds"] == 8
-    assert receipt["first_finding_wallclock_seconds"] == .5
+    assert receipt["first_candidate_wallclock_seconds"] is None
+    assert receipt["first_finding_wallclock_seconds"] is None
 
 
 def test_stage_error_keeps_prior_and_later_native_receipts(tmp_path: Path, monkeypatch) -> None:

@@ -167,32 +167,13 @@ assert d["coverage"] == {"covered": 1, "total": 4}, d["coverage"]
 PY
 }
 
-@test "SKILL.md documents deadline checkpoints and finalize-on-deadline contract" {
-  grep -q 'BUGSWEEP_DEADLINE_EPOCH' "$SKILL_MD"
-  grep -qi 'finalize on any' "$SKILL_MD"
-  grep -q 'STOP\*' "$SKILL_MD"
-}
-
-@test "SKILL.md states the per-batch checkpoint is canonical (bugsweep-5ft review BLOCKER 2)" {
-  # The two passages that used to disagree on WHEN context-build checks the
-  # deadline (preflight intro vs. Step 2) must now both point at ONE canonical
-  # rule: the per-batch checkpoint inside the modeling loop.
-  grep -qi 'canonical checkpoint' "$SKILL_MD"
-  grep -q 'Per-batch deadline checkpoint' "$SKILL_MD"
-  # The old standalone "after context-build completes ... between large
-  # batches" instruction (vague, no snippet, disconnected from the batch loop
-  # it was supposed to guard) must be gone as its own sentence.
+@test "SKILL.md links per-slice guard stops to closeout and preserves fix-cap detection" {
+  grep -q 'after each context batch' "$SKILL_MD"
+  grep -q 'scripts/guard.sh' "$SKILL_MD"
+  grep -q 'STOP fix_cap_reached' "$SKILL_MD"
+  grep -q 'Any other `STOP` goes to closeout' "$SKILL_MD"
+  grep -q 'A hard kill leaves a recoverable pending run' "$SKILL_MD"
   ! grep -q 'After context-build completes, run' "$SKILL_MD"
-}
-
-@test "SKILL.md states the no-silence contract honestly (bugsweep-5ft review BLOCKER 3)" {
-  # Must not claim a hard-kill-surviving trap; must state the guarantee is
-  # voluntary phase-boundary checks, and must give the orchestrator/harness
-  # wall-clock guidance (outer timeout above the inner caps.max_runtime_minutes).
-  grep -qi 'VOLUNTARY' "$SKILL_MD"
-  grep -qi 'SIGKILL' "$SKILL_MD"
-  grep -qi 'Operational corollary' "$SKILL_MD"
-  grep -q 'caps.max_runtime_minutes' "$SKILL_MD"
 }
 
 # ---------------------------------------------------------------------------

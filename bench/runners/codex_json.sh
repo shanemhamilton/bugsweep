@@ -38,7 +38,6 @@ if [[ "${arm}" == "review" ]]; then
     "${prompt}"
 fi
 prompt_sha="$(printf '%s' "${prompt}" | sha256sum | awk '{print $1}')"
-marker="${BUGSWEEP_OUTPUT_DIR}/first-finding-unix-seconds.txt"
 codex exec --json --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check \
   "${readonly_sandbox[@]}" \
   -c "model=${model}" -c 'model_provider=benchmark' \
@@ -46,9 +45,29 @@ codex exec --json --ephemeral --ignore-user-config --ignore-rules --skip-git-rep
   -c 'model_providers.benchmark.wire_api=responses' \
   -c 'model_providers.benchmark.requires_openai_auth=false' \
   -c 'model_providers.benchmark.supports_websockets=false' \
-  "${prompt}" | tee "${BUGSWEEP_OUTPUT_DIR}/response.jsonl" | awk -v marker="${marker}" '
-      /FINDING:/ && !seen { command="date +%s"; command | getline now; close(command); print now > marker; close(marker); seen=1 } { print }
-    '
-first="null"
-[[ -f "${marker}" ]] && first="$(cat "${marker}")"
-printf '{"effective_prompt_sha256":"%s","loaded_skill_sha256":%s,"first_finding_unix_seconds":%s}\n' "${prompt_sha}" "${loaded_skill_json}" "${first}" >"${BUGSWEEP_OUTPUT_DIR}/adapter-metadata.json"
+  "${prompt}" | tee "${BUGSWEEP_OUTPUT_DIR}/response.jsonl"
+python3 - "${BUGSWEEP_OUTPUT_DIR}/response.jsonl" "${BUGSWEEP_OUTPUT_DIR}/candidate-events.json" <<'PY'
+import json, sys, time
+source, destination = sys.argv[1:]
+events = []
+for line in open(source, encoding="utf-8"):
+    try:
+        value = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    item = value.get("item") if value.get("type") == "item.completed" else None
+    text = item.get("text") if isinstance(item, dict) and item.get("type") == "agent_message" else None
+    if not isinstance(text, str):
+        continue
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        continue
+    for candidate in payload.get("candidates", []) if isinstance(payload, dict) else []:
+        if isinstance(candidate, dict) and isinstance(candidate.get("bug_id"), str) and candidate["bug_id"].strip():
+            events.append({"capture_source": "adapter", "capture_granularity": "adapter_completion", "candidate_id": candidate["bug_id"], "captured_at_unix_seconds": time.time()})
+with open(destination, "w", encoding="utf-8") as stream:
+    json.dump(events, stream, separators=(",", ":"))
+PY
+events_sha="$(sha256sum "${BUGSWEEP_OUTPUT_DIR}/candidate-events.json" | awk '{print $1}')"
+printf '{"effective_prompt_sha256":"%s","loaded_skill_sha256":%s,"candidate_events_sha256":"%s"}\n' "${prompt_sha}" "${loaded_skill_json}" "${events_sha}" >"${BUGSWEEP_OUTPUT_DIR}/adapter-metadata.json"

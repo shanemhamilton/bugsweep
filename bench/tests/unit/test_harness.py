@@ -48,6 +48,67 @@ def test_freeze_binds_non_circular_schedule_and_execution_order_digests() -> Non
     jsonschema.validate(frozen["protocol"], json.loads((Path(__file__).resolve().parents[2] / "schemas/evaluation-protocol.schema.json").read_text()))
 
 
+def test_context_factorial_freeze_adds_explicit_cells_to_slot_identity(tmp_path: Path) -> None:
+    cases = [{"id": "c1", "category": "security", "repository": "r", "source_manifest_sha256": _hash("c1"), "language": "python", "size_ceiling": {}, "task_description": "Inspect this source."}]
+    protocol = {**_protocol(), "evaluation_mode": harness.CONTEXT_FACTORIAL_MODE,
+                "context_factorial_scope": {"hosts": ["codex"], "arms": ["current_skill"], "stage_blocks": ["full_pipeline"]}}
+    protocol["context_artifacts"] = {
+        "c1": _warm_context_fixture(tmp_path, cases[0]["source_manifest_sha256"])["c1|codex|codex-model|current_skill"]
+    }
+    frozen = harness.freeze_documents(protocol, cases, 3)
+    schedule = frozen["schedule"]
+    assert {(slot["context"], slot["context_state"]) for slot in schedule} == {
+        ("off", "cold"), ("off", "warm"), ("on", "cold"), ("on", "warm")
+    }
+    assert all("context" in slot and "context_state" in slot for slot in frozen["execution_order"])
+    assert len(frozen["execution_order"]) == 12
+    assert len({slot["order_slot_sha256"] for slot in frozen["execution_order"]}) == 12
+    jsonschema.validate(frozen["protocol"], json.loads((Path(__file__).resolve().parents[2] / "schemas/evaluation-protocol.schema.json").read_text()))
+
+
+def _warm_context_fixture(tmp_path: Path, source_sha: str) -> dict[str, dict]:
+    prompt_sha = _hash("context-prompt")
+    artifact = tmp_path / "context.json"
+    creation = tmp_path / "creation.json"
+    artifact.write_text(json.dumps({"schema_version": 1, "source_manifest_sha256": source_sha,
+                                    "effective_prompt_sha256": prompt_sha, "context": "source map"}))
+    creation.write_text(json.dumps({"schema_version": 1, "source_manifest_sha256": source_sha,
+                                    "effective_prompt_sha256": prompt_sha, "host": "codex",
+                                    "model": "codex-model", "arm": "current_skill",
+                                    "cost_usd": None, "cost_source": "unknown"}))
+    return {"c1|codex|codex-model|current_skill": {
+        "path": str(artifact), "sha256": harness.file_digest(artifact), "amortization_uses": 1,
+        "creation_receipt": {"path": str(creation), "sha256": harness.file_digest(creation)},
+    }}
+
+
+def test_context_factorial_freeze_requires_warm_artifact_for_every_warm_slot() -> None:
+    case = {"id": "c1", "category": "security", "repository": "r", "source_manifest_sha256": _hash("c1"),
+            "language": "python", "size_ceiling": {}, "task_description": "Inspect this source."}
+    protocol = {**_protocol(), "evaluation_mode": harness.CONTEXT_FACTORIAL_MODE,
+                "context_factorial_scope": {"hosts": ["codex"], "arms": ["current_skill"], "stage_blocks": ["full_pipeline"]}}
+    with pytest.raises(harness.HarnessError, match="warm_context_artifact_missing"):
+        harness.freeze_documents(protocol, [case], 3)
+
+
+def test_context_factorial_freeze_validates_each_warm_artifact_binding(tmp_path: Path) -> None:
+    source_sha = _hash("c1")
+    case = {"id": "c1", "category": "security", "repository": "r", "source_manifest_sha256": source_sha,
+            "language": "python", "size_ceiling": {}, "task_description": "Inspect this source."}
+    protocol = {**_protocol(), "evaluation_mode": harness.CONTEXT_FACTORIAL_MODE,
+                "context_factorial_scope": {"hosts": ["codex"], "arms": ["current_skill"], "stage_blocks": ["full_pipeline"]}}
+    protocol["context_artifacts"] = _warm_context_fixture(tmp_path, source_sha)
+    frozen = harness.freeze_documents(protocol, [case], 3)
+    assert len(frozen["schedule"]) == 12
+
+
+def test_default_mode_keeps_context_factorial_opt_in() -> None:
+    cases = [{"id": "c1", "category": "security", "repository": "r", "source_manifest_sha256": _hash("c1"), "language": "python", "size_ceiling": {}, "task_description": "Inspect this source."}]
+    frozen = harness.freeze_documents(_protocol(), cases, 3)
+    assert frozen["protocol"]["evaluation_mode"] == harness.DEFAULT_EVALUATION_MODE
+    assert all("context" not in slot for slot in frozen["schedule"])
+
+
 def test_freeze_cli_writes_protocol_schedule_and_seeded_order(tmp_path: Path) -> None:
     protocol_path, cases_path, frozen_dir = tmp_path / "draft.json", tmp_path / "cases.json", tmp_path / "frozen"
     protocol_path.write_text(json.dumps(_protocol()))
@@ -107,10 +168,79 @@ def test_host_argv_uses_the_provider_verified_image_entrypoint() -> None:
     assert harness.adapter_argv("codex", "pinned", "review", "current_skill")[:4] == ["/usr/local/bin/bench-host-adapter", "codex", "pinned", "current_skill"]
 
 
-def test_prompt_is_explicitly_detect_only_and_requires_first_finding_marker() -> None:
+def test_prompt_is_explicitly_detect_only_and_uses_structured_candidate_timing() -> None:
     prompt = harness._prompt({"id": "c1", "language": "python", "size_ceiling": {}, "task_description": "Inspect source."}, "current_skill")
     assert "REDUCED DETECT-ONLY PROMPT METHODOLOGY" in prompt and "Do not run commands, Git, trackers" in prompt
-    assert "FINDING:" in prompt
+    assert "FINDING:" not in prompt
+
+
+def test_candidate_timing_requires_nonempty_structured_events_and_is_not_verified_finding() -> None:
+    execution = {"started_at": "1970-01-01T00:00:00Z"}
+    raw = json.dumps({"type": "candidate.detected", "candidate_id": "b1", "observed_at_unix_seconds": 1.25})
+    structured = [{"capture_source": "adapter", "capture_granularity": "adapter_completion", "candidate_id": "b1", "captured_at_unix_seconds": 1.25}]
+    assert harness.candidate_time_wallclock(raw, execution, structured) == {"b1": 1.25}
+    assert harness.verified_finding_wallclock(None, execution) is None
+    assert harness.candidate_time_wallclock('FINDING: app.py:1', execution, [{"capture_source": "adapter", "candidate_id": "b1", "captured_at_unix_seconds": 1.25}]) == {}
+
+
+def test_candidate_timing_offsets_each_stage_from_slot_start() -> None:
+    raw = "{}"
+    events = [{"capture_source": "adapter", "capture_granularity": "adapter_completion", "candidate_id": "b2", "captured_at_unix_seconds": 21.0}]
+    stage = {"started_at": "1970-01-01T00:00:20Z"}
+    assert harness.candidate_time_wallclock(raw, stage, events, slot_start_unix_seconds=10.0) == {"b2": 11.0}
+
+
+def test_warm_context_requires_source_bound_artifact_and_creation_receipt(tmp_path: Path) -> None:
+    source_sha = _hash("source")
+    prompt_sha = _hash("prompt")
+    artifact = tmp_path / "context.json"
+    creation = tmp_path / "creation.json"
+    artifact.write_text(json.dumps({"schema_version": 1, "source_manifest_sha256": source_sha, "effective_prompt_sha256": prompt_sha, "context": "source map"}))
+    creation.write_text(json.dumps({"schema_version": 1, "source_manifest_sha256": source_sha, "effective_prompt_sha256": prompt_sha, "host": "codex", "model": "m", "cost_usd": 0.5, "cost_source": "rate_estimated"}))
+    protocol = {"context_artifacts": {"c1": {"path": str(artifact), "sha256": harness.file_digest(artifact), "amortization_uses": 2, "creation_receipt": {"path": str(creation), "sha256": harness.file_digest(creation)}}}}
+    slot = {"case_id": "c1", "model": "m"}
+    profile = {"benchmark_profile": {"host": "codex"}}
+    context = harness._validated_warm_context(protocol, slot, profile, source_sha)
+    assert context["context"] == "source map" and context["amortized_cost_usd"] is None and context["amortized_cost_source"] == "unknown"
+    creation.write_text("tampered")
+    with pytest.raises(harness.HarnessError, match="creation_receipt_digest"):
+        harness._validated_warm_context(protocol, slot, profile, source_sha)
+
+
+def test_warm_context_unknown_cost_provenance_stays_unknown(tmp_path: Path) -> None:
+    source_sha = _hash("source")
+    prompt_sha = _hash("prompt")
+    artifact = tmp_path / "context.json"
+    creation = tmp_path / "creation.json"
+    artifact.write_text(json.dumps({"schema_version": 1, "source_manifest_sha256": source_sha, "effective_prompt_sha256": prompt_sha, "context": "source map"}))
+    creation.write_text(json.dumps({"schema_version": 1, "source_manifest_sha256": source_sha, "effective_prompt_sha256": prompt_sha, "host": "codex", "model": "m", "cost_usd": 0.5, "cost_source": "caller_asserted"}))
+    protocol = {"context_artifacts": {"c1": {"path": str(artifact), "sha256": harness.file_digest(artifact), "amortization_uses": 2, "creation_receipt": {"path": str(creation), "sha256": harness.file_digest(creation)}}}}
+    context = harness._validated_warm_context(protocol, {"case_id": "c1", "model": "m"}, {"benchmark_profile": {"host": "codex"}}, source_sha)
+    assert context["amortized_cost_usd"] is None and context["amortized_cost_source"] == "unknown"
+
+
+def test_warm_context_artifact_binding_selects_host_and_arm_and_rejects_ambiguous_case(tmp_path: Path) -> None:
+    source_sha = _hash("source")
+    prompt_sha = _hash("prompt")
+    artifact = tmp_path / "context.json"
+    creation = tmp_path / "creation.json"
+    artifact.write_text(json.dumps({"schema_version": 1, "source_manifest_sha256": source_sha,
+                                    "effective_prompt_sha256": prompt_sha, "context": "source map"}))
+    creation.write_text(json.dumps({"schema_version": 1, "source_manifest_sha256": source_sha,
+                                    "effective_prompt_sha256": prompt_sha, "host": "codex",
+                                    "model": "m", "arm": "current_skill", "cost_usd": None,
+                                    "cost_source": "unknown"}))
+    spec = {"path": str(artifact), "sha256": harness.file_digest(artifact), "amortization_uses": 1,
+            "creation_receipt": {"path": str(creation), "sha256": harness.file_digest(creation)}}
+    protocol = {"context_artifacts": {"c1|codex|m|current_skill": spec,
+                                       "c1|claude|m|current_skill": spec}}
+    slot = {"case_id": "c1", "host": "codex", "model": "m", "arm": "current_skill"}
+    context = harness._validated_warm_context(protocol, slot, {"benchmark_profile": {"host": "codex"}}, source_sha)
+    assert context["context"] == "source map"
+    with pytest.raises(harness.HarnessError, match="ambiguous"):
+        harness._validated_warm_context({"context_artifacts": {"c1|codex|m|previous_release": spec,
+                                                                "c1|codex|m|no_skill_baseline": spec}}, slot,
+                                        {"benchmark_profile": {"host": "codex"}}, source_sha)
 
 
 @pytest.mark.parametrize("failure", [None, "before_receipt", "coordinator_error", "after_receipt", "interrupt"])

@@ -192,6 +192,27 @@ def _append_reason(
     return normalized
 
 
+def _prior_membership(prior: Mapping[str, Any], kind: str) -> Sequence[object]:
+    """Read exact state membership when its index is authoritative.
+
+    ``prior-coverage.json`` keeps capped display summaries for humans. The I/O
+    collector merges exact lists from the compact membership artifact before
+    calling this pure scorer. A corrupt index is explicitly unknown and must
+    not be interpreted as "nothing" or as a truncated list. Legacy artifacts
+    without the new status contract retain their old capped behavior.
+    """
+
+    exact_key = f"files_audited_{kind}_catalog_exact"
+    status = prior.get("audit_membership")
+    if isinstance(status, Mapping) and status.get("status") == "exact":
+        exact = prior.get(exact_key)
+        return exact if isinstance(exact, list) else []
+    if status is None:
+        legacy = prior.get(f"files_audited_{kind}_catalog")
+        return legacy if isinstance(legacy, list) else []
+    return []
+
+
 def build_priority_context(
     *,
     tracked_files: Sequence[str],
@@ -463,7 +484,7 @@ def build_priority_context(
         # pure Git churn and therefore stay elevated.
         _set_lane(lanes, path, "high" if event_score > 0 else "elevated")
 
-    for raw_path in prior.get("files_audited_stale_catalog", []) or []:
+    for raw_path in _prior_membership(prior, "stale"):
         path = _append_reason(
             reasons,
             tracked,
@@ -831,7 +852,7 @@ def build_priority_context(
         "source_status": dict(sorted((source_status or {}).items())),
         "project_signals": {
             "failing_checks": failing_checks,
-            "baseline_stability": "unknown" if failing_checks else "not_applicable",
+            "baseline_stability": "unknown" if (not baseline or failing_checks) else "not_applicable",
             "no_checks": no_checks,
             "mapped_local_issue_count": mapped_issue_count,
             "external_signal_count": len(normalized_project_signals),
@@ -854,7 +875,10 @@ def build_priority_context(
     }
 
 
-def reprioritize_recon(recon: Mapping[str, Any], context: Mapping[str, Any]) -> dict[str, Any]:
+def reprioritize_recon(
+    recon: Mapping[str, Any], context: Mapping[str, Any], *,
+    fresh_audited_files: Sequence[str] = (),
+) -> dict[str, Any]:
     """Reorder an existing recon plan without changing its file scope.
 
     Only files already present in ``recon`` can influence ordering.  A bounded
@@ -889,10 +913,71 @@ def reprioritize_recon(recon: Mapping[str, Any], context: Mapping[str, Any]) -> 
             file_to_batch[path] = index
         batches.append(batch)
 
-    # A degraded/empty artifact must be a byte-structural no-op: context-build
-    # already established coverage/exposure ordering, and no evidence means we
-    # have no authority to reshuffle it.
+    bounded = result.get("large_repo_mode") is True
+    budget = result.get("budget_batches")
+    covered = result.get("covered", [])
+    if bounded and (type(budget) is not int or budget < 0
+                    or not isinstance(covered, list)
+                    or any(type(value) is not int or str(value) not in seen_batch_ids for value in covered)
+                    or any(type(batch["id"]) is not int or batch["id"] < 1 for batch in batches)):
+        raise ValueError("invalid bounded admission budget or progress")
+    fresh = {path for path in fresh_audited_files if isinstance(path, str) and path in file_to_batch}
+
+    def all_fresh(batch: Mapping[str, Any]) -> bool:
+        return bool(batch["files"]) and all(path in fresh for path in batch["files"])
+
+    # Admission belongs to the run, not to each application/checkpoint. Reusing
+    # this receipt prevents a resume from admitting another base budget after
+    # earlier batches have been covered.
+    if bounded and "admission" in result:
+        admission = result["admission"]
+        if not isinstance(admission, Mapping) or admission.get("schema_version") != 1:
+            raise ValueError("invalid frozen admission")
+        base, extra = admission.get("base_batch_ids"), admission.get("promoted_batch_ids")
+        if (not isinstance(base, list) or not isinstance(extra, list)
+                or any(type(value) is not int or str(value) not in seen_batch_ids for value in base + extra)
+                or len(set(base + extra)) != len(base + extra)
+                or len(base) > budget or len(extra) > HARD_MAX_PROMOTION_BATCHES
+                or sum(len(batch["files"]) for batch in batches if batch["id"] in extra) > 1_000
+                or not set(covered).issubset(base + extra)):
+            raise ValueError("frozen admission exceeds scope or budget")
+        for batch in batches:
+            batch["deferred"] = batch["id"] not in base + extra
+        result["batches"] = batches
+        return result
+
+    def admit(ordered_batches: list[dict[str, Any]], eligible: set[str],
+              max_batches: int = 0, max_files: int = 0) -> None:
+        """Select a bounded base frontier, then freeze any explicit extension."""
+        if not bounded:
+            return
+        base = list(dict.fromkeys(covered))
+        if len(base) > budget:
+            raise ValueError("covered work already exceeds the base admission budget")
+        for batch in ordered_batches:
+            if len(base) < budget and batch["id"] not in base:
+                base.append(batch["id"])
+        extra, added_files = [], 0
+        for batch in ordered_batches:
+            if batch["id"] in base or str(batch["id"]) not in eligible:
+                continue
+            size = len(batch["files"])
+            if len(extra) < max_batches and added_files + size <= max_files:
+                extra.append(batch["id"])
+                added_files += size
+        for batch in ordered_batches:
+            batch["deferred"] = batch["id"] not in base + extra
+        result["admission"] = {"schema_version": 1, "base_batch_ids": base,
+                               "promoted_batch_ids": extra}
+
+    # A degraded/empty artifact does not authorize reshuffling, but the final
+    # admission guard still repairs model-cleared deferrals in its existing
+    # order.
     if context.get("degraded") is True:
+        if bounded:
+            batches.sort(key=all_fresh)
+        admit(batches, set())
+        result["batches"] = batches
         return result
     if context.get("schema_version") != SCHEMA_VERSION or context.get("scope_contract") != (
         "priority_only_frozen_invocation_scope_remains_in_scope"
@@ -948,7 +1033,37 @@ def reprioritize_recon(recon: Mapping[str, Any], context: Mapping[str, Any]) -> 
     max_files = int(raw_budget["max_files"])
     if not 0 <= max_batches <= HARD_MAX_PROMOTION_BATCHES or not 0 <= max_files <= 1_000:
         raise ValueError("promotion budget exceeds hard bounds")
+    covered_ids = {
+        str(value)
+        for value in (result.get("covered", []) or [])
+        if isinstance(value, (str, int)) and not isinstance(value, bool)
+    }
     if not targets:
+        if bounded:
+            batches.sort(key=all_fresh)
+        admit(batches, set())
+        result["batches"] = batches
+        return result
+
+    if bounded:
+        eligible = {str(batches[file_to_batch[path]]["id"])
+                    for path in promotion_files if path in file_to_batch}
+        def order_key(batch: Mapping[str, Any]) -> tuple:
+            evidence = [targets[path] for path in batch["files"] if path in targets]
+            hard_focus = str(batch["id"]) in eligible
+            return (
+                all_fresh(batch) and not hard_focus,
+                0 if hard_focus or batch.get("tier") == "critical" else 1,
+                min((entry[0] for entry in evidence), default=99),
+                -max((entry[1] for entry in evidence), default=0),
+                TIER_RANK.get(str(batch.get("tier")), 1),
+            )
+        batches.sort(key=order_key)
+        for batch in batches:
+            if str(batch["id"]) in eligible:
+                batch["tier"] = "critical"
+        admit(batches, eligible, max_batches, max_files)
+        result["batches"] = batches
         return result
 
     promoted_indexes: set[int] = set()
@@ -960,7 +1075,7 @@ def reprioritize_recon(recon: Mapping[str, Any], context: Mapping[str, Any]) -> 
         batch = batches[batch_index]
         # Already-in-budget work needs no promotion and consumes no added-work
         # budget. Its target evidence can still reorder it inside its tier.
-        if batch.get("deferred") is False:
+        if batch.get("deferred") is False or str(batch.get("id")) in covered_ids:
             continue
         batch_size = len(batch.get("files", []))
         if len(promoted_indexes) >= max_batches or added_files + batch_size > max_files:
@@ -979,10 +1094,10 @@ def reprioritize_recon(recon: Mapping[str, Any], context: Mapping[str, Any]) -> 
         evidence = [targets[path] for path in files if path in targets]
         best_lane = min((entry[0] for entry in evidence), default=99)
         best_score = max((entry[1] for entry in evidence), default=0)
-        if original_tier == "critical":
-            group = 0
-        elif promoted:
+        if promoted:
             group = 1
+        elif original_tier == "critical":
+            group = 0
         else:
             group = 2
         key = (
@@ -995,5 +1110,14 @@ def reprioritize_recon(recon: Mapping[str, Any], context: Mapping[str, Any]) -> 
         sortable.append((key, batch))
 
     sortable.sort(key=lambda entry: entry[0])
-    result["batches"] = [batch for _, batch in sortable]
+    ordered_batches = [batch for _, batch in sortable]
+
+    # Admission is decided only after the final evidence ordering. Stable
+    # batch IDs identify work, but they must not pin the original first-pass
+    # slice forever on warm runs. Preserve covered progress while selecting the
+    # bounded base frontier from this final order; explicitly promoted batches
+    # are the bounded extension selected above.
+    admit(ordered_batches, {str(batches[index].get("id")) for index in promoted_indexes})
+
+    result["batches"] = ordered_batches
     return result

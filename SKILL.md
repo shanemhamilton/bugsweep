@@ -71,7 +71,11 @@ not authorize messages to other people. Resolve any prior incomplete mapped run 
 bash "$SKILL_ROOT/scripts/preflight.sh" --worktree --mode "$MODE" --scope "$SCOPE"
 ```
 
-Capture `RUN_DIR`, `WORKTREE`, `BRANCH`, and `EXECUTION_PREPARATION`; use the exact paths.
+Capture `RUN_DIR`, `WORKTREE`, `TARGET_ROOT`, `INDEX_DIR`, `BRANCH`, and
+`EXECUTION_PREPARATION`; use the exact paths. For subsequent index, variant, and
+conclusion commands, pass `BUGSWEEP_RUN_DIR="$RUN_DIR"` and
+`BUGSWEEP_TARGET_ROOT="$TARGET_ROOT"` in the command environment. The shared state
+location owns cross-run learning; `TARGET_ROOT` is the source being audited.
 One Bugsweep invocation owns exactly one RUN_DIR, worktree, and branch. Hunters, Skeptics,
 Referees, and any resumed session must reuse that exact worktree and never invoke preflight themselves.
 Only an orchestrator intentionally starting a genuinely independent sibling audit adds `--concurrent`.
@@ -92,18 +96,28 @@ When execution is available, capture the baseline:
 
 ```bash
 bash "$SKILL_ROOT/scripts/run_checks.sh" baseline "$RUN_DIR"
-bash "$SKILL_ROOT/scripts/priority-context.sh" build "$RUN_DIR"
 ```
 
 A failing existing test remains in the baseline by native identity. Do not call an
 unavailable check a passing baseline. Follow [no-tests.md](references/no-tests.md).
 
+Build local priority evidence in every mode, including detect-only when execution is
+unavailable. Missing baseline evidence stays unavailable; Git history, prior completed
+hunts, and local project signals can still guide investigation. This collector does not
+execute target commands or contact remote services.
+
+```bash
+bash "$SKILL_ROOT/scripts/priority-context.sh" build "$RUN_DIR"
+```
+
 ## Investigate and review
 
 1. Follow [context-build.md](prompts/context-build.md): create the deterministic
-   `recon.json` plan before modeling, then persist each batch and its architecture
-   notes. Modeling is separate from completed audit coverage. Deferred batches stay
-   visible and make the report partial.
+   `recon.json` plan before modeling and apply bounded admission. Read only a small
+   project bootstrap, then repeat context → hunt → review → checkpoint for each
+   admitted slice. Do not finish all context modeling before starting the first hunt.
+   Modeling is separate from completed audit coverage. Deferred batches stay visible
+   and make the report partial.
 2. Follow [research.md](prompts/research.md), loading the relevant local anti-pattern
    catalogs. Web research is optional and bounded by configuration and authorization.
 3. Before hunting, if analyzers are configured, run
@@ -113,16 +127,20 @@ unavailable check a passing baseline. Follow [no-tests.md](references/no-tests.m
    evidence. Never download rules or discover and run tools from PATH. Missing or
    rejected imports remain visible. Hits and bounded traces guide investigation;
    they never change confidence, confirm bugs, or remove files from scope.
-4. Follow [hunt.md](prompts/hunt.md). Investigate both local and cross-file behavior.
-   Each candidate needs a concrete trigger, source locations and an execution trace;
-   retain limitations and counterevidence. Hunters never edit production code.
+4. For the current slice, follow [hunt.md](prompts/hunt.md). Investigate both local
+   behavior and cross-file paths, including dependencies outside the slice without
+   extending coverage or edit scope. Each candidate needs a concrete trigger, source
+   locations and an execution trace; retain limitations and counterevidence. Hunters
+   never edit production code.
 5. Follow [challenge.md](prompts/challenge.md) and [referee.md](prompts/referee.md).
    First assessments use a frozen candidate/source packet without prior verdicts.
    Use `review-evidence.sh` for separate native host executions and immutable capture;
    fabricated ledger votes, invented session IDs or repeated sessions are ineligible.
    High/critical findings need the configured strict majority of K verified first
    assessments; other findings need a verified first assessment. Reveal prior
-   verdicts only after those assessments have been captured.
+   verdicts only after those assessments have been captured. Finish the slice's
+   applicable proof/fix workflow and coverage checkpoint below before modeling the
+   next slice. Keep unresolved cross-slice paths in the plan.
 
 At every expensive phase boundary and after each context batch, run:
 

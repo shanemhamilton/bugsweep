@@ -66,7 +66,8 @@ def test_benchmark_arms_are_prompt_bound_to_detect_only_skill_excerpts() -> None
     for runner in (claude, codex):
         assert '"${skill_root}/SKILL.md"' in runner
         assert "IMMUTABLE BENCHMARK SKILL EXCERPT" in runner
-        assert "first-finding-unix-seconds.txt" in runner
+        assert "candidate-events.json" in runner
+        assert "first-finding-unix-seconds.txt" not in runner
         assert "adapter-metadata.json" in runner
         assert "--sandbox read-only" in runner or 'allowed_tools="Read"' in runner
 
@@ -101,4 +102,4 @@ def test_benchmark_adapter_imports_fake_native_json_and_metadata(tmp_path: Path)
         assert "FINDING:" in result.stdout
         metadata = (output / "adapter-metadata.json").read_text()
         assert '"loaded_skill_sha256":null' in metadata
-        (output / "response.jsonl").unlink(); (output / "adapter-metadata.json").unlink()
+        (output / "response.jsonl").unlink(); (output / "adapter-metadata.json").unlink(); (output / "candidate-events.json").unlink()

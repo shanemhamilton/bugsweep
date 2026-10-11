@@ -48,7 +48,39 @@
       "minimum": 3
     },
     "evaluation_mode": {
-      "const": "reduced_detect_only_prompt_methodology"
+      "enum": [
+        "reduced_detect_only_prompt_methodology",
+        "reduced_detect_only_context_factorial"
+      ]
+    },
+    "context_factorial_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hosts", "arms", "stage_blocks"],
+      "properties": {
+        "hosts": {"type": "array", "items": {"enum": ["claude", "codex"]}, "minItems": 1, "uniqueItems": true},
+        "arms": {"type": "array", "items": {"enum": ["current_skill", "previous_release", "no_skill_baseline"]}, "minItems": 1, "uniqueItems": true},
+        "stage_blocks": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true}
+      }
+    },
+    "context_artifacts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "creation_receipt", "amortization_uses"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "amortization_uses": {"type": "integer", "minimum": 1},
+          "creation_receipt": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256"],
+            "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
+          }
+        }
+      }
     },
     "schedule_sha256": {
       "$ref": "#/$defs/sha256"

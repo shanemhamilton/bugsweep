@@ -33,12 +33,14 @@
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-REPO_ROOT="$BUGSWEEP_REPO_ROOT"
 STATE_DIR="$BUGSWEEP_STATE_DIR"
 LEDGER="${STATE_DIR}/conclusions.jsonl"
-SYMS="${STATE_DIR}/symbol-index.jsonl"
-REACH="${STATE_DIR}/sink-reachability.jsonl"
+INDEX_DIR="${BUGSWEEP_INDEX_DIR:-$STATE_DIR}"
+SYMS="${INDEX_DIR}/symbol-index.jsonl"
+REACH="${INDEX_DIR}/sink-reachability.jsonl"
 SANITIZERS="${STATE_DIR}/sanitizers.jsonl"
+SYMBOL_EXTRACTOR="${BUGSWEEP_SCRIPT_DIR}/symbols.sh"
+REACH_EXTRACTOR="${BUGSWEEP_SCRIPT_DIR}/reachability.sh"
 CLAIM_MAX=256
 # catalog versioning helpers (catalog_class_version / catalog_aggregate_version /
 # catalog_versions_json) come from common.sh.
@@ -145,10 +147,18 @@ prime() {
 
   # No ledger or no python -> nothing to evaluate. (Empty reopened list; exposure untouched.)
   [ -f "$LEDGER" ] || { echo "SUMMARY=no conclusions ledger — nothing to invalidate."; return 0; }
-  have_python || { log "conclusions: python3 unavailable — cannot evaluate ledger; leaving exposure as-is."; \
-    echo "SUMMARY=python3 unavailable — conclusion invalidation skipped."; return 0; }
+  if ! have_python; then
+    # Without the evaluator, stale conclusions cannot be checked.  Replace any prior ranking
+    # with an explicitly degraded artifact so missing tooling never preserves a safety hint.
+    printf '%s\n' '{"schema":1,"degraded":true,"files":[]}' > "${run_dir}/exposure.json"
+    echo "SUMMARY=python3 unavailable — conclusion invalidation degraded and safety hints cleared."
+    return 0
+  fi
 
-  LEDGER="$LEDGER" SYMS="$SYMS" REACH="$REACH" SANITIZERS="$SANITIZERS" \
+  local inputs_valid=1
+  bugsweep_index_manifest_current "symbol-index" "$SYMBOL_EXTRACTOR" || inputs_valid=0
+  bugsweep_index_manifest_current "sink-reachability" "$REACH_EXTRACTOR" || inputs_valid=0
+  LEDGER="$LEDGER" SYMS="$SYMS" REACH="$REACH" SANITIZERS="$SANITIZERS" INPUTS_VALID="$inputs_valid" \
   EXPOSURE="${run_dir}/exposure.json" REOPENED="$reopened" \
   CATVMAP="$(catalog_versions_json)" CATV_FALLBACK="$(_catalog_legacy)" \
   python3 - <<'PY' 2>/dev/null || { log "conclusions: prime failed; treating all conclusions as reopened (widen)."; \
@@ -194,7 +204,7 @@ def current_class_version(cls):
 
 sym_hash = {e.get("symbol_id"): e.get("hash") for e in load_jsonl(syms) if e.get("symbol_id")}
 sink_ph = {}
-have_reach = os.path.exists(reach)
+have_reach = os.path.exists(reach) and os.environ.get("INPUTS_VALID") == "1"
 for r in load_jsonl(reach):
     if r.get("sink"): sink_ph[r["sink"]] = r.get("path_hash")
 san_neu = {}

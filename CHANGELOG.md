@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bound context batches by configurable file and byte limits, retain deferred work,
+  and complete context, hunt, review, and checkpoint for each admitted slice.
+- Trace lifecycle, shared-state, transaction, and API/error contracts alongside
+  security paths, while retaining the same source, review, and executable-proof gates.
+- Build local priority evidence in detect-only mode even when baseline execution is
+  unavailable; missing checks remain unknown.
+
+### Fixed
+
+- Keep exact audit membership separate from the 200-file display summary so larger
+  histories do not make previously audited paths look new.
+- Bind extraction to the audited checkout with run-local indexes, and invalidate
+  reachability conclusions when directed edges or entry seeds change.
+
+### Evaluation
+
+- Add optional context on/off and cold/warm measurement with explicit provenance and
+  accounting. Runtime oracles and live paired runs are still required before claiming
+  improved detection, precision, or cost.
+
 ## [0.7.0] - 2026-09-22
 
 Baton-parity lifecycle contract and structured evidence pipeline: Bugsweep now enforces

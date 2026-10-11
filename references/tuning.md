@@ -62,30 +62,30 @@ Examples:
 
 ## Large repos
 
-When a repo has more files than can be covered within `max_runtime_minutes`, bugsweep sets
-`large_repo_mode: true` in `recon.json` at the end of Step 2 and logs a
-`large_repo_mode_activated` event. This is a signal, not a failure — the loop continues but
-the report will be labelled `PARTIAL`.
+The planner writes every selected file into `recon-plan.json` before source modeling.
+It bounds each batch with two portable, configurable limits:
 
-To tune for large repos:
+- `context.max_batch_files` — maximum files per ordinary batch (default 25).
+- `context.max_batch_bytes` — maximum source bytes per ordinary batch (default 131,072).
 
-- **Increase `max_runtime_minutes`** to give the loop more wall-clock budget. A repo with
-  ~150 batches needs roughly 25 hours at 10 min/batch — overnight `--autonomous` runs are
-  the right mode.
-- **Use `--autonomous` with `session.checkpoint_every_iterations: 3`** so context resets
-  happen regularly. Every reset is free (all state is on disk); skipping them bloats context
-  until the model degrades.
-- **Raise `severity_floor` to `"medium"` or `"high"`** to spend adversarial review time only
-  on impactful findings. Low-severity findings on large repos fill the report but aren't
-  worth the runtime cost on a first pass.
-- **Use `exclude_globs`** to drop generated code, vendored deps, and migration files that
-  rarely contain runtime bugs. Reducing file count is the single biggest lever.
-- **Run iteratively across sessions.** Cross-run state in `.bugsweep/state/` means each run
-  picks up where the last left off — a large repo does not need to be fully covered in one
-  run to accumulate value.
+A file larger than the byte limit stays visible as an oversized singleton; a missing
+size is an explicit unknown singleton. These limits bound planning units, not model
+tokens or the dependency reads needed to trace a bug. They are starting values, not
+benchmarked optimal settings.
 
-If a run stalls completely (no report written), `finalize.sh` will emit a stub from
-`recon.json` coverage counts and the ledger. Check `ledger.jsonl` to see where it stopped.
+Above `context.large_repo_file_threshold` (default 800), only
+`context.large_repo_first_pass_batches` (default 40) are initially admitted. Ranking
+chooses which batches fit; never-audited status does not expand the budget. Explicit
+priority promotions have their own bounded allowance below. Guard checkpoints still
+enforce the runtime and iteration caps.
+
+Each admitted slice completes context → hunt → review → checkpoint before the next
+slice is modeled. Deferred work remains in the plan and makes coverage partial. Later
+runs use exact audit membership to rank the remaining frontier. Raising time or batch
+limits trades cost for more investigation, without guaranteeing more verified bugs.
+
+If a run stalls, `finalize.sh` can emit a stub from `recon.json` and the ledger. A hard
+kill still requires recovery; it is not a completed audit.
 
 ## Priority intelligence
 

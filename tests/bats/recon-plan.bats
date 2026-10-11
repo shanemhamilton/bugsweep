@@ -163,6 +163,45 @@ assert all(not b['deferred'] for b in d['batches'])
   diff "${RUN_DIR}/recon-plan.json" "${run_dir_2}/recon-plan.json"
 }
 
+@test "recon-plan.sh: bounds batches using sizes from the audited target root" {
+  local file_list="${BATS_TMP}/files.txt"
+  local audited_root="${BATS_TMP}/audited-tree"
+  mkdir -p "${audited_root}/src"
+  printf 'aaaa' > "${audited_root}/src/a.py"
+  printf 'bbbb' > "${audited_root}/src/b.py"
+  python3 - "${audited_root}/src/oversized.py" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_bytes(b"x" * 131073)
+PY
+  cat > "$file_list" <<'FILES'
+src/a.py
+src/b.py
+src/oversized.py
+FILES
+
+  BUGSWEEP_AUDIT_ROOT="$audited_root" run bash "$RECON_PLAN_SH" "$RUN_DIR" "$file_list"
+  [ "$status" -eq 0 ]
+
+  python3 - "${RUN_DIR}/recon-plan.json" <<'PY'
+import json
+import sys
+
+plan = json.load(open(sys.argv[1]))
+assert plan["max_batch_files"] == 25, plan
+assert plan["max_batch_bytes"] == 131072, plan
+assert [batch["files"] for batch in plan["batches"]] == [
+    ["src/a.py", "src/b.py"],
+    ["src/oversized.py"],
+], plan
+assert plan["batches"][0]["size_status"] == "known", plan
+assert plan["batches"][0]["byte_count"] == 8, plan
+assert plan["batches"][1]["size_status"] == "oversized", plan
+assert plan["batches"][1]["byte_count"] == 131073, plan
+PY
+}
+
 # ---------------------------------------------------------------------------
 # Tier 2 degraded path: no python3 -> still produces a valid, non-empty plan.
 # ---------------------------------------------------------------------------
@@ -351,4 +390,114 @@ FILES
   LC_ALL=en_US.UTF-8 PATH="$fakebin" bash "$RECON_PLAN_SH" "$run_utf" "$file_list" >/dev/null
 
   diff "${run_c}/recon-plan.json" "${run_utf}/recon-plan.json"
+}
+
+# Unknown-size metadata must survive Bash's IFS parsing.  An empty tab field
+# collapses under Bash 3.2 and shifts size_status/oversized/path fields.
+@test "recon-plan.sh: degraded path preserves unknown-size singleton metadata" {
+  local file_list="${BATS_TMP}/files.txt"
+  printf 'missing/absent.py\n' > "$file_list"
+
+  local fakebin="${BATS_TMP}/fakebin"
+  mkdir -p "$fakebin"
+  for tool in bash git grep sed cat mkdir date tr wc head cut basename dirname mktemp rm cp mv find true false printf test env sh sort; do
+    real="$(command -v "$tool" 2>/dev/null || true)"
+    [ -n "$real" ] && ln -sf "$real" "${fakebin}/${tool}"
+  done
+
+  PATH="$fakebin" run bash "$RECON_PLAN_SH" "$RUN_DIR" "$file_list"
+  [ "$status" -eq 0 ]
+
+  python3 - "${RUN_DIR}/recon-plan.json" <<'PY'
+import json
+import sys
+
+plan = json.load(open(sys.argv[1]))
+batch = plan["batches"][0]
+assert batch["files"] == ["missing/absent.py"], batch
+assert batch["file_count"] == 1, batch
+assert batch["byte_count"] is None, batch
+assert batch["size_status"] == "missing", batch
+assert batch["oversized"] is False, batch
+assert batch["missing_size_files"] == ["missing/absent.py"], batch
+assert plan["missing_size_files"] == ["missing/absent.py"], plan
+PY
+}
+
+@test "recon-plan.sh: degraded path matches directory fields exactly" {
+  local file_list="${BATS_TMP}/files.txt"
+  cat > "$file_list" <<'FILES'
+foo/a.py
+afoo/b.py
+FILES
+
+  local fakebin="${BATS_TMP}/fakebin"
+  mkdir -p "$fakebin"
+  for tool in bash git grep sed cat mkdir date tr wc head cut basename dirname mktemp rm cp mv find true false printf test env sh sort; do
+    real="$(command -v "$tool" 2>/dev/null || true)"
+    [ -n "$real" ] && ln -sf "$real" "${fakebin}/${tool}"
+  done
+
+  PATH="$fakebin" run bash "$RECON_PLAN_SH" "$RUN_DIR" "$file_list"
+  [ "$status" -eq 0 ]
+
+  python3 - "${RUN_DIR}/recon-plan.json" <<'PY'
+import json
+import sys
+
+plan = json.load(open(sys.argv[1]))
+assert {batch["dir"]: batch["files"] for batch in plan["batches"]} == {
+    "afoo": ["afoo/b.py"],
+    "foo": ["foo/a.py"],
+}
+PY
+}
+
+@test "recon-plan.sh: state.env audited target wins over ambient roots" {
+  local file_list="${BATS_TMP}/files.txt"
+  local state_root="${BATS_TMP}/state-root" ambient_root="${BATS_TMP}/ambient-root"
+  mkdir -p "${state_root}/src" "${ambient_root}/src"
+  printf 'tiny' > "${state_root}/src/a.py"
+  python3 - "${ambient_root}/src/a.py" <<'PY'
+import pathlib
+import sys
+pathlib.Path(sys.argv[1]).write_bytes(b"x" * 131073)
+PY
+  printf 'src/a.py\n' > "$file_list"
+  printf "BUGSWEEP_TARGET_ROOT='%s'\nBUGSWEEP_WORKTREE='%s'\n" "$state_root" "$state_root" > "${RUN_DIR}/state.env"
+
+  BUGSWEEP_TARGET_ROOT="$ambient_root" BUGSWEEP_AUDIT_ROOT="$ambient_root" \
+    run bash "$RECON_PLAN_SH" "$RUN_DIR" "$file_list"
+  [ "$status" -eq 0 ]
+
+  python3 - "${RUN_DIR}/recon-plan.json" <<'PY'
+import json
+import sys
+
+plan = json.load(open(sys.argv[1]))
+batch = plan["batches"][0]
+assert batch["byte_count"] == 4, batch
+assert batch["size_status"] == "known", batch
+PY
+}
+
+@test "recon-plan.sh: state.env worktree is used when target root is absent" {
+  local file_list="${BATS_TMP}/files.txt"
+  local worktree_root="${BATS_TMP}/worktree-root" ambient_root="${BATS_TMP}/ambient-root"
+  mkdir -p "${worktree_root}/src" "${ambient_root}/src"
+  printf 'worktree' > "${worktree_root}/src/a.py"
+  printf 'ambient' > "${ambient_root}/src/a.py"
+  printf 'src/a.py\n' > "$file_list"
+  printf "BUGSWEEP_WORKTREE='%s'\n" "$worktree_root" > "${RUN_DIR}/state.env"
+
+  BUGSWEEP_AUDIT_ROOT="$ambient_root" run bash "$RECON_PLAN_SH" "$RUN_DIR" "$file_list"
+  [ "$status" -eq 0 ]
+
+  python3 - "${RUN_DIR}/recon-plan.json" <<'PY'
+import json
+import sys
+
+plan = json.load(open(sys.argv[1]))
+assert plan["batches"][0]["byte_count"] == 8, plan
+PY
 }

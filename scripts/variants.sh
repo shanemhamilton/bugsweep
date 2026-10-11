@@ -28,8 +28,10 @@
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-# Repo root, state dir, have_python, bugsweep_meta_runs come from common.sh.
-REPO_ROOT="$BUGSWEEP_REPO_ROOT"
+# Shared variant rules live under the common repository state, but replay must scan the explicit
+# audited checkout.  The replay result itself is run-local and never replaces a sibling run's
+# result.
+REPO_ROOT="$BUGSWEEP_TARGET_ROOT"
 STATE_DIR="$BUGSWEEP_STATE_DIR"
 VARIANTS_DIR="${STATE_DIR}/variants"
 INDEX="${STATE_DIR}/variants.index.jsonl"
@@ -267,6 +269,7 @@ replay() {
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: variants.sh replay <RUN_DIR>"
   run_dir="$(cd "$run_dir" && pwd)"
   local out="${run_dir}/variant-matches.jsonl"
+  [ -n "$REPO_ROOT" ] || { log "variants: no audited target root — skipping replay."; return 0; }
   : > "$out"
 
   { [ -d "$VARIANTS_DIR" ] && [ -n "$(ls -A "$VARIANTS_DIR" 2>/dev/null)" ]; } || { log "variants: none stored — nothing to replay."; return 0; }
@@ -352,6 +355,10 @@ os.replace(tmp, idx)
 for p in sorted(requeue):
     print("REQUEUE=%s" % p)
 PY
+  # Record the source/config/extractor generation for the replay output. Requeue paths are
+  # ordering hints only; their presence does not establish a finding or completed coverage.
+  BUGSWEEP_INDEX_ARTIFACT_PATH="$out" bugsweep_write_index_manifest "variant-matches" "${BUGSWEEP_SCRIPT_DIR}/variants.sh" \
+    || log "variants: replay manifest unavailable; requeue paths remain ordering hints only."
 }
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,8 @@ STATE_DIR="$BUGSWEEP_STATE_DIR"
 AUDIT_LOG="${STATE_DIR}/audit-log.jsonl"
 RISK_LOG="${STATE_DIR}/risk.jsonl"
 PRIORITY_OUTCOME_LOG="${STATE_DIR}/priority-outcomes.jsonl"
+AUDIT_INDEX="${STATE_DIR}/audit-index.json"
+AUDIT_INDEX_LOCK="${STATE_DIR}/audit-index.lock"
 META="${STATE_DIR}/meta.json"
 META_LOCK="${STATE_DIR}/meta.lock"
 LEASES_DIR="${STATE_DIR}/leases"
@@ -230,13 +232,14 @@ persist() {
 
   # state.env is a run artifact, not executable configuration. Parse only the
   # exact keys this function needs; never source a file the model can modify.
-  local state_env saved_ts saved_run_id saved_head saved_branch saved_worktree
+  local state_env saved_ts saved_run_id saved_head saved_branch saved_worktree saved_target_root
   state_env="${run_dir}/state.env"
   saved_ts="$(_bsw_state_env_get "$state_env" BUGSWEEP_TS)"
   saved_run_id="$(_bsw_state_env_get "$state_env" BUGSWEEP_RUN_ID)"
   saved_head="$(_bsw_state_env_get "$state_env" BUGSWEEP_ORIG_HEAD)"
   saved_branch="$(_bsw_state_env_get "$state_env" BUGSWEEP_ORIG_BRANCH)"
   saved_worktree="$(_bsw_state_env_get "$state_env" BUGSWEEP_WORKTREE)"
+  saved_target_root="$(_bsw_state_env_get "$state_env" BUGSWEEP_TARGET_ROOT)"
 
   if ! _state_storage_safe || ! mkdir -p "$STATE_DIR" 2>/dev/null; then
     log "state: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping persist."
@@ -256,13 +259,25 @@ persist() {
   # New runs persist preflight's collision-free bs_id. Keep BUGSWEEP_TS as a
   # compatibility fallback for old run directories that predate RUN_ID.
   run_id="${saved_run_id:-${saved_ts:-$(date +%Y%m%d-%H%M%S)}}"
-  repo_root="$saved_worktree"
+  repo_root="$saved_target_root"
+  if [ -z "$repo_root" ] || [ ! -d "$repo_root" ]; then
+    repo_root="$saved_worktree"
+  fi
+  if [ -z "$repo_root" ] || [ ! -d "$repo_root" ]; then
+    repo_root="${BUGSWEEP_TARGET_ROOT:-}"
+  fi
   if [ -z "$repo_root" ] || [ ! -d "$repo_root" ]; then
     repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   fi
   ordinal="$(_reserve_run_ordinal "$run_dir" "$saved_head" "$run_id" "$ts" "$saved_branch")"
 
+  local audit_index_lock_held=false
   if have_python; then
+    if bugsweep_lock_acquire "$AUDIT_INDEX_LOCK" "${BUGSWEEP_AUDIT_INDEX_LOCK_TIMEOUT:-15}"; then
+      audit_index_lock_held=true
+    else
+      log "state: audit-index.lock busy during persist — appending audit records without the index lock (best effort)."
+    fi
     AUDIT_LOG="$AUDIT_LOG" RISK_LOG="$RISK_LOG" PRIORITY_OUTCOME_LOG="$PRIORITY_OUTCOME_LOG" \
     BUGSWEEP_PERSIST_REPO="$repo_root" BUGSWEEP_PERSIST_SCRIPT_DIR="$BUGSWEEP_SCRIPT_DIR" \
     python3 - "$run_dir" "$run_id" "$ordinal" "$cat_v" "$ts" <<'PY' 2>/dev/null || {
@@ -547,6 +562,7 @@ PY
       log "state: python harvest failed; persisting risk events via fallback."
       _persist_fallback "$run_dir" "$run_id" "$ordinal" "$ts"
     }
+    [ "$audit_index_lock_held" = true ] && bugsweep_lock_release "$AUDIT_INDEX_LOCK"
   else
     log "state: python3 unavailable — persisting risk events only (coverage harvest skipped)."
     _persist_fallback "$run_dir" "$run_id" "$ordinal" "$ts"
@@ -605,7 +621,7 @@ prime() {
   local out_path="${run_dir}/prior-coverage.json"
   if ! _state_storage_safe; then
     _write_degraded_coverage "$run_dir" "$out_path" \
-      '{"schema":1,"catalog_version":"0","prior_runs":0,"files_audited_current_catalog":[],"files_audited_current_catalog_count":0,"files_audited_stale_catalog":[],"files_audited_stale_catalog_count":0,"high_risk_files":[],"degraded":true}' \
+      '{"schema":1,"catalog_version":"0","prior_runs":0,"files_audited_current_catalog":[],"files_audited_current_catalog_count":0,"files_audited_stale_catalog":[],"files_audited_stale_catalog_count":0,"files_audited_current_catalog_exact":[],"files_audited_stale_catalog_exact":[],"audit_membership":{"status":"unknown","index":"audit-index.json","path":"audit-membership.json","source_size":0},"high_risk_files":[],"degraded":true}' \
       || true
     echo "SUMMARY=coverage history unavailable (unsafe state path) — frozen invocation scope, no reprioritization applied."
     return 0
@@ -626,26 +642,37 @@ prime() {
   # comment for the bound proof). Best-effort: any failure here (no git repo,
   # no python3, helper missing) just yields zero history signal, never a
   # failed prime() -- matches this file's coverage-first "never fail" contract.
-  local history_log_path=""
+  local history_log_path="" history_root
+  history_root="${BUGSWEEP_TARGET_ROOT:-${BUGSWEEP_REPO_ROOT:-$run_dir}}"
   if have_python && [ -f "${BUGSWEEP_SCRIPT_DIR}/git-history-risk.sh" ]; then
     history_log_path="$(mktemp "${run_dir}/.state-history.XXXXXX" 2>/dev/null || true)"
     if [ -n "$history_log_path" ]; then
       ( bash "${BUGSWEEP_SCRIPT_DIR}/git-history-risk.sh" \
-          "${BUGSWEEP_REPO_ROOT:-$run_dir}" 2>/dev/null || true ) \
+          "$history_root" 2>/dev/null || true ) \
         | dd of="$history_log_path" bs=65536 count=32 2>/dev/null || true
     fi
+  fi
+
+  local audit_index_lock_held=false
+  if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+    log "state: cannot create project-scoped state directory — membership remains unknown."
+  elif bugsweep_lock_acquire "$AUDIT_INDEX_LOCK" "${BUGSWEEP_AUDIT_INDEX_LOCK_TIMEOUT:-15}"; then
+    audit_index_lock_held=true
+  else
+    log "state: audit-index.lock busy — membership will remain unknown for this prime."
   fi
 
   if have_python; then
     local prior_runs
     prior_runs="$(_state_meta_runs)"
-    if AUDIT_LOG="$AUDIT_LOG" RISK_LOG="$RISK_LOG" PRIOR_RUNS="$prior_runs" HISTORY_LOG_PATH="$history_log_path" \
+    if AUDIT_LOG="$AUDIT_LOG" RISK_LOG="$RISK_LOG" AUDIT_INDEX_PATH="$AUDIT_INDEX" AUDIT_INDEX_LOCKED="$audit_index_lock_held" PRIOR_RUNS="$prior_runs" HISTORY_LOG_PATH="$history_log_path" \
       python3 - "$cat_v" "$decay" "$top_n" "$recheck" "$out_path" <<'PY' 2>/dev/null
 import json, os, stat, sys, tempfile
 cat_v, decay, top_n, recheck, out_path = sys.argv[1:6]
 decay = float(decay); top_n = int(top_n); recheck = int(recheck)
 audit_log, risk_log = os.environ["AUDIT_LOG"], os.environ["RISK_LOG"]
 history_log_path = os.environ.get("HISTORY_LOG_PATH", "")
+audit_index_locked = os.environ.get("AUDIT_INDEX_LOCKED") == "true"
 
 def jsonl_tail(path, max_bytes=32 * 1024 * 1024, max_line=64 * 1024):
     try:
@@ -695,26 +722,180 @@ def vkey(v):
     except Exception:
         return (0, str(v))
 
-# file -> (best catalog_version, last run audited)
-best = {}
-for e in jsonl_tail(audit_log):
-    f = e.get("file")
-    if not f:
-        continue
-    cv = str(e.get("catalog_version", "0"))
-    rn = int(e.get("run", 0))
-    cur_best = best.get(f)
-    if cur_best is None:
-        best[f] = [cv, rn]
-    else:
-        if vkey(cv) > vkey(cur_best[0]):
-            cur_best[0] = cv
-        if rn > cur_best[1]:
-            cur_best[1] = rn
+def audit_index_records():
+    """Fold the complete append-only audit stream into latest records.
+
+    The compact index is a durable machine artifact, not an incremental cache:
+    each prime streams the full log with bounded line buffers. That keeps source
+    replacement and concurrent append behavior correct without trusting offsets
+    or truncated tails. Legacy rows remain membership evidence while rows
+    without content fingerprints carry a per-file unknown fingerprint status.
+    """
+    index_path = os.environ.get("AUDIT_INDEX_PATH", "")
+
+    audit_fd = -1
+    try:
+        audit_fd = os.open(
+            audit_log,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        audit_info = os.fstat(audit_fd)
+        if not stat.S_ISREG(audit_info.st_mode):
+            raise OSError("audit log is not regular")
+        source_size = audit_info.st_size
+    except OSError:
+        if audit_fd >= 0:
+            os.close(audit_fd)
+        return {}, "unknown", 0
+
+    records = {}
+    # The compact index is derived state. Always rebuild it from the complete
+    # authoritative log so a corrupt or stale index can be repaired in one
+    # locked prime instead of poisoning membership forever.
+    status = "unknown" if not audit_index_locked else "exact"
+    pending = b""
+    try:
+        while True:
+            chunk = os.read(audit_fd, 64 * 1024)
+            if not chunk:
+                break
+            pending += chunk
+            lines = pending.split(b"\n")
+            pending = lines.pop()
+            if len(pending) > 64 * 1024:
+                status = "unknown"
+                pending = b""
+            for raw in lines:
+                if not raw or len(raw) > 64 * 1024:
+                    status = "unknown"
+                    continue
+                try:
+                    value = json.loads(raw)
+                except (UnicodeDecodeError, ValueError):
+                    status = "unknown"
+                    continue
+                if not isinstance(value, dict) or value.get("outcome") != "audited":
+                    continue
+                file_path = value.get("file")
+                if not isinstance(file_path, str) or not file_path:
+                    status = "unknown"
+                    continue
+                raw_run = value.get("run", 0)
+                try:
+                    run_number = int(raw_run)
+                except (TypeError, ValueError):
+                    status = "unknown"
+                    continue
+                if isinstance(raw_run, bool) or run_number < 0:
+                    status = "unknown"
+                    continue
+                catalog_value = value.get("catalog_version", "0")
+                catalog_value = catalog_value if isinstance(catalog_value, str) else str(catalog_value)
+                run_id_value = value.get("run_id", "")
+                run_id_value = run_id_value if isinstance(run_id_value, str) else str(run_id_value)
+                head_value = value.get("head", "")
+                head_value = head_value if isinstance(head_value, str) else ""
+                blob_value = value.get("blob_oid", "")
+                blob_value = blob_value if isinstance(blob_value, str) else ""
+                fingerprint_status = "exact" if head_value and blob_value else "unknown"
+                previous = records.get(file_path)
+                candidate = {
+                    "run": run_number,
+                    "run_id": run_id_value,
+                    "catalog_version": catalog_value,
+                    "head": head_value,
+                    "blob_oid": blob_value,
+                    "fingerprint_status": fingerprint_status,
+                }
+                if previous is None or run_number > int(previous.get("run", 0)):
+                    records[file_path] = candidate
+                elif run_number == int(previous.get("run", 0)):
+                    previous_tuple = (
+                        str(previous.get("run_id", "")),
+                        str(previous.get("catalog_version", "0")),
+                        str(previous.get("head", "")),
+                        str(previous.get("blob_oid", "")),
+                    )
+                    candidate_tuple = (
+                        run_id_value,
+                        catalog_value,
+                        head_value,
+                        blob_value,
+                    )
+                    if candidate_tuple != previous_tuple:
+                        # Reused ordinals under concurrent/fallback persists
+                        # make this file's history ambiguous. Keep a stable
+                        # representative for diagnostics, but never publish
+                        # exact membership from the conflicted stream.
+                        status = "unknown"
+                        if candidate_tuple < previous_tuple:
+                            records[file_path] = candidate
+        if pending:
+            status = "unknown"
+        try:
+            final_info = os.stat(audit_log, follow_symlinks=False)
+            if (
+                final_info.st_size != source_size
+                or final_info.st_dev != audit_info.st_dev
+                or final_info.st_ino != audit_info.st_ino
+                or final_info.st_mtime_ns != audit_info.st_mtime_ns
+            ):
+                # The unlocked fallback can race an append or replacement. Do
+                # not claim exact membership from a partial snapshot.
+                status = "unknown"
+        except OSError:
+            status = "unknown"
+    except OSError:
+        status = "unknown"
+    finally:
+        os.close(audit_fd)
+
+    published_status = status
+    if index_path and audit_index_locked and published_status in {"exact", "unknown"}:
+        temp_name = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", prefix=".audit-index.",
+                dir=os.path.dirname(index_path), delete=False,
+            ) as handle:
+                temp_name = handle.name
+                os.fchmod(handle.fileno(), 0o600)
+                json.dump(
+                    {
+                        "schema": 1,
+                        "source_size": source_size,
+                        "membership_status": published_status,
+                        "records": records,
+                    },
+                    handle,
+                    separators=(",", ":"),
+                )
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, index_path)
+            temp_name = ""
+        except OSError:
+            status = "unknown"
+        finally:
+            if temp_name:
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass
+    return records, status, source_size
+
+best, audit_membership_status, audit_source_size = audit_index_records()
 
 cur = str(cat_v)
 audited_current, audited_stale = [], []
-for f, (cv, rn) in best.items():
+for f, record in best.items():
+    cv = str(record.get("catalog_version", "0"))
+    try:
+        rn = int(record.get("run", 0))
+    except (TypeError, ValueError):
+        audit_membership_status = "unknown"
+        continue
     catalog_ok = vkey(cv) >= vkey(cur)
     fresh = (current - rn) < recheck
     if catalog_ok and fresh:
@@ -785,12 +966,68 @@ out = {
     "files_audited_current_catalog_count": len(audited_current),
     "files_audited_stale_catalog": audited_stale[:CAP],
     "files_audited_stale_catalog_count": len(audited_stale),
+    # Keep the model-facing prior-coverage artifact bounded. Exact membership
+    # lives in audit-membership.json, sourced from the compact latest-record
+    # index; mechanical collectors merge it when building scorer context.
+    "files_audited_current_catalog_exact": [],
+    "files_audited_stale_catalog_exact": [],
+    "audit_membership": {
+        "status": audit_membership_status,
+        "index": os.path.basename(os.environ.get("AUDIT_INDEX_PATH", "")) or None,
+        "path": "audit-membership.json",
+        "source_size": audit_source_size,
+    },
     "high_risk_files": [
         {"file": f, "score": score, "event_score": events, "history_score": history}
         for f, score, events, history in high
     ],
     "truncated": len(audited_current) > CAP or len(audited_stale) > CAP,
 }
+
+# Keep the full membership contract outside the model-facing summary as well.
+# Consumers that need exact mechanical scope can read this compact artifact;
+# the capped arrays above remain convenient for human-facing summaries.
+membership_path = os.path.join(
+    os.path.dirname(os.environ.get("AUDIT_INDEX_PATH", "")), "audit-membership.json"
+)
+if membership_path and audit_index_locked and os.path.dirname(membership_path):
+    membership_tmp = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix=".audit-membership.",
+            dir=os.path.dirname(membership_path), delete=False,
+        ) as handle:
+            membership_tmp = handle.name
+            os.fchmod(handle.fileno(), 0o600)
+            json.dump(
+                {
+                    "schema": 1,
+                    "status": audit_membership_status,
+                    "index": "audit-index.json",
+                    "catalog_version": cur,
+                    "prior_runs": runs,
+                    "source_size": audit_source_size,
+                    "files_audited_current_catalog": sorted(audited_current) if audit_membership_status == "exact" else [],
+                    "files_audited_stale_catalog": sorted(audited_stale) if audit_membership_status == "exact" else [],
+                },
+                handle,
+                separators=(",", ":"),
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(membership_tmp, membership_path)
+        membership_tmp = ""
+    except OSError:
+        audit_membership_status = "unknown"
+        out["audit_membership"]["status"] = "unknown"
+    finally:
+        if membership_tmp:
+            try:
+                os.unlink(membership_tmp)
+            except FileNotFoundError:
+                pass
+
 temp_name = ""
 try:
     with tempfile.NamedTemporaryFile(
@@ -819,17 +1056,19 @@ else:
           % (runs, cur, len(audited_current), len(audited_stale), len(high)))
 PY
     then
+      [ "$audit_index_lock_held" = true ] && bugsweep_lock_release "$AUDIT_INDEX_LOCK"
       [ -z "$history_log_path" ] || rm -f -- "$history_log_path"
       return 0
     fi
   fi
+  [ "$audit_index_lock_held" = true ] && bugsweep_lock_release "$AUDIT_INDEX_LOCK"
   [ -z "$history_log_path" ] || rm -f -- "$history_log_path"
 
   # Degraded path: no python3 or no state yet. Emit an empty-history file so
   # context-build treats the frozen invocation scope as the frontier (safe: never narrows).
   local runs; runs="$(_state_meta_runs)"
   _write_degraded_coverage "$run_dir" "$out_path" \
-    "{\"schema\":1,\"catalog_version\":\"${cat_v}\",\"prior_runs\":${runs},\"files_audited_current_catalog\":[],\"files_audited_current_catalog_count\":0,\"files_audited_stale_catalog\":[],\"files_audited_stale_catalog_count\":0,\"high_risk_files\":[],\"degraded\":true}" \
+    "{\"schema\":1,\"catalog_version\":\"${cat_v}\",\"prior_runs\":${runs},\"files_audited_current_catalog\":[],\"files_audited_current_catalog_count\":0,\"files_audited_stale_catalog\":[],\"files_audited_stale_catalog_count\":0,\"files_audited_current_catalog_exact\":[],\"files_audited_stale_catalog_exact\":[],\"audit_membership\":{\"status\":\"unknown\",\"index\":\"audit-index.json\",\"path\":\"audit-membership.json\",\"source_size\":0},\"high_risk_files\":[],\"degraded\":true}" \
     || true
   if [ "$runs" = "0" ]; then
     echo "SUMMARY=first run on this repo — the frozen invocation scope is the unaudited frontier."

@@ -51,6 +51,9 @@ JSON
   cat > "${REPO}/.bugsweep/state/audit-log.jsonl" <<JSON
 {"run":1,"run_id":"r1","catalog_version":"1","file":"src/checkout.py","outcome":"audited","blob_oid":"${OLD_BLOB}","head":"${OLD_HEAD}"}
 JSON
+  cat > "${REPO}/.bugsweep/state/audit-index.json" <<JSON
+{"schema":1,"source_size":1,"membership_status":"exact","records":{"src/checkout.py":{"run":1,"catalog_version":"1","head":"${OLD_HEAD}","blob_oid":"${OLD_BLOB}","fingerprint_status":"exact"}}}
+JSON
   cat > "${REPO}/.beads/issues.jsonl" <<'JSON'
 {"id":"repo-1","title":"Checkout regression","status":"open","priority":1,"issue_type":"bug","description":"file_scope: src/checkout.py"}
 JSON
@@ -88,6 +91,193 @@ assert "../escape.py" not in json.dumps(d)
 assert "IGNORE PREVIOUS INSTRUCTIONS" not in json.dumps(d)
 assert d["project_signals"]["baseline_stability"] == "unknown"
 assert d["generated_from"]["previous_run_head"]
+PY
+}
+
+@test "priority-context reads compact audit-index fingerprints instead of the audit-log tail" {
+  local current_blob
+  current_blob="$(git -C "$REPO" rev-parse "${HEAD_SHA}:src/checkout.py")"
+  cat > "${REPO}/.bugsweep/state/audit-log.jsonl" <<JSON
+{"run":99,"run_id":"tail-only","catalog_version":"1","file":"src/checkout.py","outcome":"audited","head":"${HEAD_SHA}","blob_oid":"${current_blob}"}
+JSON
+  cat > "${REPO}/.bugsweep/state/audit-index.json" <<JSON
+{"schema":1,"source_size":1,"membership_status":"exact","records":{"src/checkout.py":{"run":1,"catalog_version":"1","head":"${OLD_HEAD}","blob_oid":"${OLD_BLOB}","fingerprint_status":"exact"}}}
+JSON
+  cd "$REPO"
+  run bash "$PRIORITY_SH" build "$RUN_DIR"
+  [ "$status" -eq 0 ]
+  python3 - "${RUN_DIR}/priority-context.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["source_status"]["audit_fingerprints"] == "ok", d["source_status"]
+target = next(item for item in d["targets"] if item["file"] == "src/checkout.py")
+assert "content_changed_since_audit" in set(target["attribution_reason_codes"]), target
+PY
+}
+
+@test "priority-context merges exact audit membership only when its snapshot binding matches" {
+  cat > "${RUN_DIR}/prior-coverage.json" <<'JSON'
+{"schema":1,"catalog_version":"1","prior_runs":1,"files_audited_current_catalog":[],"files_audited_stale_catalog":[],"files_audited_current_catalog_exact":[],"files_audited_stale_catalog_exact":[],"audit_membership":{"status":"exact","index":"audit-index.json","path":"audit-membership.json","source_size":7},"high_risk_files":[]}
+JSON
+  cat > "${REPO}/.bugsweep/state/audit-membership.json" <<'JSON'
+{"schema":1,"status":"exact","index":"audit-index.json","catalog_version":"1","prior_runs":1,"source_size":7,"files_audited_current_catalog":[],"files_audited_stale_catalog":["src/checkout.py"]}
+JSON
+  cd "$REPO"
+  run bash "$PRIORITY_SH" build "$RUN_DIR"
+  [ "$status" -eq 0 ]
+  python3 - "${RUN_DIR}/priority-context.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+target = next(item for item in d["targets"] if item["file"] == "src/checkout.py")
+assert "stale_audit" in set(target["attribution_reason_codes"]), target
+PY
+
+  sed -i.bak 's/"source_size":7/"source_size":8/' "${REPO}/.bugsweep/state/audit-membership.json"
+  run bash "$PRIORITY_SH" build "$RUN_DIR"
+  [ "$status" -eq 0 ]
+  python3 - "${RUN_DIR}/priority-context.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+target = next(item for item in d["targets"] if item["file"] == "src/checkout.py")
+assert "stale_audit" not in set(target["attribution_reason_codes"]), target
+PY
+}
+
+@test "priority-context apply uses producer audit membership and freezes the admitted frontier" {
+  local state_sh="${SKILL_ROOT}/scripts/state.sh"
+  local catalog_version old_head head_sha run_dir
+  cd "$REPO"
+  mkdir -p "${REPO}/.bugsweep/state"
+  catalog_version="$(bash "$state_sh" catalog-version)"
+
+  python3 - "$REPO" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for index in range(1, 202):
+    (root / "src" / f"frontier{index:03d}.py").write_text(
+        f"VALUE = {index}\n", encoding="utf-8"
+    )
+PY
+  git -C "$REPO" add src
+  git -C "$REPO" commit -q -m "test: seed the audit frontier"
+  old_head="$(git -C "$REPO" rev-parse HEAD)"
+
+  printf 'VALUE = 2000\n' > "${REPO}/src/frontier002.py"
+  git -C "$REPO" add src/frontier002.py
+  git -C "$REPO" commit -q -m "test: change one audited frontier file"
+  head_sha="$(git -C "$REPO" rev-parse HEAD)"
+
+  python3 - "$REPO" "$old_head" "$catalog_version" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+old_head, catalog_version = sys.argv[2:]
+audit_log = root / ".bugsweep" / "state" / "audit-log.jsonl"
+with audit_log.open("w", encoding="utf-8") as handle:
+    for index in range(1, 202):
+        path = f"src/frontier{index:03d}.py"
+        row = {
+            "run": 1,
+            "run_id": "producer-contract",
+            "catalog_version": catalog_version,
+            "file": path,
+            "outcome": "audited",
+        }
+        if index != 3:
+            row["head"] = old_head
+            row["blob_oid"] = subprocess.check_output(
+                ["git", "-C", str(root), "rev-parse", f"{old_head}:{path}"],
+                text=True,
+            ).strip()
+        handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+PY
+
+  run_dir="${REPO}/.bugsweep/run-frontier"
+  mkdir -p "$run_dir"
+  cat > "${run_dir}/state.env" <<ENV
+BUGSWEEP_REPO_ROOT='${REPO}'
+BUGSWEEP_WORKTREE='${REPO}'
+BUGSWEEP_ORIG_HEAD='${head_sha}'
+ENV
+  : > "${run_dir}/ledger.jsonl"
+  run bash "$state_sh" prime "$run_dir"
+  [ "$status" -eq 0 ]
+  python3 - "${run_dir}/prior-coverage.json" "${REPO}/.bugsweep/state/audit-membership.json" "${REPO}/.bugsweep/state/audit-index.json" <<'PY'
+import json
+import sys
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+membership = json.load(open(sys.argv[2], encoding="utf-8"))
+index = json.load(open(sys.argv[3], encoding="utf-8"))
+assert summary["audit_membership"]["status"] == "exact", summary
+assert summary["files_audited_current_catalog_count"] == 201, summary
+assert len(membership["files_audited_current_catalog"]) == 201, membership
+assert index["records"]["src/frontier002.py"]["fingerprint_status"] == "exact", index
+assert index["records"]["src/frontier003.py"]["fingerprint_status"] == "unknown", index
+PY
+
+  cat > "${run_dir}/priority-context.json" <<'JSON'
+{"schema_version":1,"scope_contract":"priority_only_frozen_invocation_scope_remains_in_scope","degraded":true}
+JSON
+  python3 - "$run_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+run = Path(sys.argv[1])
+files = [f"src/frontier{index:03d}.py" for index in range(1, 202)]
+batches = [
+    {"id": 1, "files": [files[0]], "tier": "normal", "deferred": True},
+    {"id": 2, "files": [files[1]], "tier": "normal", "deferred": True},
+    {"id": 3, "files": [files[2]], "tier": "normal", "deferred": True},
+    {"id": 4, "files": files[3:], "tier": "normal", "deferred": True},
+]
+json.dump(
+    {"large_repo_mode": True, "budget_batches": 1, "covered": [], "batches": batches},
+    open(run / "recon.json", "w", encoding="utf-8"),
+)
+PY
+
+  cd "$REPO"
+  run bash "$PRIORITY_SH" apply "$run_dir"
+  [ "$status" -eq 0 ]
+  python3 - "${run_dir}/recon.json" "${run_dir}/priority-application.json" <<'PY'
+import json
+import sys
+recon = json.load(open(sys.argv[1], encoding="utf-8"))
+application = json.load(open(sys.argv[2], encoding="utf-8"))
+assert [batch["id"] for batch in recon["batches"]] == [2, 3, 1, 4], recon
+assert recon["admission"] == {
+    "schema_version": 1,
+    "base_batch_ids": [2],
+    "promoted_batch_ids": [],
+}, recon
+assert application["promoted_batches"] == [], application
+PY
+
+  python3 - "${run_dir}/recon.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+recon = json.load(open(path, encoding="utf-8"))
+recon["covered"] = [2]
+json.dump(recon, open(path, "w", encoding="utf-8"))
+PY
+  run bash "$PRIORITY_SH" apply "$run_dir"
+  [ "$status" -eq 0 ]
+  python3 - "${run_dir}/recon.json" <<'PY'
+import json
+import sys
+recon = json.load(open(sys.argv[1], encoding="utf-8"))
+assert recon["admission"] == {
+    "schema_version": 1,
+    "base_batch_ids": [2],
+    "promoted_batch_ids": [],
+}, recon
+assert [batch["id"] for batch in recon["batches"] if not batch["deferred"]] == [2], recon
 PY
 }
 
@@ -146,6 +336,22 @@ assert d["schema_version"] == 1
 assert d["degraded"] is True
 assert d["targets"] == []
 assert d["scope_contract"] == "priority_only_frozen_invocation_scope_remains_in_scope"
+PY
+}
+
+@test "priority-context marks a missing baseline unavailable and keeps stability unknown" {
+  local missing="${REPO}/.bugsweep/run-no-baseline"
+  mkdir -p "$missing"
+  cp "${RUN_DIR}/state.env" "${missing}/state.env"
+  : > "${missing}/ledger.jsonl"
+  cd "$REPO"
+  run bash "$PRIORITY_SH" build "$missing"
+  [ "$status" -eq 0 ]
+  python3 - "${missing}/priority-context.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["source_status"]["baseline"] == "unavailable", d["source_status"]
+assert d["project_signals"]["baseline_stability"] == "unknown", d["project_signals"]
 PY
 }
 
