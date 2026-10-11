@@ -228,6 +228,10 @@ teardown() {
   cd "$wt"
   run bash "$FINALIZE_SH" "$run_dir"
   [ "$status" -eq 0 ]
+  # A first-run finalizer stub has no uncovered recon or prior-coverage
+  # handoff, so recorded closeout does not require a synthetic follow-up
+  # receipt merely to dispose of this clean run.
+  grep -q '"follow_up": \[\]' "${run_dir}/run-summary.json"
 
   bundle="${run_dir}/recovery.bundle"
   git -C "$REPO" bundle create "$bundle" "refs/heads/${branch}" >/dev/null

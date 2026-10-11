@@ -422,6 +422,54 @@ PY
   [ -f "${RUN_DIR}/state.env" ]
 }
 
+@test "finalize: grep-tier rollup read failure cannot strand the user on the bugsweep branch" {
+  # The lifecycle contract still requires a Python executable. BUGSWEEP_NO_PYTHON
+  # only disables optional JSON reads, so this test can force the rollup's grep/
+  # awk tier without weakening the mandatory lifecycle validation.
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  _make_real_report "$RUN_DIR"
+  [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "bugsweep/20991231T000000Z" ]
+
+  local fakebin="${BATS_TMP}/fakebin-rollup-awk"
+  local awk_log="${BATS_TMP}/rollup-awk-calls.log"
+  mkdir -p "$fakebin"
+  for tool in bash git grep sed cat mkdir date tr wc head cut basename dirname mktemp rm cp mv find true false printf test env sh python3; do
+    real="$(command -v "$tool" 2>/dev/null || true)"
+    [ -n "$real" ] && ln -sf "$real" "${fakebin}/${tool}"
+  done
+
+  # Only the array-length helper passes -v to awk. Keep all unrelated awk
+  # uses real so this remains a targeted rollup read failure.
+  local real_awk
+  real_awk="$(command -v awk)"
+  cat > "${fakebin}/awk" <<'AWK'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-v" ]; then
+  printf 'array-length\n' >> "${BUGSWEEP_TEST_AWK_LOG:?}"
+  exit 1
+fi
+exec "${BUGSWEEP_REAL_AWK:?}" "$@"
+AWK
+  chmod +x "${fakebin}/awk"
+
+  # The array-reader failure is intentionally non-fatal: the documented
+  # fallback records zero array counts and still writes one valid digest.
+  local rollup="${BATS_TMP}/rollup-awk-failure.log"
+  PATH="$fakebin" BUGSWEEP_NO_PYTHON=1 BUGSWEEP_REAL_AWK="$real_awk" \
+    BUGSWEEP_TEST_AWK_LOG="$awk_log" BUGSWEEP_ROLLUP_FILE="$rollup" \
+    run bash "$FINALIZE_SH" "$RUN_DIR"
+
+  [ "$status" -eq 0 ]
+  grep -q '^array-length$' "$awk_log"
+  [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "$ORIG_BRANCH" ]
+  echo "$output" | grep -q "ARTIFACTS_FINALIZED"
+  [ -f "${RUN_DIR}/post-finalize-handoff.json" ]
+  [ -f "$rollup" ]
+  grep -q -- '- fixed 0 quarantined 0 -' "$rollup"
+  [ -f "${RUN_DIR}/.rollup-appended" ]
+}
+
 @test "finalize: a rollup write failure cannot strand the user on the bugsweep branch" {
   _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
   _make_recon_json "$RUN_DIR" 5 5
