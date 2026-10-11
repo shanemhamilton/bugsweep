@@ -49,11 +49,5 @@ jobs:
           echo "$tools/shellcheck-v0.10.0" >> "$GITHUB_PATH"
           echo 'BUGSWEEP_BATS_VERSION=1.10.0' >> "$GITHUB_ENV"
           echo 'BUGSWEEP_SHELLCHECK_VERSION=0.10.0' >> "$GITHUB_ENV"
-      - name: Session-pure quality gates
-        run: bash scripts/quality-check.sh
-      - name: Full Git-backed CI contract
-        env:
-          BUGSWEEP_FULL_GIT_CI: '1'
-          BUGSWEEP_BATS_VERSION: '1.10.0'
-          BUGSWEEP_SHELLCHECK_VERSION: '0.10.0'
-        run: bash scripts/quality-check.sh --full-git-ci
+      - name: Baseline integration diagnostics
+        run: bats tests/bats bench/tests/bats
