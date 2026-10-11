@@ -57,7 +57,8 @@ JSON
   [ "$status" -eq 1 ]
   [ "$output" = "PROOF_ERROR" ]
   [ ! -e "${RUN_DIR}/baseline.json" ]
-  grep -q '"verified": false' "${RUN_DIR}/execution-availability.json"
+  python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["verified"] is False' \
+    "${RUN_DIR}/execution-availability.json"
 }
 
 @test "a native-looking plan cannot bypass the provider or pollute the target" {

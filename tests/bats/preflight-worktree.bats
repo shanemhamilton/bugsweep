@@ -54,7 +54,7 @@ _tree_hash() {
 
 setup() {
   START_CWD="$(pwd)"
-  BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$(mktemp -d)" && pwd -P)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
   ORIG_BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD)"

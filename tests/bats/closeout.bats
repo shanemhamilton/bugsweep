@@ -8,7 +8,7 @@ load integration-fixture
 
 setup() {
   START_CWD="$(pwd)"
-  TMP="$(mktemp -d)"
+  TMP="$(cd "$(mktemp -d)" && pwd -P)"
   REPO="${TMP}/repo"
   git init -q "$REPO"
   git -C "$REPO" config user.email test@bugsweep

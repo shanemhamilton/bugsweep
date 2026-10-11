@@ -247,4 +247,18 @@ teardown() {
   BENCH_FAKE_NO_DOCKER=1 run "$PROXY_SH" start run-nodock-789 claude "$secret_file" "$limits_file"
   [ "$status" -eq 1 ]
   assert_contains "$output" "docker"
+  refute_contains "$output" "0600"
+}
+
+@test "proxy rejects a secret with mode other than 0600 before docker access" {
+  cd "$BATS_TMP"
+  local secret_file="$BATS_TMP/provider-key-wrong-mode"
+  local limits_file="$BATS_TMP/limits-wrong-mode.json"
+  printf '%s' 'provider-key-fixture' >"$secret_file"
+  chmod 644 "$secret_file"
+  printf '%s\n' '{}' >"$limits_file"
+  BENCH_FAKE_NO_DOCKER=1 run "$PROXY_SH" start run-wrong-mode-790 claude "$secret_file" "$limits_file"
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "0600"
+  refute_contains "$output" "docker runtime not found"
 }

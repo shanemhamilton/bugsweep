@@ -28,7 +28,6 @@ PREFLIGHT_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/pref
 FINALIZE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/finalize.sh"
 STATE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/state.sh"
 CLOSEOUT_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/closeout.sh"
-INTEGRATE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/integrate.sh"
 SCHEMA_PATH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/schemas/run-summary.schema.json"
 
 # ---------------------------------------------------------------------------
@@ -84,6 +83,24 @@ JSON
     "$(git -C "$worktree" rev-parse "HEAD:${file}")" > "${run_dir}/audit-snapshots.jsonl"
 }
 
+# Recorded closeout is the honest terminal path for these lifecycle tests: the
+# fixture has no frozen integration authority or provider, so it must carry a
+# recovery bundle, exact tracker readback, and a matching deletion review.
+_authorize_recorded_closeout() {
+  local run_dir="$1" branch="$2" bug_id="$3"
+  local bundle="${run_dir}/recovery.bundle" tip bundle_sha run_id
+  git -C "$REPO" bundle create "$bundle" "refs/heads/${branch}" >/dev/null
+  tip="$(git -C "$REPO" rev-parse "$branch")"
+  bundle_sha="$(shasum -a 256 "$bundle" | awk '{print $1}')"
+  printf '{"provider":"beads","item_id":"%s","finding_key":"%s","readback_verified":true,"recovery_bundle":"%s","recovery_sha256":"%s"}\n' \
+    "$bug_id" "$bug_id" "$bundle" "$bundle_sha" > "${run_dir}/tracker-receipts.jsonl"
+  run_id="$(python3 -B "$(dirname "$CLOSEOUT_SH")/_terminal_lifecycle.py" get "$run_dir" BUGSWEEP_RUN_ID)"
+  printf '{"provider":"beads","item_id":"FOLLOW-UP","finding_key":"run:%s:follow-up","readback_verified":true}\n' \
+    "$run_id" >> "${run_dir}/tracker-receipts.jsonl"
+  printf '{"approved":true,"branch":"%s","tip":"%s","bundle_sha256":"%s"}\n' \
+    "$branch" "$tip" "$bundle_sha" > "${run_dir}/deletion-review.json"
+}
+
 # Asserts `git worktree list` has zero entries under the bugsweep worktrees
 # dir, AND that `git worktree prune` is a genuine no-op (nothing left for it
 # to clean up — i.e. every reap already deregistered its worktree with a real
@@ -100,7 +117,7 @@ _assert_no_leftover_bugsweep_worktrees() {
 
 setup() {
   START_CWD="$(pwd)"
-  BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$(mktemp -d)" && pwd -P)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
   cd "$REPO"
@@ -291,7 +308,7 @@ PY
 # (d) Cleanup invariant
 # ---------------------------------------------------------------------------
 
-@test "(d) after a full worktree run, git worktree list has no leftover bugsweep worktrees and git worktree prune is a no-op" {
+@test "(d) after a recorded worktree run, git worktree list has no leftover bugsweep worktrees and git worktree prune is a no-op" {
   run bash "$PREFLIGHT_SH" --worktree
   [ "$status" -eq 0 ]
   local run_dir wt branch
@@ -308,12 +325,8 @@ PY
 
   run bash "$FINALIZE_SH" "$run_dir"
   [ "$status" -eq 0 ]
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$run_dir" main "$branch"
-  [ "$status" -eq 0 ]
-  run_id="$(sed -n "s/^BUGSWEEP_RUN_ID='\([^']*\)'$/\1/p" "${run_dir}/state.env")"
-  printf '{"provider":"beads","item_id":"FOLLOW-UP","finding_key":"run:%s:follow-up","readback_verified":true}\n' \
-    "$run_id" > "${run_dir}/tracker-receipts.jsonl"
-  run bash "$CLOSEOUT_SH" "$run_dir" landed
+  _authorize_recorded_closeout "$run_dir" "$branch" "BUG-fix.txt"
+  run bash "$CLOSEOUT_SH" "$run_dir" recorded
   [ "$status" -eq 0 ]
   [ ! -d "$wt" ]
 
@@ -368,9 +381,8 @@ ENV
 
   run bash "$FINALIZE_SH" "$killed_run_dir"
   [ "$status" -eq 0 ]
-  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$killed_run_dir" main bugsweep/killed-run
-  [ "$status" -eq 0 ]
-  run bash "$CLOSEOUT_SH" "$killed_run_dir" landed
+  _authorize_recorded_closeout "$killed_run_dir" bugsweep/killed-run BUG-killed.txt
+  run bash "$CLOSEOUT_SH" "$killed_run_dir" recorded
   [ "$status" -eq 0 ]
   [ ! -d "$killed_wt" ]
 

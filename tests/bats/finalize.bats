@@ -422,60 +422,24 @@ PY
   [ -f "${RUN_DIR}/state.env" ]
 }
 
-@test "finalize: a failing rollup digest NEVER strands the user on the bugsweep branch (trust contract)" {
-  # ROBUSTNESS BLOCKER regression (bugsweep-6w8 review): the rollup digest is a
-  # cosmetic, default-OFF operator convenience. It must be structurally
-  # incapable of aborting finalize.sh before the trust-critical teardown
-  # (branch-restore + stash-pop) runs — otherwise a failure inside it strands
-  # the user on the throwaway bugsweep branch with their stash unpopped.
-  #
-  # Reproduction of a real failure mode: an unreadable run-summary.json (a
-  # permission change, or a TOCTOU vanish after the digest's own existence
-  # check) combined with the no-jq/no-python3 grep tier, where the array-length
-  # helper's `awk` errors (EACCES) with a NON-ZERO exit. Before the fix, that
-  # non-zero propagated through a bare (non-`local`) command-substitution
-  # assignment under `set -euo pipefail`, aborting the WHOLE script at a call
-  # site placed BEFORE the branch-restore — leaving the user on the bugsweep
-  # branch. After the fix (internal `|| var=0` guards + an isolated
-  # `_write_rollup_digest || log` call moved to the very tail, after teardown),
-  # finalize must ALWAYS return the user to their original branch and exit 0.
-  if [ "$(id -u)" -eq 0 ]; then
-    skip "runs as root: chmod 000 does not deny the owner, so the failure cannot be provoked"
-  fi
-
+@test "finalize: a rollup write failure cannot strand the user on the bugsweep branch" {
   _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
   _make_recon_json "$RUN_DIR" 5 5
   _make_real_report "$RUN_DIR"
-
-  # Pre-place an UNREADABLE run-summary.json. summarize.sh (also degraded under
-  # BUGSWEEP_NO_PYTHON=1) cannot open-for-write a mode-000 file it owns, so it
-  # fails and leaves this unreadable file in place — exactly the state the
-  # digest then trips over when its grep-tier awk tries to read it.
-  printf '{"counts":{"critical":0,"high":0,"medium":0,"low":0},"fixed":[],"quarantined":[],"confirmed_unfixed":[],"coverage":{"covered":5,"total":5},"status":"complete","stop_reason":null}\n' \
-    > "${RUN_DIR}/run-summary.json"
-  chmod 000 "${RUN_DIR}/run-summary.json"
-
-  # Confirm the run really starts ON the bugsweep branch, so a pre-restore abort
-  # would be observable as "still on bugsweep branch" afterward.
   [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "bugsweep/20991231T000000Z" ]
 
-  # Force the grep/awk tier: no jq, no python3.
-  local fakebin="${BATS_TMP}/fakebin"
-  mkdir -p "$fakebin"
-  for tool in bash git grep sed awk cat mkdir date tr wc head cut basename dirname mktemp rm cp mv find true false printf test env sh; do
-    real="$(command -v "$tool" 2>/dev/null || true)"
-    [ -n "$real" ] && ln -sf "$real" "${fakebin}/${tool}"
-  done
+  # A regular file cannot be used as the parent of the rollup output. This
+  # provokes a real append failure on both platforms without removing the
+  # Python runtime required by lifecycle identity validation.
+  printf 'preserve\n' > "${BATS_TMP}/blocked-parent"
+  local rollup="${BATS_TMP}/blocked-parent/rollup.log"
+  BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
 
-  local rollup="${BATS_TMP}/rollup.log"
-  PATH="$fakebin" BUGSWEEP_NO_PYTHON=1 BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
-
-  # Trust contract, in priority order:
-  #   1. finalize exits 0 (the digest failure was swallowed, not propagated).
-  #   2. the user is back on their ORIGINAL branch (teardown ran).
-  #   3. the machine-readable artifact marker was emitted (the script reached
-  #      its normal end, it did not abort mid-way).
   [ "$status" -eq 0 ]
   [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "$ORIG_BRANCH" ]
   echo "$output" | grep -q "ARTIFACTS_FINALIZED"
+  echo "$output" | grep -q "could not append rollup digest"
+  [ -f "${RUN_DIR}/post-finalize-handoff.json" ]
+  [ ! -f "${RUN_DIR}/.rollup-appended" ]
+  [ "$(cat "${BATS_TMP}/blocked-parent")" = preserve ]
 }

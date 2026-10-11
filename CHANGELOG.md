@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   histories do not make previously audited paths look new.
 - Bind extraction to the audited checkout with run-local indexes, and invalidate
   reachability conclusions when directed edges or entry seeds change.
+- Accept baseline receipts at the integration baseline gate and preserve immutable
+  evidence across integration retries without relaxing verification or source checks.
+- Preserve the saved run counter on Linux when using the no-Python state fallback.
+- Read proxy secret permissions portably while still requiring a regular file with
+  mode `0600` before any Docker access.
 
 ### Evaluation
 

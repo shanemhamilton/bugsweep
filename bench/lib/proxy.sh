@@ -334,7 +334,15 @@ cmd_start() {
   safe_run_id "${run_id}"; upstream_for_host "${host}" >/dev/null
   [[ "${secret_file}" == /* && -f "${secret_file}" && ! -L "${secret_file}" ]] || die "proxy secret must be an absolute regular file"
   [[ "${limits_file}" == /* && -f "${limits_file}" && ! -L "${limits_file}" ]] || die "limits receipt must be an absolute regular file"
-  [[ "$(stat -f '%Lp' "${secret_file}" 2>/dev/null || stat -c '%a' "${secret_file}" 2>/dev/null)" == "600" ]] || die "proxy secret must have mode 0600"
+  local secret_mode=""
+  if secret_mode="$(stat -c '%a' -- "${secret_file}" 2>/dev/null)"; then
+    :
+  elif secret_mode="$(stat -f '%Lp' "${secret_file}" 2>/dev/null)"; then
+    :
+  else
+    die "could not inspect proxy secret permissions"
+  fi
+  [[ "${secret_mode}" == "600" ]] || die "proxy secret must have mode 0600"
   require_docker
   local log
   log="$(init_usage_log "${run_id}")"
