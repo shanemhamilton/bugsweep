@@ -9,6 +9,7 @@
 
 PREFLIGHT_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/preflight.sh"
 FINALIZE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/finalize.sh"
+CLOSEOUT_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/closeout.sh"
 STATE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/state.sh"
 SKILL_MD="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/SKILL.md"
 
@@ -206,6 +207,41 @@ teardown() {
     "${main_repo_physical}"/.bugsweep/worktrees/*) : ;;
     *) echo "worktree not under main repo root: $wt"; false ;;
   esac
+}
+
+@test "preflight --worktree: symlinked checkout records physical paths through recorded closeout" {
+  local alias="${BATS_TMP}/repo-alias"
+  ln -s "$REPO" "$alias"
+  cd "$alias"
+
+  run env BUGSWEEP_TARGET_ROOT="$alias" bash "$PREFLIGHT_SH" --worktree
+  [ "$status" -eq 0 ]
+  local run_dir wt branch tip bundle bundle_sha
+  run_dir="$(echo "$output" | sed -n 's/^RUN_DIR=//p')"
+  wt="$(echo "$output" | sed -n 's/^WORKTREE=//p')"
+  branch="$(echo "$output" | sed -n 's/^BRANCH=//p')"
+  [ "$run_dir" = "$(cd "$run_dir" && pwd -P)" ]
+  [ "$wt" = "$(cd "$wt" && pwd -P)" ]
+  grep -q "BUGSWEEP_RUN_DIR='${run_dir}'" "${run_dir}/state.env"
+  grep -q "BUGSWEEP_WORKTREE='${wt}'" "${run_dir}/state.env"
+
+  cd "$wt"
+  run bash "$FINALIZE_SH" "$run_dir"
+  [ "$status" -eq 0 ]
+
+  bundle="${run_dir}/recovery.bundle"
+  git -C "$REPO" bundle create "$bundle" "refs/heads/${branch}" >/dev/null
+  tip="$(git -C "$REPO" rev-parse "$branch")"
+  bundle_sha="$(shasum -a 256 "$bundle" | awk '{print $1}')"
+  printf '{"provider":"beads","item_id":"RUN-CLOSEOUT","finding_key":"RUN-CLOSEOUT","readback_verified":true,"recovery_bundle":"%s","recovery_sha256":"%s"}\n' \
+    "$bundle" "$bundle_sha" > "${run_dir}/tracker-receipts.jsonl"
+  printf '{"approved":true,"branch":"%s","tip":"%s","bundle_sha256":"%s"}\n' \
+    "$branch" "$tip" "$bundle_sha" > "${run_dir}/deletion-review.json"
+
+  run bash "$CLOSEOUT_SH" "$run_dir" recorded
+  [ "$status" -eq 0 ]
+  [ ! -d "$wt" ]
+  [ -z "$(git -C "$REPO" branch --list "$branch")" ]
 }
 
 @test "preflight --worktree: refuses when a rebase is in progress" {

@@ -128,7 +128,9 @@ fi
 # --- Preconditions -------------------------------------------------------------
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die_usage "not inside a git repo"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-GIT_PATH="$(command -v git)"
+git_candidate="$(command -v git)" || die_usage "git is required for source-bound integration checks"
+GIT_PATH="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve(strict=True))' "$git_candidate")" \
+  || die_usage "could not resolve the canonical git executable"
 
 git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
 case "$git_common_dir" in

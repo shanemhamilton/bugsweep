@@ -14,7 +14,7 @@ FAKE_PROVIDER="${REPO_ROOT}/tests/bats/fake_execution_provider.py"
 
 setup() {
   START_CWD="$(pwd)"
-  BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$(mktemp -d)" && pwd -P)"
   PROJECT="${BATS_TMP}/project"
   RUN_DIR="${BATS_TMP}/authority"
   mkdir -p "$PROJECT" "$RUN_DIR"

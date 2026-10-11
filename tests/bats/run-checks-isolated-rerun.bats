@@ -11,7 +11,7 @@ PREPARE_PY="${REPO_ROOT}/scripts/_prepare_execution.py"
 
 setup() {
   START_CWD="$(pwd)"
-  BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$(mktemp -d)" && pwd -P)"
   PROJECT="${BATS_TMP}/project"
   RUN_DIR="${BATS_TMP}/authority"
   mkdir -p "$PROJECT" "$RUN_DIR"

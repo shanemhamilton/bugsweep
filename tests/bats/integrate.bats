@@ -462,6 +462,20 @@ teardown() {
   grep -q '"target_tip"' "${RUN_DIR}/integrate-results.json"
 }
 
+@test "integrate: canonicalizes a symlinked git executable on PATH" {
+  _make_bugsweep_branch "bugsweep/symlink-git" "symlink-git.txt" "fix symlink git"
+  GIT_LINK_DIR="${BATS_TMP}/git-link"
+  mkdir -p "$GIT_LINK_DIR"
+  ln -s "$(command -v git)" "${GIT_LINK_DIR}/git"
+
+  run env PATH="${GIT_LINK_DIR}:${PATH}" BUGSWEEP_QUALITY_GATE_COMMAND="ignored" CALL_LOG="$CALL_LOG" \
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/symlink-git
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "BRANCH_RESULT=bugsweep/symlink-git:merged"
+  [ -f "${REPO}/symlink-git.txt" ]
+}
+
 @test "integrate: refuses to run when --run-dir is absent" {
   _make_bugsweep_branch "bugsweep/nord" "nord.txt" "fix nord"
 

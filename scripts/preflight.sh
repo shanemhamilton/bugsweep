@@ -86,6 +86,15 @@ target_root="$BUGSWEEP_TARGET_ROOT"
 [ -n "$target_root" ] || die "No audited target root could be resolved. Set BUGSWEEP_TARGET_ROOT or run inside a git checkout."
 cd "$target_root" 2>/dev/null || die "Cannot enter audited target root: $target_root"
 require_git_repo
+# Lifecycle state compares run-directory identity after resolving filesystem
+# aliases. Record the physical audited root and use a physical shared-root
+# spelling for newly-created run/worktree paths so a macOS /var -> /private/var
+# alias cannot make finalize or closeout reject its own state. Keep the common
+# root variable's historical spelling for shared-state compatibility.
+target_root="$(pwd -P)"
+recorded_repo_root="$(cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null && pwd -P)" \
+  || die "Cannot resolve Bugsweep repository root: $BUGSWEEP_REPO_ROOT"
+recorded_worktrees_root="${recorded_repo_root}/.bugsweep/worktrees"
 
 if [ "$bs_scope" != "." ] \
   && [ -z "$(git -C "$target_root" --literal-pathspecs ls-files -- "$bs_scope")" ]; then
@@ -209,7 +218,7 @@ deadline_epoch=$(( start_epoch + (max_runtime_minutes * 60) ))
 # Anchored to the MAIN repo root (not CWD, and not the linked worktree's own
 # root) so every concurrent subagent's run dir lands in one shared, discoverable
 # location, matching where .bugsweep/state/ and .bugsweep/worktrees/ live.
-run_dir="${BUGSWEEP_REPO_ROOT}/.bugsweep/run-${bs_id}"
+run_dir="${recorded_repo_root}/.bugsweep/run-${bs_id}"
 mkdir -p "$run_dir"
 
 # --- Persist run state + acquire this run's lease (bugsweep-p74) --------------
@@ -277,8 +286,8 @@ worktree_path=""
 if [ "$bs_worktree" = "yes" ]; then
   # --- Worktree mode: isolated working dir, NEVER touch the user's tree ------
   branch="bugsweep/${bs_id}"
-  worktree_path="${BUGSWEEP_WORKTREES_DIR}/${bs_id}"
-  mkdir -p "${BUGSWEEP_WORKTREES_DIR}"
+  worktree_path="${recorded_worktrees_root}/${bs_id}"
+  mkdir -p "${recorded_worktrees_root}"
   stash_ref="none"
 
   # BLOCKER A fix (bugsweep-8d0 dataloss review): persist state.env (with

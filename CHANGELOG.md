@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve the saved run counter on Linux when using the no-Python state fallback.
 - Read proxy secret permissions portably while still requiring a regular file with
   mode `0600` before any Docker access.
+- Record canonical run/worktree paths and resolve the Git executable so filesystem
+  aliases on macOS satisfy the same strict identity checks used on Linux.
 
 ### Evaluation
 
