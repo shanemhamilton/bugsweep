@@ -4,9 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>bugsweep — the bug hunt that runs all night</title>
-<meta name="description" content="bugsweep is a priority-aware, adversarial AI bug-hunting skill for Claude Code and Codex. It uses current repository evidence to start where risk is moving, then proves every finding through a Hunter→Skeptic→Referee gauntlet." />
+<meta name="description" content="Bugsweep v0.8.0 investigates runtime bugs in bounded slices with local priority evidence, adversarial review, and executable proof for fixes. For Claude Code and Codex." />
 <meta property="og:title" content="bugsweep — the bug hunt that runs all night" />
-<meta property="og:description" content="Priority-aware, adversarial bug hunting for Claude Code and Codex. Recent changes, failing checks, incidents, and prior outcomes decide where the hunt starts—never what counts as proof." />
+<meta property="og:description" content="New in v0.8.0: bounded investigation slices, exact audit history, and context tied to the audited checkout. Local evidence guides the hunt; fixes still require review and executable proof." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://shanemhamilton.github.io/bugsweep/" />
 <meta property="og:image" content="https://shanemhamilton.github.io/bugsweep/og-image.png" />
@@ -15,7 +15,7 @@
 <meta property="og:image:alt" content="bugsweep — It hunts the bugs while you sleep. An adversarial AI bug-hunting fleet for Claude Code and Codex." />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="bugsweep — the bug hunt that runs all night" />
-<meta name="twitter:description" content="Priority-aware, adversarial bug hunting that starts where risk is moving and keeps the selected repository scope in view." />
+<meta name="twitter:description" content="Bugsweep v0.8.0: bounded investigation slices, exact audit history, and adversarial review for Claude Code and Codex." />
 <meta name="twitter:image" content="https://shanemhamilton.github.io/bugsweep/og-image.png" />
 <meta name="theme-color" content="#0B1020" />
 <style>
@@ -151,7 +151,7 @@
     overflow:hidden;
   }
   .stamp::after{
-    content:"NO REMOTES · NO FORCE · NO DELETE";
+    content:"LOCAL FIXES · EXACT CLEANUP";
     position:absolute;right:-42px;top:26px;transform:rotate(35deg);
     font-family:var(--mono);font-size:.66rem;letter-spacing:.24em;
     color:rgba(231,178,76,.34);border-block:1px solid rgba(231,178,76,.28);
@@ -269,7 +269,7 @@
     border:1px solid var(--haze);border-radius:12px;background:var(--panel-2);
     padding:1rem 1.1rem;font-family:var(--mono);font-size:.86rem;text-align:left;overflow:hidden;
   }
-  .cmd code{color:var(--ink);white-space:nowrap;display:block;min-width:0;overflow-x:auto}
+  .cmd code{color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;display:block;min-width:0}
   .cmd .prompt{color:var(--brass)}
   .copy{margin-left:auto;flex:none;border:1px solid var(--haze);background:transparent;color:var(--muted);
     font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;padding:.5em .8em;border-radius:7px;cursor:pointer;transition:.15s}
@@ -293,6 +293,10 @@
     .trust-grid{grid-template-columns:1fr}
     .stamp::after{display:none}
   }
+  @media (max-width:520px){
+    .cmd{flex-wrap:wrap}
+    .cmd code{flex:1 1 calc(100% - 2rem)}
+  }
   @media (prefers-reduced-motion:reduce){
     *{animation:none !important;transition:none !important;scroll-behavior:auto !important}
   }
@@ -315,12 +319,11 @@
       <span class="eyebrow">Night shift · priority-aware, adversarial code review</span>
       <h1>It hunts the bugs <em>while you sleep.</em></h1>
       <p class="hero-sub">
-        <b>bugsweep</b> is an autonomous, adversarial bug-hunting fleet for Claude Code and
-        Codex. It models your selected repository scope, hunts real security, logic, and data-integrity bugs
-        through a Hunter → Skeptic → Referee gauntlet, and — only when you ask — fixes them on
-        a throwaway branch with auto-revert. Before the hunt, it uses current repository
-        evidence to decide where risk is moving and where to start. <b>Every successful run
-        lands or records its work, then removes its exact temporary branch and worktree.</b>
+        <b>bugsweep</b> investigates runtime bugs for Claude Code and Codex. Local evidence
+        guides where to start; each bounded slice moves through context, hunt, review, and
+        checkpoint. It traces security, lifecycle, and data-integrity failures across files.
+        <b>Fixes require your chosen fix mode, fresh reviews, and executable proof.</b>
+        Completed runs land or record their work and verify cleanup of their own Git resources.
       </p>
       <div class="cta-row">
         <a class="btn btn-primary" href="https://github.com/shanemhamilton/bugsweep">
@@ -328,10 +331,11 @@
           View on GitHub
         </a>
         <a class="btn btn-ghost" href="#install">Install the skill</a>
+        <a class="btn btn-ghost" href="https://github.com/shanemhamilton/bugsweep/releases/tag/v0.8.0">What’s new in v0.8.0</a>
       </div>
       <div class="badges">
         <span class="badge"><span class="dot brass"></span>Claude Code &amp; Codex</span>
-        <span class="badge"><span class="dot safe"></span>v0.7 · closed-loop runs &amp; lifecycle parity</span>
+        <span class="badge"><span class="dot safe"></span>v0.8.0 · bounded investigation</span>
         <span class="badge"><span class="dot safe"></span>No telemetry</span>
         <span class="badge"><span class="dot safe"></span>MIT licensed</span>
       </div>
@@ -354,10 +358,10 @@
         then removes the exact run branch and worktree.
       </p>
       <p>
-        The irreversible git operations are done by short, auditable shell scripts you can
-        read in a few minutes — not left to the model's judgment. That's the whole trust
-        contract. Automatic fixes also require immutable proof, a verified execution receipt,
-        and fresh native review under a frozen operator configuration.
+        Coordinator code checks source identity, review evidence, execution receipts, and
+        exact resource ownership before integration or cleanup. Missing proof blocks
+        automatic fixes. Source review can continue in detect-only mode when execution
+        is unavailable.
       </p>
 
       <div class="trust-grid">
@@ -368,7 +372,7 @@
         <div class="trust-item"><span class="trust-num">05</span><p><b>One bug, one commit, evidence preserved.</b> Each fix needs immutable assertion proof and a verified suite receipt.</p></div>
         <div class="trust-item"><span class="trust-num">06</span><p><b>Only eligible bugs get fixed.</b> Every automatic fix needs fresh native review under frozen operator host, model, and prompt settings.</p></div>
         <div class="trust-item"><span class="trust-num">07</span><p><b>Minimal, surgical fixes only.</b> No refactors, renames, or reformatting.</p></div>
-        <div class="trust-item"><span class="trust-num">08</span><p><b>Hard caps.</b> Iterations, runtime, and fix count are bounded — it stops when it converges.</p></div>
+        <div class="trust-item"><span class="trust-num">08</span><p><b>Explicit budgets.</b> File, byte, iteration, and fix limits bound planned work. Deadline checkpoints retain partial progress; a hard kill can leave recovery pending.</p></div>
         <div class="trust-item"><span class="trust-num">09</span><p><b>Everything is logged.</b> Every iteration lands in a run ledger — an overnight run is auditable.</p></div>
         <div class="trust-item"><span class="trust-num">10</span><p><b>Close the loop.</b> Land verified work or tracker-record it, then prove the exact run branch and worktree are gone.</p></div>
       </div>
@@ -382,10 +386,12 @@
 <section aria-labelledby="tribunal-h2">
   <div class="wrap">
     <div class="sec-head reveal">
-      <span class="eyebrow">Why the false-positive rate stays low</span>
+      <span class="eyebrow">Evidence before confirmation</span>
       <h2 id="tribunal-h2">Every finding faces a tribunal.</h2>
-      <p class="lede">Most AI reviewers grade their own homework. bugsweep doesn't. A candidate bug has to survive
-        three independent roles before it's ever fixed or even reported — <b>the model never rubber-stamps its own guess.</b></p>
+      <p class="lede">Hunter, Skeptic, and Referee examine each candidate from different roles.
+        Every fix-eligible finding needs a strict majority of the configured fresh reviews,
+        at every severity, plus executable red/green proof. <b>Repeated model reviews do not
+        establish statistical independence or a measured precision rate.</b></p>
     </div>
 
     <div class="tribunal">
@@ -394,8 +400,8 @@
         <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></div>
         <div class="job">Finds</div>
         <h3>The Hunter</h3>
-        <p>Sweeps a batch of files against a whole-repo architecture model and a stack-specific
-          anti-pattern catalog, and raises candidate bugs with the exact evidence trail.</p>
+        <p>Investigates a bounded slice and its cross-file dependencies, using source context
+          and relevant anti-pattern catalogs. Each candidate needs a trigger and an evidence trail.</p>
       </article>
 
       <article class="role reveal">
@@ -403,8 +409,8 @@
         <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.4-3 8-7 10-4-2-7-5.6-7-10V6z"/><path d="m9 12 2 2 4-4"/></svg></div>
         <div class="job">Disproves</div>
         <h3>The Skeptic</h3>
-        <p>Actively tries to kill each candidate — alternate explanations, guarding code paths,
-          tests that already catch it — tuned to punish dismissing a real bug more than missing a false alarm.</p>
+        <p>Looks for alternate explanations, guarding code paths, alternate callers, and tests
+          that contradict the claim. Repository comments and instructions are evidence to check.</p>
       </article>
 
       <article class="role reveal">
@@ -412,14 +418,14 @@
         <div class="seal"><svg viewBox="0 0 24 24" fill="none" stroke="var(--brass)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7 3 13h4z"/><path d="M19 7l-2 6h4z"/><path d="M8 21h8"/></svg></div>
         <div class="job">Decides</div>
         <h3>The Referee</h3>
-        <p>A neutral arbiter reads the code independently and issues the final verdict. Only its
-          confirmed list is eligible to be fixed — and it seeds variant queries to hunt siblings next time.</p>
+        <p>Assesses a frozen source packet without seeing prior verdicts. Captured reviews
+          determine eligibility; confirmation alone does not replace the execution and fix gates.</p>
       </article>
     </div>
 
     <p class="flow-note reveal">
       <b>Hunter</b> <span class="arrow" aria-hidden="true">→</span> <b>Skeptic</b> <span class="arrow" aria-hidden="true">→</span> <b>Referee</b>
-      <span class="c-muted">— confirmed bugs go to the fix queue; everything else is dropped, not reported.</span>
+      <span class="c-muted">— <code>--recall</code> can report near misses for human review; they never authorize fixes.</span>
     </p>
   </div>
 </section>
@@ -469,6 +475,8 @@
           budgets. The application receipt records what was actually promoted or skipped. Later
           runs credit a signal only when a finding explicitly carries that reason code; coincidence
           stays unattributed, and <b>weights never silently rewrite themselves.</b></p>
+        <p><b>Available in detect-only mode.</b> Local history and prior audit evidence still guide
+          the queue when checks cannot run. An unavailable baseline stays unknown.</p>
         <span class="tag">◆ signal → target → tribunal → attributed outcome</span>
       </div>
     </div>
@@ -492,17 +500,15 @@
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6"/></svg>
         <h3>A contract a scheduler can read</h3>
-        <p>Every run reduces its ledger into a schema-valid <code class="kbd">run-summary.json</code> —
-          status, coverage, severity counts, fixed/quarantined/confirmed-unfixed findings, deterministic
-          priority outcomes, and where to look next. It always exists after finalize; if full reduction
-          can't run, a minimal summary ships instead, flagged <code class="kbd">degraded: true</code>.</p>
+        <p>Finalization reduces the ledger into <code class="kbd">run-summary.json</code> with
+          coverage, findings, and priority outcomes. Degraded or missing artifacts remain explicit
+          limitations; terminal readback decides whether closeout actually completed.</p>
       </div>
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/></svg>
-        <h3>Multiple subagents, one repo</h3>
-        <p>Preflight's <code class="kbd">--worktree</code> mode gives each run its own linked git
-          worktree, so a fleet of isolated subagents can hunt the same repository concurrently without
-          colliding. Your working branch, index, and files are never touched.</p>
+        <h3>One audit, one worktree</h3>
+        <p>Subagents and resumed sessions reuse the audit’s exact branch and linked worktree.
+          A separate concurrent audit requires an explicit isolation reason and recorded ownership.</p>
       </div>
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
@@ -520,10 +526,10 @@
       </div>
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3v12a3 3 0 0 0 3 3h6"/><circle cx="6" cy="3" r="0" /><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M18 8v4a3 3 0 0 1-3 3"/></svg>
-        <h3>Merges are re-verified, one at a time</h3>
-        <p><code class="kbd">integrate.sh</code> lands multiple confirmed fix branches into a target
-          branch serially, re-running proof after each merge — outside the core loop, and always
-          gated by a human.</p>
+        <h3>Integration preserves proof</h3>
+        <p>Closeout locally integrates eligible fixes under the selected fix mode. Each attempt
+          preserves its evidence, verifies the combined source, and rejects paths that could
+          overwrite the proof before switching trees.</p>
       </div>
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
@@ -535,9 +541,9 @@
       <div class="ncard reveal">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4"/><path d="M15 3h4a2 2 0 0 1 2 2v4"/><path d="M9 21H5a2 2 0 0 1-2-2v-4"/><path d="M15 21h4a2 2 0 0 0 2-2v-4"/><circle cx="12" cy="12" r="3"/></svg>
         <h3>Analyzer hints, opt-in</h3>
-        <p>Turn on <code class="kbd">.analyzers.enabled</code> and installed static analyzers —
-          semgrep, gosec, bandit, and others already on your machine — seed investigation.
-          They never confirm a bug or authorize a fix. Off by default.</p>
+        <p>Explicit CodeQL/Semgrep configurations run through the execution provider and import
+          captured SARIF evidence. No automatic tool discovery or rule downloads. Hints guide
+          investigation; they never confirm a bug or authorize a fix.</p>
       </div>
     </div>
   </div>
@@ -545,17 +551,16 @@
 
 <hr class="rule" />
 
-<!-- ============ MOAT: WHOLE-REPO CONTEXT ============ -->
+<!-- ============ BOUNDED INVESTIGATION ============ -->
 <section aria-labelledby="moat-h2">
   <div class="wrap">
     <div class="sec-head reveal">
-      <span class="eyebrow">The moat: whole-repo context</span>
-      <h2 id="moat-h2">It sees the bugs a single prompt can't.</h2>
-      <p class="lede">Before it hunts, bugsweep distills your architecture — trust boundaries, sensitive sinks,
-        and the call chains that reach them — and primes itself with a curated, stack-specific anti-pattern
-        catalog (JS/Node, TypeScript, React, Python, Go, Kotlin, Swift/iOS, and more). That's how it catches
-        <b>cross-file</b> bugs: a missing authorization check three hops from the sink, contract drift across a
-        module boundary, untrusted input that only turns dangerous two files downstream.</p>
+      <span class="eyebrow">New in v0.8.0 · bounded context</span>
+      <h2 id="moat-h2">Build context. Hunt. Review. Checkpoint.</h2>
+      <p class="lede">Configurable file and byte limits split the work into deterministic slices.
+        Each admitted slice completes its investigation before the next is modeled; deferred work
+        remains visible in a partial report. Trace cross-file behavior through <b>lifecycle,
+        shared state, transactions, API contracts, error propagation, and security boundaries.</b></p>
     </div>
 
     <div class="readout-grid">
@@ -577,21 +582,20 @@
   <span class="c-brass">"follow_up"</span>: <span class="c-muted">"where to look next"</span>
 }
 
-<span class="c-safe">✔ always written by finalize.sh — degraded:true if the</span>
-<span class="c-safe">  full reducer can't run, never silently absent</span></pre>
+<span class="c-safe">Audit coverage and operational closeout are separate.</span>
+<span class="c-muted">A partial or blocked run is not a completed audit.</span></pre>
         </div>
       </div>
 
       <div class="story reveal">
-        <h3>No prose for a scheduler to parse</h3>
-        <p>A scheduler — cron, launchd, a CI job, a nightshift dispatcher — can branch on
-          <code class="kbd">run-summary.json</code> without an LLM in the loop.
-          <code class="kbd">schemas/run-summary.schema.json</code> is the contract;
-          <code class="kbd">scripts/summarize.sh</code> is what fills it in from the run ledger.</p>
-        <p>It ignores the noise on purpose, too. Style, formatting, naming, unused imports, dependency
-          versions — <b>that's a linter's job.</b> bugsweep spends its attention on bugs that actually
-          fault at runtime.</p>
-        <span class="tag">◆ a contract a fleet can trust, not a transcript to read at breakfast</span>
+        <h3>Context from the checkout being audited</h3>
+        <p>Run-local indexes follow the audited worktree. Changes to directed call edges or
+          entry points invalidate affected reachability conclusions, even when the node list
+          stays the same.</p>
+        <p>The structured report separates audited coverage, deferred work, and findings.
+          Modeling a file does not count as auditing it. Investigation stays focused on
+          <b>concrete runtime failures with testable triggers.</b></p>
+        <span class="tag">◆ context → hunt → review → checkpoint</span>
       </div>
     </div>
   </div>
@@ -604,12 +608,13 @@
   <div class="wrap">
     <div class="sec-head reveal">
       <span class="eyebrow">Coverage-first · not a diff scanner</span>
-      <h2 id="deepen-h2">It gets deeper every night.</h2>
+      <h2 id="deepen-h2">Resume from recorded audit evidence.</h2>
       <p class="lede">The whole repo—or the path you explicitly select—stays in scope. <code class="kbd">.bugsweep/state/</code> persists an
         audit log, a risk map, attributed signal outcomes, and the anti-pattern catalog version across
         runs. Each run reprioritizes toward the never-audited, stale, content-changed, high-risk, and
         actively impacted—while fixed weights keep production outcomes from silently changing policy.
-        <b>The repo is never permanently "done" while a frontier remains.</b></p>
+        <b>Exact audit membership is stored separately from the short display summary, so
+        larger histories do not make audited files look new.</b></p>
     </div>
 
     <div class="deepen-grid">
@@ -667,58 +672,43 @@
 <section aria-labelledby="bench-h2">
   <div class="wrap">
     <div class="sec-head reveal">
-      <span class="eyebrow">Benchmark harness · pilot evidence</span>
-      <h2 id="bench-h2">A harness built to be hard to fool.</h2>
-      <p class="lede"><code class="kbd">bench/</code> runs bugsweep headless against throwaway clones of dated,
-        real CVE-class bugs pinned to a pre-fix commit, scores the output through an independent judge, and
-        refuses to round a small sample up into a rate.</p>
-    </div>
-
-    <ul class="method reveal">
-      <li><span class="m-ic">▸</span><span class="m-what"><b>Hardened container</b> — non-root UID 65534, <code class="kbd">--read-only</code> root + tmpfs, <code class="kbd">--cap-drop=ALL</code>, no-new-privileges, CPU/memory/PID caps.</span></li>
-      <li><span class="m-ic">▸</span><span class="m-what"><b>Pinned pre-fix commit</b> — each case clones a dated repo at a known-vulnerable SHA and fails closed if <code class="kbd">HEAD</code> drifts.</span></li>
-      <li><span class="m-ic">▸</span><span class="m-what"><b>One network path</b> — an nginx egress reverse proxy to a single hardcoded upstream (<code class="kbd">api.anthropic.com</code>) on an <code class="kbd">--internal</code> Docker network. Nothing else is reachable.</span></li>
-      <li><span class="m-ic">▸</span><span class="m-what"><b>Two-stage scoring</b> — a hard file-overlap gate, then a cross-model LLM judge (a different vendor's model grading Claude's findings), with optional human calibration.</span></li>
-      <li><span class="m-ic">▸</span><span class="m-what"><b>Reported with rigor</b> — detection rate with a 95% Wilson confidence interval, a paired delta against a no-skill <code class="kbd">claude -p</code> baseline, and a contamination split by disclosure date.</span></li>
-      <li><span class="m-ic">▸</span><span class="m-what"><b>Corpus</b> — a 9-case CVE-class corpus across Go, JavaScript, Python, and TypeScript.</span></li>
-    </ul>
-
-    <div class="callout reveal">
-      <div class="cl-kicker">Read this before the numbers below</div>
-      <p>Every leaderboard the harness has produced is labeled <b>inconclusive</b>. Reporting a rate requires
-        at least 6 completed post-cutoff cases; that floor has never been reached — most cases still error or
-        skip inside the locked-down container. <b>There is no aggregate detection rate here.</b> What follows
-        are directional, single-case (k=1) pilot results, not a statistically powered rate.</p>
+      <span class="eyebrow">Evaluation · evidence status</span>
+      <h2 id="bench-h2">Measure verified bugs, time, and cost.</h2>
+      <p class="lede">The evaluation harness compares Claude and Codex separately with frozen
+        source, prompts, and budgets. Its reduced detect-only task does not measure the full
+        operational skill. Optional context on/off and cold/warm comparisons record provenance
+        and accounting for a paired experiment.</p>
     </div>
 
     <div class="bench-grid">
       <div class="bcard reveal">
-        <span class="case-badge">k=1 · inconclusive</span>
-        <h3>js-cookie — prototype pollution</h3>
-        <span class="runner">runner: claude-opus-4-8</span>
-        <p class="result">bugsweep <b>detected</b> the real, post-cutoff bug. The no-skill baseline detected it too.</p>
-        <p class="caveat">Directional single-case result — not a powered detection rate.<br><span class="src">results/20260530T113232Z/</span></p>
+        <span class="case-badge">Verification</span>
+        <h3>Unique runtime defects</h3>
+        <p class="result">A candidate needs an independently checked runtime oracle and source
+          evidence. Repeated reports of the same defect count once.</p>
       </div>
       <div class="bcard reveal">
-        <span class="case-badge">k=1 · inconclusive</span>
-        <h3>Nezha — SSRF</h3>
-        <span class="runner">runner: claude-opus-4-8</span>
-        <p class="result">bugsweep <b>detected</b> it. The no-skill <code class="kbd">claude -p</code> baseline did <b>not</b> — a +100pp paired delta on this one case.</p>
-        <p class="caveat">Directional single-case result — not a powered detection rate.<br><span class="src">results/20260530T113650Z/</span></p>
+        <span class="case-badge">Precision and timing</span>
+        <h3>Review the findings</h3>
+        <p class="result">False positives require human adjudication. Time to the first verified
+          finding remains unavailable until an external verifier records it.</p>
       </div>
       <div class="bcard reveal">
-        <span class="case-badge">k=1 · inconclusive</span>
-        <h3>js-cookie — precision</h3>
-        <span class="runner">runner: claude-opus-4-7</span>
-        <p class="result">6 confirmed findings; 5 were sampled for adjudication and <b>5/5</b> were judged real — 100% precision on that single case-run. Baseline completed 0 cases.</p>
-        <p class="caveat">Scoped to one run, not a general precision rate.<br><span class="src">results/20260529T201923Z/</span></p>
+        <span class="case-badge">Equal budgets</span>
+        <h3>Include the whole cost</h3>
+        <p class="result">Account for context building, every review stage, and failed or skipped
+          runs. Missing usage and cost stay unknown.</p>
       </div>
     </div>
 
-    <p class="lede reveal" style="margin-top:2rem;font-size:.98rem">
-      These are directional single-case results (k=1), not a statistically powered detection rate: the harness
-      labels every pilot run <b style="color:var(--ink)">inconclusive</b> until at least 6 post-cutoff cases complete.
-    </p>
+    <div class="callout reveal">
+      <div class="cl-kicker">What is not established yet</div>
+      <p><b>No measured detection or precision improvement is claimed for v0.8.0.</b>
+        Fresh runtime oracles, live paired runs, and calibrated human review remain incomplete.
+        Historical pilots and passing regression tests do not validate the current evaluation protocol.
+        Candidate counts, scanned files, and model confidence do not establish better detection.</p>
+      <p>Read the <a href="https://github.com/shanemhamilton/bugsweep/blob/v0.8.0/bench/README.md">evaluation protocol and evidence limits</a>.</p>
+    </div>
   </div>
 </section>
 
@@ -728,26 +718,34 @@
 <section class="install" id="install" aria-labelledby="install-h2">
   <div class="wrap">
     <span class="eyebrow" style="justify-content:center">Get started</span>
-    <h2 id="install-h2" style="margin-top:.9rem">One command. No package install.</h2>
-    <p>Installs as a skill for Claude Code and Codex — auto-detects <code class="kbd">~/.claude</code> and
-      <code class="kbd">~/.codex</code>. Then just ask it to <em>find bugs</em>, or run
-      <code class="kbd">/bugsweep --autonomous</code> for the overnight hunt. Python 3 enables
-      exact audit checkpoints and the full deterministic priority report; without it, coverage
-      fails closed and the run emits explicit degraded output.</p>
+    <h2 id="install-h2" style="margin-top:.9rem">Install v0.8.0. Start with detection.</h2>
+    <p>Requires <b>Python 3.12+</b> and <code class="kbd">jsonschema==4.26.0</code>.
+      The installer checks these prerequisites without installing them. Download and inspect
+      the script, then choose Claude Code, Codex, or both.</p>
 
     <div class="cmd">
       <span class="prompt">$</span>
-      <code id="installcmd">curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh | bash</code>
-      <button class="copy" id="copybtn" type="button" aria-label="Copy install command" aria-live="polite">COPY</button>
+      <code id="installcmd">curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/v0.8.0/install.sh -o /tmp/bugsweep-install.sh</code>
+      <button class="copy" id="copybtn" type="button" aria-label="Copy download command" aria-live="polite">COPY</button>
     </div>
+    <p class="fine-note">After inspecting the downloaded script, run:</p>
+    <div class="cmd" style="margin-top:1rem">
+      <span class="prompt">$</span>
+      <code>bash /tmp/bugsweep-install.sh --claude --version v0.8.0</code>
+    </div>
+    <p class="fine-note">Replace <code class="kbd">--claude</code> with <code class="kbd">--codex</code>
+      or <code class="kbd">--all</code> to choose the host. Both the script and payload above are pinned
+      to <a href="https://github.com/shanemhamilton/bugsweep/releases/tag/v0.8.0">v0.8.0</a>.
+      For the latest stable release, use the <a href="https://github.com/shanemhamilton/bugsweep#install">current install instructions</a>.
+      <code class="kbd">--edge</code> explicitly selects development main.</p>
 
     <div class="sub-cmds">
-      <b>/bugsweep</b> detect-only &nbsp;·&nbsp; <b>--fix</b> confirm &amp; patch &nbsp;·&nbsp; <b>--approve</b> ask first &nbsp;·&nbsp; <b>--autonomous</b> loop all night
+      <b>/bugsweep</b> detect and record &nbsp;·&nbsp; <b>--fix</b> verify and fix &nbsp;·&nbsp;
+      <b>--approve</b> ask before edits &nbsp;·&nbsp; <b>--autonomous</b> repeat within configured caps
     </div>
-    <p class="fine-note">This command downloads the bootstrap from <code class="kbd">main</code>; the installed payload defaults to the newest stable release.
-      <code class="kbd">--claude</code> / <code class="kbd">--codex</code> / <code class="kbd">--all</code> to target an install
-      &nbsp;·&nbsp; <code class="kbd">--version vX.Y.Z</code> to pin — see
-      <a href="https://github.com/shanemhamilton/bugsweep/releases">Releases</a> for tagged versions. The installer defaults to the newest stable release; use <code class="kbd">--edge</code> only to select the current main commit.</p>
+    <p>Fixes require an external execution policy and native review capability. Without them,
+      source investigation can continue in detect-only mode. Existing installations can use
+      <code class="kbd">/bugsweep --update</code> before starting a new audit.</p>
 
     <div class="cta-row" style="justify-content:center;margin-top:2rem">
       <a class="btn btn-primary" href="https://github.com/shanemhamilton/bugsweep">Read the docs on GitHub</a>
