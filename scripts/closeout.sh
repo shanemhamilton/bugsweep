@@ -10,7 +10,7 @@ outcome="${2:-}"
 [ -n "$run_dir" ] && [ -d "$run_dir" ] \
   || die "usage: closeout.sh <RUN_DIR> <landed|recorded>"
 case "$outcome" in landed|recorded) ;; *) die "outcome must be landed or recorded" ;; esac
-run_dir="$(cd "$run_dir" && pwd)"
+run_dir="$(cd "$run_dir" && pwd -P)"
 [ -f "${run_dir}/state.env" ] || die "missing ${run_dir}/state.env"
 
 # state.env is data. Validate and read it through the inert allowlisted parser;
@@ -18,7 +18,13 @@ run_dir="$(cd "$run_dir" && pwd)"
 _lifecycle_py="${BUGSWEEP_SCRIPT_DIR}/_terminal_lifecycle.py"
 _state_get() { python3 -B "$_lifecycle_py" get "$run_dir" "$1"; }
 invoking_repo_root="$BUGSWEEP_REPO_ROOT"
+if ! invoking_repo_identity="$(cd "$invoking_repo_root" 2>/dev/null && pwd -P)"; then
+  die "invoking repository root is unavailable"
+fi
 BUGSWEEP_REPO_ROOT="$(_state_get BUGSWEEP_REPO_ROOT)"
+if ! state_repo_identity="$(cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null && pwd -P)"; then
+  die "run state repository root is unavailable"
+fi
 BUGSWEEP_RUN_ID="$(_state_get BUGSWEEP_RUN_ID)"
 BUGSWEEP_TS="$(_state_get BUGSWEEP_TS)"
 BUGSWEEP_BRANCH="$(_state_get BUGSWEEP_BRANCH)"
@@ -27,7 +33,7 @@ BUGSWEEP_WORKTREE="$(_state_get BUGSWEEP_WORKTREE)"
 BUGSWEEP_MODE="$(_state_get BUGSWEEP_MODE)"
 
 require_git_repo
-[ "${BUGSWEEP_REPO_ROOT:-}" = "$invoking_repo_root" ] \
+[ "$state_repo_identity" = "$invoking_repo_identity" ] \
   || die "run state belongs to a different repository"
 case "$BUGSWEEP_BRANCH" in bugsweep/*) ;; *) die "refusing non-bugsweep branch: $BUGSWEEP_BRANCH" ;; esac
 
@@ -190,11 +196,12 @@ verify_landed_evidence() {
   case "$referee_votes" in ''|*[!0-9]*|0) referee_votes=3 ;; esac
   case "$referee_votes_cap" in ''|*[!0-9]*|0) referee_votes_cap=5 ;; esac
   [ "$referee_votes" -le "$referee_votes_cap" ] || referee_votes="$referee_votes_cap"
-  python3 - "$run_dir" "$BUGSWEEP_BRANCH" "$BUGSWEEP_ORIG_BRANCH" "${BUGSWEEP_MODE:-detect}" "$referee_votes" "${BUGSWEEP_WORKTREE:-}" "$BUGSWEEP_REPO_ROOT" "$BUGSWEEP_SCRIPT_DIR" <<'PY'
+  python3 - "$run_dir" "$BUGSWEEP_BRANCH" "$BUGSWEEP_ORIG_BRANCH" "${BUGSWEEP_MODE:-detect}" "$referee_votes" "$run_id" "${BUGSWEEP_WORKTREE:-}" "$BUGSWEEP_REPO_ROOT" "$BUGSWEEP_SCRIPT_DIR" <<'PY'
 import hashlib, json, pathlib, subprocess, sys
-run, branch, target, mode, required_votes = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
-source_root = pathlib.Path(sys.argv[6] or sys.argv[7]).resolve()
-schema_path = pathlib.Path(sys.argv[8]).parent / "schemas" / "run-summary.schema.json"
+run, branch, target, mode, required_votes, run_id = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), sys.argv[6]
+source_root = pathlib.Path(sys.argv[7] or sys.argv[8]).resolve()
+script_dir = pathlib.Path(sys.argv[9]).resolve()
+schema_path = script_dir.parent / "schemas" / "run-summary.schema.json"
 try:
     integration = json.loads((run / "integrate-results.json").read_text())
 except (FileNotFoundError, json.JSONDecodeError):
@@ -267,6 +274,9 @@ for fix_index, event in enumerate(events):
 # requires coordinator-native review, executable repro, and suite receipts
 # bound to the frozen final source manifest. Missing producers fail closed.
 try:
+    # Import only from the trusted installed skill/repository parent, independent
+    # of the caller's working directory or ambient PYTHONPATH.
+    sys.path.insert(0, str(script_dir.parent))
     from scripts._proof import validate_fix_proof, validate_fix_reverification, validate_suite_receipt
     from scripts._review_evidence import validate_review_set
     from scripts._execution import _capture_source_files
@@ -310,7 +320,17 @@ try:
             or integration_suite.get("source_manifest_sha256") != integration_sha256
             or integration_suite.get("source_manifest_sha256") != row.get("integration_source_manifest_sha256")):
         raise ValueError("integration receipt identity mismatch")
-    integrated = validate_suite_receipt({"schema_version": 1, "run_id": run_id, "phase": "verify", "source_file_sha256": integration_sources, "checks": integration_suite.get("checks"), "regressions": integration_suite.get("regressions", []), "proof_error": integration_suite.get("proof_errors", False)}, run_id, integration_sources)
+    integrated = validate_suite_receipt({
+        "schema_version": 1,
+        "run_id": run_id,
+        "phase": "verify",
+        "source_file_sha256": integration_sources,
+        "source_manifest_sha256": integration_suite.get("source_manifest_sha256"),
+        "checks": integration_suite.get("checks"),
+        "regressions": integration_suite.get("regressions", []),
+        "proof_error": integration_suite.get("proof_error", True),
+        "execution_policy_mode": integration_suite.get("execution_policy_mode"),
+    }, run_id, integration_sources)
     if not integrated.get("complete"):
         raise ValueError("integration suite proof incomplete: " + ", ".join(integrated.get("reasons", [])))
     for bug in summary.get("fixed", []):

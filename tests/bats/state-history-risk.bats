@@ -303,3 +303,153 @@ JSON
   [ "$status" -eq 0 ]
   [ -f "${run_dir}/prior-coverage.json" ]
 }
+
+@test "prime: exact audit membership survives the 200-file display cap" {
+  mkdir -p "${REPO}/.bugsweep/state"
+  local i catalog_version
+  catalog_version="$(bash "$STATE_SH" catalog-version)"
+  for i in $(seq 1 250); do
+    printf '{"run":1,"run_id":"r1","catalog_version":"%s","file":"src/file%03d.py","outcome":"audited","head":"head","blob_oid":"blob%03d"}\n' "$catalog_version" "$i" "$i" >> "${REPO}/.bugsweep/state/audit-log.jsonl"
+  done
+
+  local run_dir="${BATS_TMP}/run-1"
+  mkdir -p "$run_dir"
+  run bash "$STATE_SH" prime "$run_dir"
+  [ "$status" -eq 0 ]
+
+  python3 - "${run_dir}/prior-coverage.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["files_audited_current_catalog_count"] == 250, d
+assert len(d["files_audited_current_catalog"]) == 200, d
+assert d["files_audited_current_catalog_exact"] == [], d
+assert d["audit_membership"]["status"] == "exact", d
+assert d["audit_membership"]["path"] == "audit-membership.json", d
+PY
+  [ -f "${REPO}/.bugsweep/state/audit-index.json" ]
+  [ -f "${REPO}/.bugsweep/state/audit-membership.json" ]
+  python3 - "${REPO}/.bugsweep/state/audit-membership.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["status"] == "exact", d
+assert len(d["files_audited_current_catalog"]) == 250, d
+assert "src/file001.py" in d["files_audited_current_catalog"], d
+PY
+}
+
+@test "prime: corrupt derived audit index is repaired from the authoritative log" {
+  mkdir -p "${REPO}/.bugsweep/state"
+  printf '%s\n' '{"run":1,"run_id":"r1","catalog_version":"1","file":"src/a.py","outcome":"audited","head":"head","blob_oid":"blob"}' > "${REPO}/.bugsweep/state/audit-log.jsonl"
+  printf '%s\n' '{malformed index}' > "${REPO}/.bugsweep/state/audit-index.json"
+
+  local run_dir="${BATS_TMP}/run-corrupt"
+  mkdir -p "$run_dir"
+  run bash "$STATE_SH" prime "$run_dir"
+  [ "$status" -eq 0 ]
+  python3 - "${run_dir}/prior-coverage.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["audit_membership"]["status"] == "exact", d
+assert d["files_audited_current_catalog_exact"] == [], d
+PY
+  python3 - "${REPO}/.bugsweep/state/audit-index.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["schema"] == 1, d
+assert d["membership_status"] == "exact", d
+assert d["records"]["src/a.py"]["head"] == "head", d
+PY
+}
+
+@test "prime: conflicting equal ordinals remain unknown in either log permutation" {
+  mkdir -p "${REPO}/.bugsweep/state"
+  local catalog_version
+  catalog_version="$(bash "$STATE_SH" catalog-version)"
+  local row_a row_b
+  row_a="{\"run\":7,\"run_id\":\"run-a\",\"catalog_version\":\"${catalog_version}\",\"file\":\"src/conflict.py\",\"outcome\":\"audited\",\"head\":\"head-a\",\"blob_oid\":\"blob-a\"}"
+  row_b="{\"run\":7,\"run_id\":\"run-b\",\"catalog_version\":\"different\",\"file\":\"src/conflict.py\",\"outcome\":\"audited\",\"head\":\"head-b\",\"blob_oid\":\"blob-b\"}"
+
+  printf '%s\n%s\n' "$row_a" "$row_b" > "${REPO}/.bugsweep/state/audit-log.jsonl"
+  local first_run="${BATS_TMP}/run-conflict-a"
+  mkdir -p "$first_run"
+  run bash "$STATE_SH" prime "$first_run"
+  [ "$status" -eq 0 ]
+  python3 - "${first_run}/prior-coverage.json" "${REPO}/.bugsweep/state/audit-membership.json" <<'PY'
+import json, sys
+for path in sys.argv[1:]:
+    d = json.load(open(path))
+    assert d.get("audit_membership", {"status": d.get("status")})["status"] == "unknown", d
+PY
+
+  printf '%s\n%s\n' "$row_b" "$row_a" > "${REPO}/.bugsweep/state/audit-log.jsonl"
+  local second_run="${BATS_TMP}/run-conflict-b"
+  mkdir -p "$second_run"
+  run bash "$STATE_SH" prime "$second_run"
+  [ "$status" -eq 0 ]
+  python3 - "${second_run}/prior-coverage.json" "${REPO}/.bugsweep/state/audit-membership.json" <<'PY'
+import json, sys
+for path in sys.argv[1:]:
+    d = json.load(open(path))
+    assert d.get("audit_membership", {"status": d.get("status")})["status"] == "unknown", d
+PY
+}
+
+@test "prime: legacy audit rows retain membership with unknown content fingerprint" {
+  mkdir -p "${REPO}/.bugsweep/state"
+  local catalog_version
+  catalog_version="$(bash "$STATE_SH" catalog-version)"
+  printf '{"run":1,"run_id":"r1","catalog_version":"%s","file":"src/legacy.py","outcome":"audited"}\n' \
+    "$catalog_version" > "${REPO}/.bugsweep/state/audit-log.jsonl"
+
+  local run_dir="${BATS_TMP}/run-legacy"
+  mkdir -p "$run_dir"
+  run bash "$STATE_SH" prime "$run_dir"
+  [ "$status" -eq 0 ]
+  python3 - "${run_dir}/prior-coverage.json" "${REPO}/.bugsweep/state/audit-index.json" <<'PY'
+import json, sys
+summary = json.load(open(sys.argv[1]))
+index = json.load(open(sys.argv[2]))
+assert summary["audit_membership"]["status"] == "exact", summary
+assert summary["files_audited_current_catalog"] == ["src/legacy.py"], summary
+record = index["records"]["src/legacy.py"]
+assert record["fingerprint_status"] == "unknown", record
+PY
+}
+
+@test "prime: an incomplete audit suffix stays unknown until complete" {
+  mkdir -p "${REPO}/.bugsweep/state"
+  local catalog_version
+  catalog_version="$(bash "$STATE_SH" catalog-version)"
+  # Leave the final JSONL record without its newline. The first prime must
+  # report unknown without publishing partial membership.
+  printf '{"run":1,"run_id":"r1","catalog_version":"%s","file":"src/a.py","outcome":"audited","head":"head","blob_oid":"blob"}' "$catalog_version" > "${REPO}/.bugsweep/state/audit-log.jsonl"
+
+  local first_run="${BATS_TMP}/run-partial-1"
+  mkdir -p "$first_run"
+  run bash "$STATE_SH" prime "$first_run"
+  [ "$status" -eq 0 ]
+  python3 - "${first_run}/prior-coverage.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["audit_membership"]["status"] == "unknown", d
+assert d["files_audited_current_catalog_exact"] == [], d
+PY
+
+  printf '\n' >> "${REPO}/.bugsweep/state/audit-log.jsonl"
+  local second_run="${BATS_TMP}/run-partial-2"
+  mkdir -p "$second_run"
+  run bash "$STATE_SH" prime "$second_run"
+  [ "$status" -eq 0 ]
+  python3 - "${second_run}/prior-coverage.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["audit_membership"]["status"] == "exact", d
+assert d["files_audited_current_catalog_exact"] == [], d
+PY
+  python3 - "${REPO}/.bugsweep/state/audit-membership.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["status"] == "exact", d
+assert d["files_audited_current_catalog"] == ["src/a.py"], d
+PY
+}

@@ -82,10 +82,22 @@ case "$bs_scope" in
   /*|..|../*|*/..|*/../*) die "scope must be a repository-relative tracked path" ;;
 esac
 
+target_root="$BUGSWEEP_TARGET_ROOT"
+[ -n "$target_root" ] || die "No audited target root could be resolved. Set BUGSWEEP_TARGET_ROOT or run inside a git checkout."
+cd "$target_root" 2>/dev/null || die "Cannot enter audited target root: $target_root"
 require_git_repo
+# Lifecycle state compares run-directory identity after resolving filesystem
+# aliases. Record the physical audited root and use a physical shared-root
+# spelling for newly-created run/worktree paths so a macOS /var -> /private/var
+# alias cannot make finalize or closeout reject its own state. Keep the common
+# root variable's historical spelling for shared-state compatibility.
+target_root="$(pwd -P)"
+recorded_repo_root="$(cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null && pwd -P)" \
+  || die "Cannot resolve Bugsweep repository root: $BUGSWEEP_REPO_ROOT"
+recorded_worktrees_root="${recorded_repo_root}/.bugsweep/worktrees"
 
 if [ "$bs_scope" != "." ] \
-  && [ -z "$(git -C "$BUGSWEEP_REPO_ROOT" --literal-pathspecs ls-files -- "$bs_scope")" ]; then
+  && [ -z "$(git -C "$target_root" --literal-pathspecs ls-files -- "$bs_scope")" ]; then
   die "scope contains no tracked files: $bs_scope"
 fi
 
@@ -206,7 +218,7 @@ deadline_epoch=$(( start_epoch + (max_runtime_minutes * 60) ))
 # Anchored to the MAIN repo root (not CWD, and not the linked worktree's own
 # root) so every concurrent subagent's run dir lands in one shared, discoverable
 # location, matching where .bugsweep/state/ and .bugsweep/worktrees/ live.
-run_dir="${BUGSWEEP_REPO_ROOT}/.bugsweep/run-${bs_id}"
+run_dir="${recorded_repo_root}/.bugsweep/run-${bs_id}"
 mkdir -p "$run_dir"
 
 # --- Persist run state + acquire this run's lease (bugsweep-p74) --------------
@@ -228,6 +240,7 @@ _bsw_persist_run_state_and_lease() {
     _bsw_env_kv BUGSWEEP_RUN_ID "$bs_id"
     _bsw_env_kv BUGSWEEP_RUN_DIR "$run_dir"
     _bsw_env_kv BUGSWEEP_REPO_ROOT "$BUGSWEEP_REPO_ROOT"
+    _bsw_env_kv BUGSWEEP_TARGET_ROOT "$target_root"
     _bsw_env_kv BUGSWEEP_BRANCH "$branch"
     _bsw_env_kv BUGSWEEP_ORIG_BRANCH "$orig_branch"
     _bsw_env_kv BUGSWEEP_ORIG_HEAD "$orig_head"
@@ -273,8 +286,8 @@ worktree_path=""
 if [ "$bs_worktree" = "yes" ]; then
   # --- Worktree mode: isolated working dir, NEVER touch the user's tree ------
   branch="bugsweep/${bs_id}"
-  worktree_path="${BUGSWEEP_WORKTREES_DIR}/${bs_id}"
-  mkdir -p "${BUGSWEEP_WORKTREES_DIR}"
+  worktree_path="${recorded_worktrees_root}/${bs_id}"
+  mkdir -p "${recorded_worktrees_root}"
   stash_ref="none"
 
   # BLOCKER A fix (bugsweep-8d0 dataloss review): persist state.env (with
@@ -318,6 +331,13 @@ if [ "$bs_worktree" = "yes" ]; then
     rm -rf "$worktree_path" "$run_dir" 2>/dev/null || true
     die "Could not create worktree '$worktree_path' on branch '$branch'. No changes made to your working tree."
   fi
+  # The run now audits the newly-created linked checkout. Shared bookkeeping remains anchored
+  # at BUGSWEEP_REPO_ROOT, but every extractor receives this explicit target root.
+  target_root="$worktree_path"
+  target_state_tmp="${run_dir}/state.env.target-root.tmp"
+  grep -v '^BUGSWEEP_TARGET_ROOT=' "${run_dir}/state.env" > "$target_state_tmp" || true
+  _bsw_env_kv BUGSWEEP_TARGET_ROOT "$target_root" >> "$target_state_tmp"
+  mv -f -- "$target_state_tmp" "${run_dir}/state.env"
   log "Working in isolated worktree: $worktree_path (branch: $branch)"
 else
   # --- Default mode: original single-run-per-tree contract, unchanged --------
@@ -355,7 +375,8 @@ fi
 # can put never-audited + stale + high-risk files on the critical-tier frontier.
 # A broken/empty cache degrades to the frozen invocation scope; it must never fail preflight.
 prior_summary=""
-prior_summary="$(bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" prime "$run_dir" 2>/dev/null \
+prior_summary="$(BUGSWEEP_TARGET_ROOT="$target_root" BUGSWEEP_RUN_DIR="$run_dir" \
+  bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" prime "$run_dir" 2>/dev/null \
   | sed -n 's/^SUMMARY=//p' | head -1 || true)"
 if [ -n "$prior_summary" ]; then
   log "Prior coverage: ${prior_summary}"
@@ -368,6 +389,7 @@ fi
 # list of sibling files that context-build folds into the critical-tier frontier.
 : > "${run_dir}/variant-requeue.txt"
 if [ -f "${BUGSWEEP_SCRIPT_DIR}/variants.sh" ]; then
+  BUGSWEEP_TARGET_ROOT="$target_root" BUGSWEEP_RUN_DIR="$run_dir" \
   bash "${BUGSWEEP_SCRIPT_DIR}/variants.sh" replay "$run_dir" 2>/dev/null \
     | sed -n 's/^REQUEUE=//p' > "${run_dir}/variant-requeue.txt" 2>/dev/null || true
   vq="$(wc -l < "${run_dir}/variant-requeue.txt" 2>/dev/null | tr -d ' ' || echo 0)"
@@ -378,21 +400,16 @@ if [ -f "${BUGSWEEP_SCRIPT_DIR}/variants.sh" ]; then
   fi
 fi
 
-# --- Shared index builds (bugsweep-p74: build-lock, never race) ---------------
-# symbols.sh / graph.sh / reachability.sh all build/refresh indexes that live
-# under the ONE shared .bugsweep/ dir (anchored to the main repo root, same as
-# .bugsweep/state/). With up to 5 --worktree subagents priming at once, letting
-# them all write these files concurrently would tear/corrupt them. All three
-# are already best-effort/non-fatal, so the lock is short and cooperative: if
-# another subagent already holds it, we skip the (re)build entirely rather than
-# waiting — a slightly-stale shared index is fine, since these feed ranking
-# heuristics, not correctness-critical safety logic. The BUILD happens once;
-# whoever gets the lock first refreshes it for everyone.
-index_lock="${BUGSWEEP_REPO_ROOT:+${BUGSWEEP_REPO_ROOT}/.bugsweep/.index-build.lock}"
+# --- Run-local index builds (bugsweep-p74: build-lock, never race) --------------
+# symbols.sh / graph.sh / reachability.sh write immutable artifacts beneath this
+# run's index directory, bound to the explicit audited checkout. The lock only
+# protects this run's producer sequence; concurrent targets use separate run dirs.
+index_lock="${run_dir}/.index-build.lock"
 if [ -n "$index_lock" ] && bugsweep_lock_acquire "$index_lock" 3; then
   # --- Build/refresh the symbol index (WU0): stable IDs for the graph/justification ----
   # layers. Incremental (only changed files re-parsed). Best-effort, never fatal.
   if [ -f "${BUGSWEEP_SCRIPT_DIR}/symbols.sh" ]; then
+    BUGSWEEP_TARGET_ROOT="$target_root" BUGSWEEP_RUN_DIR="$run_dir" \
     bash "${BUGSWEEP_SCRIPT_DIR}/symbols.sh" build >/dev/null 2>&1 || log "symbols: index build skipped (non-fatal)."
   fi
 
@@ -401,6 +418,7 @@ if [ -n "$index_lock" ] && bugsweep_lock_acquire "$index_lock" 3; then
   # Built AFTER symbols.sh (callers join to WU0 ids). Best-effort: a failure leaves the
   # graph absent so WU3 falls back to sink+severity ordering — it never fails preflight.
   if [ -f "${BUGSWEEP_SCRIPT_DIR}/graph.sh" ]; then
+    BUGSWEEP_TARGET_ROOT="$target_root" BUGSWEEP_RUN_DIR="$run_dir" \
     bash "${BUGSWEEP_SCRIPT_DIR}/graph.sh" build >/dev/null 2>&1 || log "graph: build skipped (non-fatal)."
   fi
 
@@ -410,17 +428,19 @@ if [ -n "$index_lock" ] && bugsweep_lock_acquire "$index_lock" 3; then
   # leaves exposure absent/empty so context-build keeps its sink/risk ordering (sinks stay
   # unconditionally in scope); it never fails preflight.
   if [ -f "${BUGSWEEP_SCRIPT_DIR}/reachability.sh" ]; then
+    BUGSWEEP_TARGET_ROOT="$target_root" BUGSWEEP_RUN_DIR="$run_dir" \
     bash "${BUGSWEEP_SCRIPT_DIR}/reachability.sh" build >/dev/null 2>&1 || log "reachability: build skipped (non-fatal)."
   fi
 
   bugsweep_lock_release "$index_lock"
 else
-  log "shared index build already in progress by another run — skipping rebuild (using existing index, non-fatal)."
+  log "this run's index build already in progress — skipping rebuild (non-fatal)."
 fi
 
 # rank writes into THIS run's own run_dir (not the shared index), so it's safe
 # to run outside the build-lock even when the build itself was skipped above.
 if [ -f "${BUGSWEEP_SCRIPT_DIR}/reachability.sh" ]; then
+  BUGSWEEP_TARGET_ROOT="$target_root" BUGSWEEP_RUN_DIR="$run_dir" \
   bash "${BUGSWEEP_SCRIPT_DIR}/reachability.sh" rank "$run_dir" >/dev/null 2>&1 || log "reachability: rank skipped (non-fatal)."
 fi
 
@@ -430,15 +450,15 @@ fi
 # `cleared` hint into exposure.json. Writes <RUN_DIR>/reopened-conclusions.txt — files that
 # must rejoin the frontier. Fail-closed (any missing input -> reopen); never fails preflight.
 if [ -f "${BUGSWEEP_SCRIPT_DIR}/conclusions.sh" ]; then
-  reopened_summary="$(bash "${BUGSWEEP_SCRIPT_DIR}/conclusions.sh" prime "$run_dir" 2>/dev/null \
+  reopened_summary="$(BUGSWEEP_TARGET_ROOT="$target_root" BUGSWEEP_RUN_DIR="$run_dir" \
+    bash "${BUGSWEEP_SCRIPT_DIR}/conclusions.sh" prime "$run_dir" 2>/dev/null \
     | sed -n 's/^SUMMARY=//p' | head -1 || true)"
   [ -n "$reopened_summary" ] && log "Conclusions: ${reopened_summary}"
 fi
 
 # Freeze the exact tracked-file scope consumed by context-build. This prevents a
 # path-scoped request from silently expanding to the whole repository.
-scope_repo="$BUGSWEEP_REPO_ROOT"
-[ -n "$worktree_path" ] && scope_repo="$worktree_path"
+scope_repo="$target_root"
 if [ "$bs_scope" = "." ]; then
   git -C "$scope_repo" ls-files > "${run_dir}/scope-files.txt"
 else
@@ -469,6 +489,8 @@ echo "BRANCH=${branch}"
 echo "ORIG_BRANCH=${orig_branch}"
 echo "STASH=${stash_ref}"
 [ -n "$worktree_path" ] && echo "WORKTREE=${worktree_path}"
+echo "TARGET_ROOT=${target_root}"
+echo "INDEX_DIR=${run_dir}/indexes"
 echo "SCOPE=${bs_scope}"
 echo "SCOPE_FILES=${run_dir}/scope-files.txt"
 echo "EXECUTION_PREPARATION=${run_dir}/execution-preparation-result.json"

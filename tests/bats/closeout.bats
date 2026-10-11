@@ -1,25 +1,32 @@
 #!/usr/bin/env bats
-# shellcheck disable=SC2164,SC2129
 
 ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 CLOSEOUT_SH="${ROOT}/scripts/closeout.sh"
+INTEGRATE_SH="${ROOT}/scripts/integrate.sh"
+LANDED_FIXTURE="${ROOT}/tests/bats/landed_fixture.py"
+
+load integration-fixture
 
 setup() {
   START_CWD="$(pwd)"
-  TMP="$(mktemp -d)"
+  TMP="$(cd "$(mktemp -d)" && pwd -P)"
   REPO="${TMP}/repo"
   git init -q "$REPO"
   git -C "$REPO" config user.email test@bugsweep
   git -C "$REPO" config user.name bugsweep-test
   printf 'base\n' > "${REPO}/app.txt"
-  git -C "$REPO" add app.txt
+  printf 'unchanged regression fixture\n' > "${REPO}/regression_fixture.txt"
+  git -C "$REPO" add app.txt regression_fixture.txt
   git -C "$REPO" commit -q -m init
   printf '.bugsweep/\n' >> "${REPO}/.git/info/exclude"
   ORIG="$(git -C "$REPO" symbolic-ref --short HEAD)"
   RUN_ID="test-run"
   BRANCH="bugsweep/${RUN_ID}"
   WT="${REPO}/.bugsweep/worktrees/${RUN_ID}"
-  RUN_DIR="${REPO}/.bugsweep/run-${RUN_ID}"
+  # Keep the authority beside this temporary checkout so the fixture exercises
+  # the ordinary sibling topology while closeout still binds the run to
+  # REPO_ROOT through state.env below.
+  RUN_DIR="${TMP}/integration-authority"
   mkdir -p "$(dirname "$WT")" "$RUN_DIR" "${REPO}/.bugsweep/state/closeout-blocked"
   git -C "$REPO" worktree add -q -b "$BRANCH" "$WT" HEAD
   cat > "${RUN_DIR}/state.env" <<ENV
@@ -34,34 +41,35 @@ BUGSWEEP_STASH_REF='none'
 BUGSWEEP_WORKTREE='${WT}'
 ENV
   : > "${RUN_DIR}/ledger.jsonl"
-  _write_summary '[]' '[]' '[]'
+  REAL_PYTHON="$(command -v python3)"
+  PROVIDER_STUB_DIR="${TMP}/provider-stub"
+  _write_integration_provider_stub "$PROVIDER_STUB_DIR" "$REAL_PYTHON"
+  export REAL_PYTHON PROVIDER_STUB_DIR
+  export PATH="${PROVIDER_STUB_DIR}:${PATH}"
+  _write_summary
   printf '{"state":"PENDING_CLOSEOUT"}\n' > "${REPO}/.bugsweep/state/closeout-blocked/${RUN_ID}.json"
 }
 
 teardown() {
-  cd "$START_CWD" || return
+  cd "$START_CWD"
   rm -rf "$TMP"
 }
 
-_write_summary() {
-  local fixed="$1" quarantined="$2" confirmed_unfixed="$3" degraded="${4:-false}"
-  printf '{"schema_version":1,"mode":"detect","status":"complete","stop_reason":null,"coverage":{"covered":0,"total":0},"counts":{"critical":0,"high":0,"medium":0,"low":0,"architectural":0},"fixed":%s,"quarantined":%s,"confirmed_unfixed":%s,"findings":[],"degraded":%s,"follow_up":[]}\n' \
-    "$fixed" "$quarantined" "$confirmed_unfixed" "$degraded" > "${RUN_DIR}/run-summary.json"
-}
-
 _set_fixed_summary() {
-  _write_summary '["BUG-1"]' '[]' '[]'
+  _write_summary '["BUG-1"]'
 }
 
-_seed_synthetic_integration_receipt() {
-  # Test fixture only: bind real fixture refs so downstream rejection guards
-  # run before the separate full provider-proof validation.
-  git -C "$REPO" merge -q --no-ff "$BRANCH" -m 'fixture merge'
-  local source target
-  source="$(git -C "$REPO" rev-parse "$BRANCH")"
-  target="$(git -C "$REPO" rev-parse "$ORIG")"
-  printf '{"target_branch":"%s","quality_gate_command":"provider:frozen-check-plan","result":"complete","branches":[{"branch":"%s","status":"merged","quality_gate_passed":true,"source_tip":"%s","target_tip":"%s"}]}' \
-    "$ORIG" "$BRANCH" "$source" "$target" > "${RUN_DIR}/integrate-results.json"
+_write_summary() {
+  local fixed="${1:-[]}" confirmed="${2:-[]}" quarantined="${3:-[]}"
+  local follow_up="${4:-[]}" degraded="${5:-false}" findings="${6:-[]}"
+  local status="complete" stop_reason="null"
+  if [ "$degraded" = true ]; then
+    status="partial"
+    stop_reason='"degraded reduction"'
+  fi
+  printf '{"schema_version":1,"mode":"detect-only","status":"%s","stop_reason":%s,"degraded":%s,"coverage":{"covered":0,"total":0},"counts":{"critical":0,"high":0,"medium":0,"low":0,"architectural":0},"fixed":%s,"confirmed_unfixed":%s,"quarantined":%s,"findings":%s,"follow_up":%s}\n' \
+    "$status" "$stop_reason" "$degraded" "$fixed" "$confirmed" "$quarantined" "$findings" "$follow_up" \
+    > "${RUN_DIR}/run-summary.json"
 }
 
 @test "closeout: clean recorded run removes only its exact branch and worktree" {
@@ -83,7 +91,7 @@ _seed_synthetic_integration_receipt() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): test'
-  _write_summary '[]' '[]' '["BUG-1"]'
+  _write_summary '[]' '["BUG-1"]'
 
   cd "$REPO"
   run bash "$CLOSEOUT_SH" "$RUN_DIR" recorded
@@ -99,7 +107,7 @@ _seed_synthetic_integration_receipt() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): test'
-  _write_summary '[]' '[]' '["BUG-1"]'
+  _write_summary '[]' '["BUG-1"]'
   git -C "$REPO" bundle create "${RUN_DIR}/recovery.bundle" "refs/heads/${BRANCH}"
   tip="$(git -C "$REPO" rev-parse "$BRANCH")"
   sha="$(shasum -a 256 "${RUN_DIR}/recovery.bundle" | awk '{print $1}')"
@@ -122,7 +130,7 @@ _seed_synthetic_integration_receipt() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): test'
-  _write_summary '[]' '[]' '["BUG-1"]'
+  _write_summary '[]' '["BUG-1"]'
   git -C "$REPO" bundle create "${RUN_DIR}/recovery.bundle" "refs/heads/${ORIG}"
   tip="$(git -C "$REPO" rev-parse "$BRANCH")"
   sha="$(shasum -a 256 "${RUN_DIR}/recovery.bundle" | awk '{print $1}')"
@@ -141,7 +149,7 @@ _seed_synthetic_integration_receipt() {
 }
 
 @test "closeout: degraded summary cannot silently erase tracker obligations" {
-  _write_summary '[]' '[]' '[]' true
+  _write_summary '[]' '[]' '[]' '[]' true
 
   cd "$REPO"
   run bash "$CLOSEOUT_SH" "$RUN_DIR" recorded
@@ -177,9 +185,77 @@ _seed_synthetic_integration_receipt() {
   [ -n "$(git -C "$REPO" branch --list "$BRANCH")" ]
 }
 
+@test "closeout: verified landed evidence removes the exact branch and worktree" {
+  _set_fixed_summary
+  cd "$REPO"
+
+  # Reviews are prepared and captured against the untouched source snapshot;
+  # the fixture's run_command boundary is synthetic, while review validation is
+  # the production native-event and execution-receipt validator.
+  run "$REAL_PYTHON" "$LANDED_FIXTURE" prepare-reviews "$RUN_DIR" "$WT" "$RUN_ID" BUG-1
+  [ "$status" -eq 0 ]
+
+  printf 'fix\n' >> "${WT}/app.txt"
+  git -C "$WT" add app.txt
+  git -C "$WT" commit -q -m 'fix(bugsweep): verified landed fixture'
+  fix_commit="$(git -C "$REPO" rev-parse "$BRANCH")"
+  for _ in 1 2 3; do
+    printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"medium","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  done
+  printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium","commit":"%s"}\n' "$fix_commit" >> "${RUN_DIR}/ledger.jsonl"
+
+  _write_integration_authority "$RUN_DIR" "$RUN_ID"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
+
+  run "$REAL_PYTHON" "$LANDED_FIXTURE" finalize-evidence "$RUN_DIR" "$REPO" "$WT" "$RUN_ID" "$BRANCH" BUG-1
+  [ "$status" -eq 0 ]
+
+  run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'OUTCOME=COMPLETED_LANDED'
+  [ ! -d "$WT" ]
+  [ -z "$(git -C "$REPO" branch --list "$BRANCH")" ]
+  [ ! -f "${REPO}/.bugsweep/state/closeout-blocked/${RUN_ID}.json" ]
+  grep -q '"outcome":"COMPLETED_LANDED"' "${RUN_DIR}/ledger.jsonl"
+}
+
+@test "closeout: malformed landed evidence reaches the trusted verifier from a subdirectory" {
+  _set_fixed_summary
+  printf 'fix\n' >> "${WT}/app.txt"
+  git -C "$WT" add app.txt
+  git -C "$WT" commit -q -m 'fix(bugsweep): malformed evidence boundary'
+  for _ in 1 2 3; do
+    printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"medium","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  done
+  printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium"}\n' >> "${RUN_DIR}/ledger.jsonl"
+
+  cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
+
+  # source-digests.json is intentionally absent.  The test reaches the
+  # verifier from a nested checkout directory, then must fail closed before
+  # any branch or worktree cleanup.
+  mkdir -p "${REPO}/subdir"
+  cd "${REPO}/subdir"
+  run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
+
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q 'requires verified execution and review provenance'
+  ! echo "$output" | grep -q "No module named 'scripts'"
+  [ -d "$WT" ]
+  [ -n "$(git -C "$REPO" branch --list "$BRANCH")" ]
+}
+
 @test "closeout: landed rejects a run with no fixed findings" {
   cd "$REPO"
-  _seed_synthetic_integration_receipt
+  _write_integration_authority "$RUN_DIR"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -193,10 +269,11 @@ _seed_synthetic_integration_receipt() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): contained fix'
-  _set_fixed_summary
+  _write_summary '["BUG-1"]'
   git -C "$REPO" merge -q --no-ff "$BRANCH" -m 'manual merge fixed work'
 
   cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
   run bash "$CLOSEOUT_SH" "$RUN_DIR" recorded
 
   [ "$status" -ne 0 ]
@@ -206,9 +283,11 @@ _seed_synthetic_integration_receipt() {
 }
 
 @test "closeout: landed still requires tracker receipts for unresolved bugs" {
-  _write_summary '["BUG-FIX"]' '[]' '["BUG-1"]'
+  _write_summary '["BUG-FIX"]' '["BUG-1"]'
   cd "$REPO"
-  _seed_synthetic_integration_receipt
+  _write_integration_authority "$RUN_DIR"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -224,7 +303,9 @@ _seed_synthetic_integration_receipt() {
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): first tip'
   cd "$REPO"
-  _seed_synthetic_integration_receipt
+  _write_integration_authority "$RUN_DIR"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
 
   printf 'second fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
@@ -247,7 +328,9 @@ _seed_synthetic_integration_receipt() {
   printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   cd "$REPO"
-  _seed_synthetic_integration_receipt
+  _write_integration_authority "$RUN_DIR"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -263,14 +346,16 @@ _seed_synthetic_integration_receipt() {
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): approval order'
   for _ in 1 2 3; do
-    printf '{"event":"referee_vote","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+    printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"medium","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   done
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"repro_status","bug_id":"BUG-1","status":"unreproduced"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"approval","bug_id":"BUG-1","approved":true}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium"}\n' >> "${RUN_DIR}/ledger.jsonl"
   cd "$REPO"
-  _seed_synthetic_integration_receipt
+  _write_integration_authority "$RUN_DIR"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -280,7 +365,6 @@ _seed_synthetic_integration_receipt() {
 }
 
 @test "closeout: high-severity Referee votes appended after mutation cannot authorize landing" {
-  _set_fixed_summary
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): late votes'
@@ -289,8 +373,11 @@ _seed_synthetic_integration_receipt() {
   printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"high","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"high","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"high","verdict":"NOT_CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  _write_summary '["BUG-1"]' '[]' '[]' '[]' false '[{"bug_id":"BUG-1","fixed":true,"severity":"high","category":"security","file":"a.py","line":1,"rationale":"r","vote_split":{"confirmed":2,"total":3,"eligible":true}}]'
   cd "$REPO"
-  _seed_synthetic_integration_receipt
+  _write_integration_authority "$RUN_DIR"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 
@@ -307,7 +394,9 @@ _seed_synthetic_integration_receipt() {
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"fix_committed","bug_id":"BUG-1"}\n' >> "${RUN_DIR}/ledger.jsonl"
   cd "$REPO"
-  _seed_synthetic_integration_receipt
+  _write_integration_authority "$RUN_DIR"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
 
   run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
 

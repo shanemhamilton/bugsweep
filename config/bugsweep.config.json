@@ -39,6 +39,8 @@
     "variant_retire_after_nonmatch_runs": 10,
     "large_repo_file_threshold": 800,
     "large_repo_first_pass_batches": 40,
+    "max_batch_files": 25,
+    "max_batch_bytes": 131072,
     "history_depth_commits": 500
   },
   "priority": {

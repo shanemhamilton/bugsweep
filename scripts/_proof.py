@@ -627,13 +627,15 @@ def _run_repro(phase: str, run_dir: Path, bug_id: str, request_path: Path | None
 
 
 def validate_suite_receipt(
-    receipt: Mapping[str, Any] | Any, expected_run: str, expected_source_digests: Mapping[str, str] | Any
+    receipt: Mapping[str, Any] | Any, expected_run: str, expected_source_digests: Mapping[str, str] | Any,
+    *, expected_phase: str = "verify",
 ) -> dict[str, Any]:
     """Fail-closed suite evidence gate used by lifecycle before an auto-land."""
     if not isinstance(receipt, Mapping):
         return _result(receipt, ["malformed_suite_receipt"])
     reasons: list[str] = []
-    if receipt.get("schema_version") != 1 or receipt.get("phase") != "verify":
+    if (expected_phase not in {"baseline", "verify"}
+            or receipt.get("schema_version") != 1 or receipt.get("phase") != expected_phase):
         reasons.append("invalid_suite_schema")
     if receipt.get("run_id") != expected_run:
         reasons.append("run_id_mismatch")

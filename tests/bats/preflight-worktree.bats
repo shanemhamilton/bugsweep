@@ -9,6 +9,7 @@
 
 PREFLIGHT_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/preflight.sh"
 FINALIZE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/finalize.sh"
+CLOSEOUT_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/closeout.sh"
 STATE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/state.sh"
 SKILL_MD="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/SKILL.md"
 
@@ -54,7 +55,7 @@ _tree_hash() {
 
 setup() {
   START_CWD="$(pwd)"
-  BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$(mktemp -d)" && pwd -P)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
   ORIG_BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD)"
@@ -199,12 +200,58 @@ teardown() {
 @test "preflight --worktree: worktree is anchored under the MAIN repo root, not a nested worktree path" {
   run bash "$PREFLIGHT_SH" --worktree
   [ "$status" -eq 0 ]
-  local wt
+  local wt main_repo_physical
   wt="$(echo "$output" | sed -n 's/^WORKTREE=//p')"
+  main_repo_physical="$(cd "$REPO" && pwd -P)"
   case "$wt" in
-    "${REPO}"/.bugsweep/worktrees/*) : ;;
+    "${main_repo_physical}"/.bugsweep/worktrees/*) : ;;
     *) echo "worktree not under main repo root: $wt"; false ;;
   esac
+}
+
+@test "preflight --worktree: symlinked checkout records physical paths through recorded closeout" {
+  local alias="${BATS_TMP}/repo-alias"
+  ln -s "$REPO" "$alias"
+  cd "$alias"
+
+  run env BUGSWEEP_TARGET_ROOT="$alias" bash "$PREFLIGHT_SH" --worktree
+  [ "$status" -eq 0 ]
+  local run_dir wt branch tip bundle bundle_sha
+  run_dir="$(echo "$output" | sed -n 's/^RUN_DIR=//p')"
+  wt="$(echo "$output" | sed -n 's/^WORKTREE=//p')"
+  branch="$(echo "$output" | sed -n 's/^BRANCH=//p')"
+  [ "$run_dir" = "$(cd "$run_dir" && pwd -P)" ]
+  [ "$wt" = "$(cd "$wt" && pwd -P)" ]
+  grep -q "BUGSWEEP_RUN_DIR='${run_dir}'" "${run_dir}/state.env"
+  grep -q "BUGSWEEP_WORKTREE='${wt}'" "${run_dir}/state.env"
+
+  cd "$wt"
+  run bash "$FINALIZE_SH" "$run_dir"
+  [ "$status" -eq 0 ]
+  # This deliberately unfinished audit has follow-up work. Its tracker
+  # obligation must remain enforced even when the checkout was entered
+  # through an alias.
+  python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["follow_up"]' \
+    "${run_dir}/run-summary.json"
+  run bash "$CLOSEOUT_SH" "$run_dir" recorded
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "verified tracker readback missing keys: run:${branch#bugsweep/}:follow-up"
+
+  bundle="${run_dir}/recovery.bundle"
+  git -C "$REPO" bundle create "$bundle" "refs/heads/${branch}" >/dev/null
+  tip="$(git -C "$REPO" rev-parse "$branch")"
+  bundle_sha="$(shasum -a 256 "$bundle" | awk '{print $1}')"
+  printf '{"provider":"beads","item_id":"RUN-CLOSEOUT","finding_key":"RUN-CLOSEOUT","readback_verified":true,"recovery_bundle":"%s","recovery_sha256":"%s"}\n' \
+    "$bundle" "$bundle_sha" > "${run_dir}/tracker-receipts.jsonl"
+  printf '{"provider":"beads","item_id":"RUN-FOLLOW-UP","finding_key":"run:%s:follow-up","readback_verified":true}\n' \
+    "${branch#bugsweep/}" >> "${run_dir}/tracker-receipts.jsonl"
+  printf '{"approved":true,"branch":"%s","tip":"%s","bundle_sha256":"%s"}\n' \
+    "$branch" "$tip" "$bundle_sha" > "${run_dir}/deletion-review.json"
+
+  run bash "$CLOSEOUT_SH" "$run_dir" recorded
+  [ "$status" -eq 0 ]
+  [ ! -d "$wt" ]
+  [ -z "$(git -C "$REPO" branch --list "$branch")" ]
 }
 
 @test "preflight --worktree: refuses when a rebase is in progress" {
@@ -389,6 +436,8 @@ PY
 
 @test "SKILL.md documents the --worktree preflight contract" {
   grep -q -- '--worktree' "$SKILL_MD"
+  grep -q 'BUGSWEEP_LEASE_PID' "$SKILL_MD"
+  grep -q '\.bugsweep/worktrees' "$SKILL_MD"
   grep -qi 'Use `preflight.sh --worktree`' "$SKILL_MD"
   grep -qi 'worktree identity' "$SKILL_MD"
   grep -qi 'Only an orchestrator intentionally starting a genuinely independent sibling audit adds `--concurrent`' "$SKILL_MD"
@@ -443,4 +492,7 @@ PY
 
 @test "SKILL.md keeps normal runs out of repository-wide reaping" {
   grep -qi 'Normal runs never invoke a repository-wide reaper' "$SKILL_MD"
+  grep -qi 'Crash recovery' "$SKILL_MD"
+  grep -qi 'manual' "$SKILL_MD"
+  grep -q -- '--reap-worktrees' "$SKILL_MD"
 }

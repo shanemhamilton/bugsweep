@@ -69,7 +69,12 @@ case "$command_name" in
       echo "PRIORITY_CONTEXT=${out}"
       exit 0
     }
-    repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    recorded_root="$(_bsw_state_env_get "${run_dir}/state.env" BUGSWEEP_TARGET_ROOT 2>/dev/null || true)"
+    if [ -n "$recorded_root" ] && [ -d "$recorded_root" ]; then
+      repo_root="$recorded_root"
+    else
+      repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    fi
     common_root="${BUGSWEEP_REPO_ROOT:-$repo_root}"
     if [ -z "$repo_root" ] || [ -z "$common_root" ]; then
       _write_degraded "not_a_git_repo"

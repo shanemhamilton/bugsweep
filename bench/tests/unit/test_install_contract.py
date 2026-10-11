@@ -282,7 +282,7 @@ def test_quality_gate_is_session_pure_and_requires_real_evidence() -> None:
     assert "coverage report --fail-under=80" in text
     assert "BUGSWEEP_BATS_VERSION" in text
     assert "BUGSWEEP_SHELLCHECK_VERSION" in text
-    assert "bats tests/bats bench/tests/bats" in text
+    assert "bats --print-output-on-failure tests/bats bench/tests/bats" in text
     assert "git -" not in text.lower()
 
 

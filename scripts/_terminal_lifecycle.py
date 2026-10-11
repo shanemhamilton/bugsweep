@@ -41,10 +41,12 @@ _STATE_KEYS = frozenset(
         "BUGSWEEP_BRANCH", "BUGSWEEP_ORIG_BRANCH", "BUGSWEEP_ORIG_HEAD",
         "BUGSWEEP_STASH_REF", "BUGSWEEP_START_EPOCH", "BUGSWEEP_DEADLINE_EPOCH",
         "BUGSWEEP_MAX_RUNTIME_MINUTES", "BUGSWEEP_MODE", "BUGSWEEP_SCOPE",
-        "BUGSWEEP_CONCURRENT", "BUGSWEEP_WORKTREE",
+        "BUGSWEEP_CONCURRENT", "BUGSWEEP_WORKTREE", "BUGSWEEP_TARGET_ROOT",
+        "BUGSWEEP_SOURCE_ROOT", "BUGSWEEP_INDEX_DIR",
     }
 )
 _IDENTITY_KEYS = ("BUGSWEEP_RUN_ID", "BUGSWEEP_RUN_DIR", "BUGSWEEP_REPO_ROOT", "BUGSWEEP_BRANCH", "BUGSWEEP_ORIG_BRANCH", "BUGSWEEP_ORIG_HEAD", "BUGSWEEP_WORKTREE")
+_OPTIONAL_IDENTITY_KEYS = ("BUGSWEEP_TARGET_ROOT", "BUGSWEEP_SOURCE_ROOT", "BUGSWEEP_INDEX_DIR")
 _NONEMPTY_IDENTITY_KEYS = tuple(key for key in _IDENTITY_KEYS if key != "BUGSWEEP_WORKTREE")
 
 
@@ -102,7 +104,7 @@ def load_state(path: Path) -> dict[str, str]:
         raise LifecycleError("missing state identity: " + ", ".join(missing))
     if not values["BUGSWEEP_BRANCH"].startswith("bugsweep/"):
         raise LifecycleError("state branch is outside bugsweep namespace")
-    for key in ("BUGSWEEP_RUN_DIR", "BUGSWEEP_WORKTREE"):
+    for key in ("BUGSWEEP_RUN_DIR", "BUGSWEEP_WORKTREE", *_OPTIONAL_IDENTITY_KEYS):
         value = values.get(key, "")
         if value and not Path(value).is_absolute():
             raise LifecycleError(f"unsafe non-absolute {key}")
@@ -116,6 +118,7 @@ def _identity(state: dict[str, str]) -> dict[str, str]:
     if missing:
         raise LifecycleError("missing state identity: " + ", ".join(missing))
     value = {key: state[key] for key in _IDENTITY_KEYS}
+    value.update({key: state[key] for key in _OPTIONAL_IDENTITY_KEYS if key in state})
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     value["state_sha256"] = hashlib.sha256(encoded).hexdigest()
     return value

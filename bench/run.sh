@@ -396,6 +396,14 @@ main() {
   done
 
   [[ -n "${cases_arg}" ]] || usage
+  # The historical --cases path still contains the pre-WU6 container contract:
+  # it invokes the retired runner entrypoint and cannot bind the current
+  # adapter's proxy/output receipt.  Keep the TEST-ONLY host bypass available
+  # for Tier-A fixtures, but refuse a live invocation before it can touch
+  # Docker or credentials.  The supported live coordinator is `evaluation`.
+  if real_path; then
+    die "legacy real container path is retired; use run.sh evaluation for the frozen coordinator (the BENCH_NO_CONTAINER=1 path is test-only)"
+  fi
   case "${K}" in '' | *[!0-9]*) die "-k must be a positive integer" ;; esac
   [[ "${K}" -ge 1 ]] || die "-k must be >= 1"
 

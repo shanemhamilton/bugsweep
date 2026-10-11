@@ -22,7 +22,7 @@ import time
 import re
 import subprocess
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -30,7 +30,16 @@ sys.path.insert(0, str(ROOT))
 from bench import _stages
 
 ARM_SET = ("current_skill", "previous_release", "no_skill_baseline")
+DEFAULT_EVALUATION_MODE = "reduced_detect_only_prompt_methodology"
+CONTEXT_FACTORIAL_MODE = "reduced_detect_only_context_factorial"
+EVALUATION_MODES = (DEFAULT_EVALUATION_MODE, CONTEXT_FACTORIAL_MODE)
+CONTEXT_CELLS = tuple(
+    {"context": context, "context_state": state}
+    for context in ("off", "on")
+    for state in ("cold", "warm")
+)
 MAX_RESPONSE_BYTES = 1_048_576
+MAX_ADAPTER_METADATA_BYTES = 1_024
 MAX_MANIFEST_DESCRIPTION_BYTES = 8_192
 
 
@@ -133,8 +142,52 @@ def validate_protocol(protocol: Mapping[str, Any], *, frozen: bool = False) -> d
     rate_table = protocol.get("rate_table")
     if not isinstance(rate_table, Mapping) or not isinstance(rate_table.get("version"), str) or not rate_table["version"] or not _sha256(rate_table.get("sha256")):
         raise HarnessError("protocol requires an operator-pinned rate_table version and sha256")
-    if frozen and protocol.get("evaluation_mode") != "reduced_detect_only_prompt_methodology":
-        raise HarnessError("frozen protocol must declare the reduced detect-only evaluation mode")
+    if frozen and "evaluation_mode" not in protocol:
+        raise HarnessError("frozen protocol must declare an evaluation mode")
+    mode = protocol.get("evaluation_mode", DEFAULT_EVALUATION_MODE)
+    if mode not in EVALUATION_MODES:
+        raise HarnessError("protocol declares an unsupported evaluation mode")
+    if frozen and mode not in EVALUATION_MODES:
+        raise HarnessError("frozen protocol must declare a supported evaluation mode")
+    if mode == CONTEXT_FACTORIAL_MODE and "context_factorial_scope" in protocol:
+        scope = protocol["context_factorial_scope"]
+        if (not isinstance(scope, Mapping)
+                or set(scope) - {"hosts", "arms", "stage_blocks"}
+                or not isinstance(scope.get("hosts"), list) or not scope["hosts"]
+                or not isinstance(scope.get("arms"), list) or not scope["arms"]
+                or not isinstance(scope.get("stage_blocks"), list) or not scope["stage_blocks"]
+                or any(host not in protocol["hosts"] for host in scope["hosts"])
+                or any(arm not in ARM_SET for arm in scope["arms"])
+                or any(not isinstance(block, str) for block in scope["stage_blocks"])):
+            raise HarnessError("context factorial scope is invalid")
+    if mode == CONTEXT_FACTORIAL_MODE and "context_artifacts" in protocol:
+        artifacts = protocol["context_artifacts"]
+        if not isinstance(artifacts, Mapping) or any(
+            not isinstance(spec, Mapping)
+            or not isinstance(spec.get("path"), str)
+            or not _sha256(spec.get("sha256"))
+            or not isinstance(spec.get("amortization_uses"), int)
+            or isinstance(spec.get("amortization_uses"), bool)
+            or spec["amortization_uses"] < 1
+            or not isinstance(spec.get("creation_receipt"), Mapping)
+            or not isinstance(spec["creation_receipt"].get("path"), str)
+            or not _sha256(spec["creation_receipt"].get("sha256"))
+            for spec in artifacts.values()
+        ):
+            raise HarnessError("context artifacts are invalid")
+        if isinstance(artifacts, Mapping):
+            qualified_cases: set[str] = set()
+            for key in artifacts:
+                if not isinstance(key, str) or not key:
+                    raise HarnessError("context artifact binding key is invalid")
+                parts = key.split("|")
+                if len(parts) == 1:
+                    continue
+                if len(parts) not in {3, 4} or parts[1] not in protocol["hosts"] or (len(parts) == 4 and parts[3] not in ARM_SET) or any(not part for part in parts):
+                    raise HarnessError("context artifact binding key is invalid")
+                qualified_cases.add(parts[0])
+            if any(case_id in artifacts for case_id in qualified_cases):
+                raise HarnessError("context artifact bindings are ambiguous")
     return dict(protocol)
 
 
@@ -155,37 +208,48 @@ def build_schedule(protocol: Mapping[str, Any], cases: list[Mapping[str, Any]], 
         raise HarnessError("repetitions must be at least three")
     stage_blocks = _stages.normalize_stage_blocks(protocol["ablation_blocks"])
     slots: list[dict[str, Any]] = []
-    for host_name, host in protocol["hosts"].items():
+    mode = protocol.get("evaluation_mode", DEFAULT_EVALUATION_MODE)
+    context_cells = CONTEXT_CELLS if mode == CONTEXT_FACTORIAL_MODE else ({},)
+    scope = protocol.get("context_factorial_scope", {}) if mode == CONTEXT_FACTORIAL_MODE else {}
+    host_names = scope.get("hosts", tuple(protocol["hosts"])) if isinstance(scope, Mapping) else tuple(protocol["hosts"])
+    selected_arms = tuple(scope.get("arms", ARM_SET)) if isinstance(scope, Mapping) else ARM_SET
+    selected_blocks = tuple(scope.get("stage_blocks", (block["id"] for block in stage_blocks))) if isinstance(scope, Mapping) else tuple(block["id"] for block in stage_blocks)
+    if not set(host_names).issubset(protocol["hosts"]) or not set(selected_arms).issubset(ARM_SET) or not set(selected_blocks).issubset({block["id"] for block in stage_blocks}):
+        raise HarnessError("context factorial scope is outside the frozen protocol")
+    for host_name in host_names:
+        host = protocol["hosts"][host_name]
         for case in cases:
             source = case.get("source_manifest_sha256")
             if not isinstance(source, str) or len(source) != 64:
                 raise HarnessError("each redacted case requires source_manifest_sha256")
             for repetition in range(1, repetitions + 1):
-                slot = {
-                    "experiment_id": protocol["experiment_id"], "host": host_name,
-                    "model": host["model"], "case_id": case.get("id"),
-                    "category": case.get("category", ""), "repository": case.get("repository", ""),
-                    "repetition": repetition, "limit_profile": protocol.get("limit_profile", "default"),
-                    "source_manifest_sha256": source, "arms": list(ARM_SET),
-                    "stage_blocks": [block["id"] for block in stage_blocks],
-                    "redacted_manifest_sha256": digest(redacted_case(case)),
-                }
-                slot["schedule_slot_sha256"] = digest(slot)
-                slots.append(slot)
+                for context_cell in context_cells:
+                    slot = {
+                        "experiment_id": protocol["experiment_id"], "host": host_name,
+                        "model": host["model"], "case_id": case.get("id"),
+                        "category": case.get("category", ""), "repository": case.get("repository", ""),
+                        "repetition": repetition, "limit_profile": protocol.get("limit_profile", "default"),
+                        "source_manifest_sha256": source, "arms": list(selected_arms),
+                        "stage_blocks": list(selected_blocks),
+                        "redacted_manifest_sha256": digest(redacted_case(case)),
+                        **context_cell,
+                    }
+                    slot["schedule_slot_sha256"] = digest(slot)
+                    slots.append(slot)
     return sorted(slots, key=lambda slot: (slot["host"], slot["case_id"], slot["repetition"]))
 
 
 def execution_order(protocol: Mapping[str, Any], schedule: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Seeded core-arm and actual stage-block order."""
     order = [{**slot, "arm": arm, "stage_block": stage_block}
-             for slot in schedule for arm in ARM_SET for stage_block in slot["stage_blocks"]]
+             for slot in schedule for arm in slot.get("arms", ARM_SET) for stage_block in slot["stage_blocks"]]
     seed = protocol.get("seed")
     if not isinstance(seed, int):
         raise HarnessError("protocol requires integer seed")
     random.Random(seed).shuffle(order)
     frozen_order = []
     for ordinal, slot in enumerate(order, start=1):
-        identity = {"ordinal": ordinal, "schedule_slot_sha256": slot["schedule_slot_sha256"], "arm": slot["arm"], "stage_block": slot["stage_block"]}
+        identity = _order_slot_identity(slot, ordinal=ordinal)
         frozen_order.append({**slot, "ordinal": ordinal, "order_slot_sha256": digest(identity)})
     return frozen_order
 
@@ -202,17 +266,28 @@ def freeze_documents(protocol: Mapping[str, Any], cases: list[Mapping[str, Any]]
     if "schedule_sha256" in draft or "execution_order_sha256" in draft:
         raise HarnessError("freeze input must not already contain generated schedule digests")
     schedule = build_schedule(draft, cases, repetitions)
+    _validate_frozen_warm_context_artifacts(draft, schedule)
     order = execution_order(draft, schedule)
-    frozen = {**draft, "repetitions": repetitions, "evaluation_mode": "reduced_detect_only_prompt_methodology", "schedule_sha256": digest(schedule), "execution_order_sha256": digest(order)}
+    frozen = {**draft, "repetitions": repetitions, "evaluation_mode": draft.get("evaluation_mode", DEFAULT_EVALUATION_MODE), "schedule_sha256": digest(schedule), "execution_order_sha256": digest(order)}
     validate_protocol(frozen, frozen=True)
     return {"protocol": frozen, "schedule": schedule, "execution_order": order}
 
 
 def validate_order_slot(slot: Mapping[str, Any]) -> None:
     ordinal = slot.get("ordinal")
-    identity = {"ordinal": ordinal, "schedule_slot_sha256": slot.get("schedule_slot_sha256"), "arm": slot.get("arm"), "stage_block": slot.get("stage_block")}
+    identity = _order_slot_identity(slot, ordinal=ordinal)
     if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1 or not _sha256(slot.get("schedule_slot_sha256")) or not isinstance(slot.get("stage_block"), str) or slot.get("order_slot_sha256") != digest(identity):
         raise HarnessError("scheduled execution-order slot is invalid")
+
+
+def _order_slot_identity(slot: Mapping[str, Any], *, ordinal: object) -> dict[str, Any]:
+    identity = {"ordinal": ordinal, "schedule_slot_sha256": slot.get("schedule_slot_sha256"), "arm": slot.get("arm")}
+    if "stage_block" in slot:
+        identity["stage_block"] = slot.get("stage_block")
+    for field in ("context", "context_state"):
+        if field in slot:
+            identity[field] = slot.get(field)
+    return identity
 
 
 def adapter_argv(host: str, model: str, prompt: str, arm: str) -> list[str]:
@@ -329,19 +404,23 @@ def preflight(protocol: Mapping[str, Any]) -> list[str]:
     return reasons
 
 
-def _prompt(case: Mapping[str, Any], arm: str) -> str:
+def _prompt(case: Mapping[str, Any], arm: str, *, context: str | None = None) -> str:
     manifest = canonical(redacted_case(case)).decode("utf-8")
     instruction = {
         "current_skill": "Use the supplied current Bugsweep skill snapshot.",
         "previous_release": "Use only the supplied previous-release Bugsweep skill snapshot.",
         "no_skill_baseline": "Do not load any Bugsweep skill; perform the baseline review directly.",
     }[arm]
-    return ("BENCHMARK REDUCED DETECT-ONLY PROMPT METHODOLOGY: this does not execute or measure the full Bugsweep workflow, lifecycle, tracker, or subagent phase protocols. Inspect only the mounted archive source. Do not run commands, Git, "
+    prompt = ("BENCHMARK REDUCED DETECT-ONLY PROMPT METHODOLOGY: this does not execute or measure the full Bugsweep workflow, lifecycle, tracker, or subagent phase protocols. Inspect only the mounted archive source. Do not run commands, Git, "
             "trackers, tests, lifecycle scripts, network tools, or write files. Do not read parent directories, "
             "benchmark metadata, gold data, advisory history, or future runs. Apply the supplied immutable skill "
             "excerpt only as source-review methodology; every operational workflow instruction is out of scope. "
-            "A later frozen role prompt supplies the candidate contract and replaces the legacy `FINDING:` marker with strict JSON-only output. " + instruction +
+            "A later frozen role prompt supplies the candidate contract and requires strict JSON-only output. " + instruction +
             "\nRedacted task manifest:\n" + manifest)
+    if context is not None:
+        prompt += ("\n\nUNTRUSTED SOURCE-ONLY CONTEXT ARTIFACT (requested navigation aid; it is not verified "
+                   "label-free and is never oracle evidence):\n" + context)
+    return prompt
 
 
 def _stage_block(protocol: Mapping[str, Any], identifier: object) -> Mapping[str, Any]:
@@ -351,7 +430,186 @@ def _stage_block(protocol: Mapping[str, Any], identifier: object) -> Mapping[str
     raise HarnessError("execution slot references an undeclared stage block")
 
 
-def _run_pipeline_stages(*, protocol: Mapping[str, Any], slot: Mapping[str, Any], case: Mapping[str, Any], source_root: Path, output: Path, profile: Mapping[str, Any], expected_arm: Mapping[str, Any], endpoint_env: Mapping[str, str]) -> tuple[list[dict[str, Any]], Mapping[str, Any] | None, Path | None, dict[str, Any]]:
+def _warm_context_spec(protocol: Mapping[str, Any], slot: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Select a warm artifact bound to this case/host/model/arm.
+
+    The historical case-only form remains valid for a single-host pilot.  As
+    soon as a protocol supplies host/model/arm-qualified entries, selection is
+    exact and a case-only fallback is rejected as ambiguous rather than
+    silently reusing another model's context.
+    """
+    artifacts = protocol.get("context_artifacts")
+    if not isinstance(artifacts, Mapping):
+        raise HarnessError("warm_context_artifact_missing")
+    case_id = str(slot.get("case_id"))
+    host = str(slot.get("host", ""))
+    model = str(slot.get("model", ""))
+    arm = str(slot.get("arm", ""))
+    exact_keys = (f"{case_id}|{host}|{model}|{arm}", f"{case_id}|{host}|{arm}", f"{case_id}|{host}")
+    for key in exact_keys:
+        candidate = artifacts.get(key)
+        if isinstance(candidate, Mapping) and "path" in candidate:
+            return candidate
+    legacy = artifacts.get(case_id)
+    if isinstance(legacy, Mapping) and "path" in legacy:
+        qualified = [value for key, value in artifacts.items()
+                     if isinstance(key, str) and key.startswith(case_id + "|") and isinstance(value, Mapping) and "path" in value]
+        if qualified:
+            raise HarnessError("warm_context_artifact_ambiguous")
+        return legacy
+    qualified = [value for key, value in artifacts.items()
+                 if isinstance(key, str) and key.startswith(case_id + "|") and isinstance(value, Mapping) and "path" in value]
+    if len(qualified) == 1:
+        return qualified[0]
+    if len(qualified) > 1:
+        raise HarnessError("warm_context_artifact_ambiguous")
+    raise HarnessError("warm_context_artifact_missing")
+
+
+def _validated_warm_context(protocol: Mapping[str, Any], slot: Mapping[str, Any], profile: Mapping[str, Any], source_manifest_sha256: str) -> dict[str, Any]:
+    artifact_spec = _warm_context_spec(protocol, slot)
+    path_value, expected_sha = artifact_spec.get("path"), artifact_spec.get("sha256")
+    if not isinstance(path_value, str) or not Path(path_value).is_absolute() or not _sha256(expected_sha):
+        raise HarnessError("warm_context_artifact_identity_invalid")
+    path = Path(path_value)
+    if path.is_symlink() or not path.is_file() or file_digest(path) != expected_sha:
+        raise HarnessError("warm_context_artifact_digest_mismatch")
+    artifact = read_json(path)
+    if artifact.get("schema_version") != 1 or artifact.get("source_manifest_sha256") != source_manifest_sha256 or not _sha256(artifact.get("effective_prompt_sha256")):
+        raise HarnessError("warm_context_artifact_source_mismatch")
+    try:
+        context = _stages.parse_context(json.dumps({"context": artifact.get("context")}, ensure_ascii=False))
+    except ValueError as exc:
+        raise HarnessError("warm_context_artifact_invalid") from exc
+    creation = artifact_spec.get("creation_receipt")
+    if not isinstance(creation, Mapping) or not isinstance(creation.get("path"), str) or not Path(creation["path"]).is_absolute() or not _sha256(creation.get("sha256")):
+        raise HarnessError("warm_context_creation_receipt_missing")
+    creation_path = Path(creation["path"])
+    if creation_path.is_symlink() or not creation_path.is_file() or file_digest(creation_path) != creation["sha256"]:
+        raise HarnessError("warm_context_creation_receipt_digest_mismatch")
+    creation_value = read_json(creation_path)
+    benchmark_host = profile.get("benchmark_profile", {}).get("host") if isinstance(profile.get("benchmark_profile"), Mapping) else None
+    if (creation_value.get("schema_version") != 1 or creation_value.get("source_manifest_sha256") != source_manifest_sha256
+            or not _sha256(creation_value.get("effective_prompt_sha256"))
+            or creation_value.get("effective_prompt_sha256") != artifact.get("effective_prompt_sha256")
+            or creation_value.get("host") != benchmark_host or creation_value.get("model") != slot.get("model")
+            or (creation_value.get("arm") is not None and creation_value.get("arm") != slot.get("arm"))):
+        raise HarnessError("warm_context_creation_receipt_binding_mismatch")
+    uses = artifact_spec.get("amortization_uses", 1)
+    if isinstance(uses, bool) or not isinstance(uses, int) or uses < 1:
+        raise HarnessError("warm_context_amortization_invalid")
+    cost = creation_value.get("cost_usd")
+    cost_source = creation_value.get("cost_source", "unknown")
+    if cost is not None and (isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(float(cost)) or float(cost) < 0):
+        raise HarnessError("warm_context_creation_cost_invalid")
+    # A caller-supplied warm receipt is immutable input, but it is not native
+    # provider accounting.  Keep its numeric claim out of benchmark totals.
+    cost, cost_source = None, "unknown"
+    return {"mode": "warm", "context": context, "artifact_path": str(path), "artifact_sha256": expected_sha,
+            "creation_receipt": {**dict(creation), "value": creation_value}, "amortization_uses": uses,
+            "amortized_cost_usd": None if cost is None else float(cost) / uses,
+            "amortized_cost_source": cost_source if cost is not None else "unknown"}
+
+
+def _validate_frozen_warm_context_artifacts(protocol: Mapping[str, Any], schedule: Sequence[Mapping[str, Any]]) -> None:
+    """Validate every warm context binding before freezing a factorial schedule."""
+    if protocol.get("evaluation_mode") != CONTEXT_FACTORIAL_MODE:
+        return
+    for slot in schedule:
+        if slot.get("context") != "on" or slot.get("context_state") != "warm":
+            continue
+        for arm in slot.get("arms", ()):
+            bound_slot = {**slot, "arm": arm}
+            _validated_warm_context(
+                protocol,
+                bound_slot,
+                {"benchmark_profile": {"host": slot.get("host")}},
+                str(slot.get("source_manifest_sha256")),
+            )
+
+
+def _run_context_build(*, slot: Mapping[str, Any], case: Mapping[str, Any], source_root: Path, output: Path,
+                       profile: Mapping[str, Any], expected_arm: Mapping[str, Any], endpoint_env: Mapping[str, str],
+                       deadline: float) -> tuple[dict[str, Any], Mapping[str, Any] | None, Path | None, dict[str, Any]]:
+    """Request source-only context under the slot's shared deadline."""
+    from scripts import _execution
+    from scripts._review_evidence import parse_host_message
+
+    stage_output = output / "context" / "00-context-build"
+    stage_output.mkdir(mode=0o700, parents=True)
+    prompt = _prompt(case, str(slot["arm"])) + "\n\n" + _stages.context_prompt(str(slot["source_manifest_sha256"]))
+    execution: Mapping[str, Any] | None = None
+    reason: str | None = None
+    try:
+        execution = _execution.run_command(
+            adapter_argv(str(slot["host"]), str(slot["model"]), prompt, str(slot["arm"])), source_root, stage_output,
+            deadline, profile, dict(endpoint_env),
+            ({"path": "response.jsonl", "kind": "host-adapter-json", "max_bytes": MAX_RESPONSE_BYTES},
+            {"path": "adapter-metadata.json", "kind": "host-adapter-json", "max_bytes": MAX_ADAPTER_METADATA_BYTES},
+             {"path": "candidate-events.json", "kind": "host-adapter-json", "max_bytes": 64 * 1024}),
+        )
+    except (OSError, ValueError) as exc:
+        reason = f"execution_error:{type(exc).__name__}"
+    raw = stage_output / "response.jsonl"
+    candidate_events_path = stage_output / "candidate-events.json"
+    execution_path = stage_output / "execution-receipt.json"
+    metadata_path = stage_output / "adapter-metadata.json"
+    metadata = adapter_metadata(stage_output / "adapter-metadata.json")
+    session_id = None
+    context: str | None = None
+    if execution is not None and execution.get("termination") == "exited" and execution.get("exit_code") == 0 and raw.is_file():
+        try:
+            message = parse_host_message(str(slot["host"]), raw.read_text(encoding="utf-8", errors="strict"))
+            session_id = message["session_id"]
+            context = _stages.parse_context(message["text"])
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            reason = f"native_context_unverified:{type(exc).__name__}"
+    elif execution is not None:
+        reason = str(execution.get("reason") or "native_context_not_completed")[:160]
+    observed = source_manifest(source_root)
+    source_valid = observed["sha256"] == slot["source_manifest_sha256"]
+    prompt_valid = _sha256(metadata.get("effective_prompt_sha256")) and metadata.get("loaded_skill_sha256") == expected_arm.get("skill_entrypoint_sha256")
+    lifecycle = "completed" if context is not None and reason is None and source_valid and prompt_valid else "error"
+    artifact_path = output / "context" / "context-artifact.json"
+    artifact_sha256 = None
+    if lifecycle == "completed":
+        artifact = {"schema_version": 1, "source_manifest_sha256": observed["sha256"],
+                    "effective_prompt_sha256": metadata["effective_prompt_sha256"], "context": context}
+        write_once(artifact_path, artifact)
+        artifact_sha256 = file_digest(artifact_path)
+    receipt = {"stage": "context_build", "role": "context_build", "mode": "cold", "model": slot["model"],
+               "source_manifest_sha256": observed["sha256"], "source_valid": source_valid,
+               "content_policy": "source_only_requested_unverified",
+               "stage_prompt_template_sha256": digest(_stages.context_prompt(str(slot["source_manifest_sha256"]))),
+               "prompt_sha256": metadata.get("effective_prompt_sha256") if prompt_valid else None,
+               "execution_receipt_sha256": digest(execution) if execution is not None else None,
+               "execution_receipt_path": str(execution_path) if execution_path.is_file() else None,
+               "execution_receipt_file_sha256": file_digest(execution_path) if execution_path.is_file() else None,
+               "raw_response_path": str(raw) if raw.is_file() else None,
+               "raw_response_sha256": file_digest(raw) if raw.is_file() else None,
+               "candidate_events_path": str(candidate_events_path) if candidate_events_path.is_file() else None,
+               "candidate_events_sha256": file_digest(candidate_events_path) if candidate_events_path.is_file() else None,
+               "adapter_metadata_path": str(metadata_path) if metadata_path.is_file() else None,
+               "adapter_metadata_sha256": file_digest(metadata_path) if metadata_path.is_file() else None,
+               "artifact_path": str(artifact_path) if artifact_sha256 else None,
+               "artifact_sha256": artifact_sha256, "native_session_id": session_id,
+               "lifecycle": lifecycle, "reason_code": reason}
+    creation_path = output / "context" / "context-creation-receipt.json"
+    if lifecycle == "completed":
+        write_once(creation_path, {"schema_version": 1, "source_manifest_sha256": observed["sha256"],
+                                   "effective_prompt_sha256": metadata["effective_prompt_sha256"],
+                                   "host": slot["host"], "model": slot["model"], "arm": slot["arm"],
+                                   "cost_usd": None, "cost_source": "unknown",
+                                   "execution_receipt_sha256": digest(execution) if execution is not None else None})
+    receipt["creation_receipt_path"] = str(creation_path) if lifecycle == "completed" else None
+    receipt["creation_receipt_sha256"] = file_digest(creation_path) if lifecycle == "completed" else None
+    info = {"mode": "cold", "context": context, "artifact_path": str(artifact_path) if artifact_sha256 else None,
+            "artifact_sha256": artifact_sha256, "creation_receipt": {"path": str(creation_path), "sha256": file_digest(creation_path) if lifecycle == "completed" else None, "cost_usd": None, "cost_source": "unknown"},
+            "amortized_cost_usd": None, "amortized_cost_source": "unknown", "lifecycle": lifecycle}
+    return info, execution, raw if raw.is_file() else None, {"receipt": receipt, "metadata": metadata}
+
+
+def _run_pipeline_stages(*, protocol: Mapping[str, Any], slot: Mapping[str, Any], case: Mapping[str, Any], source_root: Path, output: Path, profile: Mapping[str, Any], expected_arm: Mapping[str, Any], endpoint_env: Mapping[str, str], deadline: float) -> tuple[list[dict[str, Any]], Mapping[str, Any] | None, Path | None, dict[str, Any]]:
     """Run each declared stage as a fresh native invocation under one slot deadline.
 
     The executor owns raw artifacts.  This coordinator only records their
@@ -361,7 +619,6 @@ def _run_pipeline_stages(*, protocol: Mapping[str, Any], slot: Mapping[str, Any]
     from scripts._review_evidence import parse_host_message
 
     block = _stage_block(protocol, slot.get("stage_block"))
-    deadline = time.time() + int(protocol["limits"]["wall_clock_seconds"])
     proxy = profile.get("benchmark_profile", {}).get("proxy", {}) if isinstance(profile.get("benchmark_profile"), Mapping) else {}
     lineage = {"block_id": block["id"], "stages": block["stages"], "stage_count": len(block["stages"]),
                "role": "detect_only", "host": slot["host"], "model": slot["model"],
@@ -379,11 +636,50 @@ def _run_pipeline_stages(*, protocol: Mapping[str, Any], slot: Mapping[str, Any]
     executions: list[Mapping[str, Any] | None] = []
     raws: list[Path | None] = []
     metadata_by_stage: list[dict[str, Any]] = []
+    context_info: dict[str, Any] = {"mode": "off", "context": None, "artifact_path": None, "artifact_sha256": None,
+                                    "creation_receipt": None, "amortized_cost_usd": None, "amortized_cost_source": "unknown"}
+    context_execution: Mapping[str, Any] | None = None
+    context_raw: Path | None = None
+    context_receipt: dict[str, Any] | None = None
+    context_mode = slot.get("context", "off")
+    context_state = slot.get("context_state", "none")
+    if context_mode == "on":
+        if context_state == "cold":
+            context_info, context_execution, context_raw, context_run = _run_context_build(
+                slot=slot, case=case, source_root=source_root, output=output, profile=profile,
+                expected_arm=expected_arm, endpoint_env=endpoint_env, deadline=deadline)
+            context_receipt = context_run["receipt"]
+            metadata_by_stage.append(context_run["metadata"])
+        elif context_state == "warm":
+            context_info = _validated_warm_context(protocol, slot, profile, str(slot["source_manifest_sha256"]))
+            context_receipt = {"stage": "context_build", "role": "context_build", "mode": "warm", "model": slot["model"],
+                               "source_manifest_sha256": slot["source_manifest_sha256"], "source_valid": True,
+                               "content_policy": "source_only_requested_unverified",
+                               "stage_prompt_template_sha256": None, "prompt_sha256": None,
+                               # Warm artifacts have no native execution in
+                               # this invocation; the immutable creation file
+                               # is provenance only, not an execution receipt.
+                               "execution_receipt_sha256": None,
+                               "raw_response_path": None, "raw_response_sha256": None,
+                               "creation_receipt_path": context_info["creation_receipt"].get("path"),
+                               "creation_receipt_sha256": context_info["creation_receipt"].get("sha256"),
+                               "artifact_path": context_info["artifact_path"], "artifact_sha256": context_info["artifact_sha256"],
+                               "native_session_id": None, "lifecycle": "completed", "reason_code": None}
+        else:
+            raise HarnessError("context slot state is invalid")
+        if context_receipt is None or context_receipt.get("lifecycle") != "completed" or context_info.get("context") is None:
+            return [], context_execution, context_raw, {
+                "lineage": lineage, "metadata": {}, "executions": [context_execution], "raws": [context_raw],
+                "metadata_by_stage": metadata_by_stage, "context": context_info, "context_receipt": context_receipt,
+                "context_error": True}
+        if context_receipt.get("native_session_id") is not None:
+            seen_sessions.add(str(context_receipt["native_session_id"]))
+    context_text = context_info.get("context")
     for index, stage in enumerate(block["stages"], start=1):
         stage_output = output / "stages" / f"{index:02d}-{stage}"
         stage_output.mkdir(mode=0o700, parents=True)
         candidate_input = _stages.stage_input(stage, assessments)
-        prompt = _prompt(case, str(slot["arm"])) + "\n\n" + _stages.stage_prompt(stage, assessments=assessments)
+        prompt = _prompt(case, str(slot["arm"]), context=context_text) + "\n\n" + _stages.stage_prompt(stage, assessments=assessments)
         execution: Mapping[str, Any] | None = None
         reason: str | None = None
         try:
@@ -391,11 +687,13 @@ def _run_pipeline_stages(*, protocol: Mapping[str, Any], slot: Mapping[str, Any]
                 adapter_argv(str(slot["host"]), str(slot["model"]), prompt, str(slot["arm"])),
                 source_root, stage_output, deadline, profile, dict(endpoint_env),
                 ({"path": "response.jsonl", "kind": "host-adapter-json", "max_bytes": MAX_RESPONSE_BYTES},
-                 {"path": "adapter-metadata.json", "kind": "host-adapter-json", "max_bytes": 256}),
+                 {"path": "adapter-metadata.json", "kind": "host-adapter-json", "max_bytes": MAX_ADAPTER_METADATA_BYTES},
+                 {"path": "candidate-events.json", "kind": "host-adapter-json", "max_bytes": 64 * 1024}),
             )
         except (OSError, ValueError) as exc:
             reason = f"execution_error:{type(exc).__name__}"
         raw = stage_output / "response.jsonl"
+        candidate_events_path = stage_output / "candidate-events.json"
         metadata = adapter_metadata(stage_output / "adapter-metadata.json")
         executions.append(execution)
         raws.append(raw if raw.is_file() else None)
@@ -429,6 +727,8 @@ def _run_pipeline_stages(*, protocol: Mapping[str, Any], slot: Mapping[str, Any]
                                "execution_receipt_sha256": digest(execution) if execution is not None else None,
                                "raw_response_path": str(raw) if raw.is_file() else None,
                                "raw_response_sha256": file_digest(raw) if raw.is_file() else None,
+                               "candidate_events_path": str(candidate_events_path) if candidate_events_path.is_file() else None,
+                               "candidate_events_sha256": file_digest(candidate_events_path) if candidate_events_path.is_file() else None,
                                "native_session_id": session_id, "lifecycle": lifecycle, "reason_code": reason})
         if candidates is not None:
             assessments[stage] = candidates
@@ -436,7 +736,9 @@ def _run_pipeline_stages(*, protocol: Mapping[str, Any], slot: Mapping[str, Any]
                 seen_sessions.add(session_id)
         if stage == block["stages"][-1]:
             final_execution, final_raw, final_metadata = execution, raw if raw.is_file() else None, metadata
-    return stage_receipts, final_execution, final_raw, {"lineage": lineage, "metadata": final_metadata, "executions": executions, "raws": raws, "metadata_by_stage": metadata_by_stage}
+    all_executions = ([context_execution] if context_execution is not None else []) + executions
+    all_raws = ([context_raw] if context_raw is not None else []) + raws
+    return stage_receipts, final_execution, final_raw, {"lineage": lineage, "metadata": final_metadata, "executions": all_executions, "raws": all_raws, "metadata_by_stage": metadata_by_stage, "context": context_info, "context_receipt": context_receipt, "context_error": False}
 
 
 def invoke_slot(protocol: Mapping[str, Any], slot: Mapping[str, Any], case: Mapping[str, Any], source_root: Path, output: Path, *, finalize: bool = True) -> dict[str, Any]:
@@ -455,6 +757,11 @@ def invoke_slot(protocol: Mapping[str, Any], slot: Mapping[str, Any], case: Mapp
         raise HarnessError("live invocation refused: " + ",".join(reasons))
     if slot.get("host") not in protocol["hosts"] or slot.get("arm") not in ARM_SET:
         raise HarnessError("slot is not from this protocol")
+    if protocol.get("evaluation_mode") == CONTEXT_FACTORIAL_MODE:
+        if slot.get("context") not in {"off", "on"} or slot.get("context_state") not in {"cold", "warm"}:
+            raise HarnessError("context factorial slot is missing its frozen cell")
+    elif "context" in slot or "context_state" in slot:
+        raise HarnessError("context cell is not valid for the reduced default mode")
     if slot.get("redacted_manifest_sha256") != digest(redacted_case(case)):
         raise HarnessError("case prompt differs from the frozen schedule")
     pre = source_manifest(source_root)
@@ -485,13 +792,18 @@ def invoke_slot(protocol: Mapping[str, Any], slot: Mapping[str, Any], case: Mapp
         env["ANTHROPIC_BASE_URL"] = endpoint
     else:
         env["CODEX_BENCH_BASE_URL"] = endpoint
+    deadline = time.time() + int(protocol["limits"]["wall_clock_seconds"])
     stage_receipts, execution, raw, stage_run = _run_pipeline_stages(
         protocol=protocol, slot=slot, case=case, source_root=source_root, output=output,
-        profile=profile, expected_arm=expected_arm, endpoint_env=env)
+        profile=profile, expected_arm=expected_arm, endpoint_env=env, deadline=deadline)
     post = source_manifest(source_root)
     source_ok = pre["sha256"] == post["sha256"] == slot["source_manifest_sha256"]
     stage_usage = [native_usage(stage_raw, host, protocol["rate_table"]) if stage_raw else native_usage(Path("/nonexistent"), host, protocol["rate_table"]) for stage_raw in stage_run["raws"]]
     usage = {"input_tokens": None, "output_tokens": None, "total_tokens": None, "cost_usd": None, "cost_source": "unknown", "provider": host, "rate_table_version": None, "rate_table_sha256": None}
+    context_cost = stage_run.get("context", {}).get("amortized_cost_usd")
+    context_cost_source = stage_run.get("context", {}).get("amortized_cost_source", "unknown")
+    usage["context_creation_cost_usd"] = context_cost
+    usage["context_creation_cost_source"] = context_cost_source
     token_keys = ("input_tokens", "output_tokens", "total_tokens")
     if stage_usage and all(isinstance(item.get(key), int) and not isinstance(item.get(key), bool) for item in stage_usage for key in token_keys):
         usage.update({key: sum(item[key] for item in stage_usage) for key in token_keys})
@@ -510,8 +822,14 @@ def invoke_slot(protocol: Mapping[str, Any], slot: Mapping[str, Any], case: Mapp
     loaded_skill = metadata.get("loaded_skill_sha256")
     expected_skill = expected_arm.get("skill_entrypoint_sha256")
     prompt_ok = _sha256(metadata.get("effective_prompt_sha256")) and loaded_skill == expected_skill
+    context_ok = (slot.get("context", "off") != "on" or
+                  (stage_run.get("context_error") is not True
+                   and isinstance(stage_run.get("context_receipt"), Mapping)
+                   and stage_run["context_receipt"].get("lifecycle") == "completed"
+                   and stage_run.get("context", {}).get("context") is not None))
     completed = (execution is not None and execution.get("termination") == "exited" and execution.get("exit_code") == 0
-                 and source_ok and prompt_ok and all(stage["lifecycle"] == "completed" for stage in stage_receipts))
+                 and source_ok and prompt_ok and context_ok
+                 and all(stage["lifecycle"] == "completed" for stage in stage_receipts))
     skipped = execution is not None and execution.get("termination") == "exited" and execution.get("exit_code") == 10
     lifecycle = "completed" if completed else "skipped" if skipped else "error"
     intervals = []
@@ -524,8 +842,22 @@ def invoke_slot(protocol: Mapping[str, Any], slot: Mapping[str, Any], case: Mapp
             continue
     slot_start = min((started for started, _ in intervals), default=None)
     wall_clock = (max(finished for _, finished in intervals) - slot_start).total_seconds() if slot_start is not None else None
-    first_finding = min((value for metadata in stage_run["metadata_by_stage"] if slot_start is not None for value in [first_finding_wallclock(metadata.get("first_finding_unix_seconds"), {"started_at": slot_start.isoformat()})] if value is not None), default=None)
-    accounting = "complete" if usage["cost_source"] in {"actual", "rate_estimated"} and all(isinstance(usage[key], int) and not isinstance(usage[key], bool) for key in ("input_tokens", "output_tokens", "total_tokens")) and isinstance(usage["cost_usd"], float) and isinstance(wall_clock, float) else "unknown"
+    candidate_times: dict[str, float] = {}
+    for stage_raw, stage_execution in zip(stage_run["raws"], stage_run["executions"]):
+        if stage_raw is None or stage_execution is None:
+            continue
+        try:
+            event_path = stage_raw.parent / "candidate-events.json"
+            structured_events = json.loads(event_path.read_text(encoding="utf-8")) if event_path.is_file() else None
+            for candidate_id, elapsed in candidate_time_wallclock(
+                    stage_raw.read_text(encoding="utf-8", errors="replace"), stage_execution, structured_events,
+                    slot_start_unix_seconds=slot_start.timestamp() if slot_start is not None else None).items():
+                candidate_times[candidate_id] = min(elapsed, candidate_times.get(candidate_id, elapsed))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    first_candidate = min(candidate_times.values(), default=None)
+    first_finding = verified_finding_wallclock(None, {})
+    accounting = "complete" if usage["cost_source"] in {"actual", "rate_estimated"} and all(isinstance(usage[key], int) and not isinstance(usage[key], bool) for key in ("input_tokens", "output_tokens", "total_tokens")) and isinstance(usage["cost_usd"], float) and isinstance(wall_clock, float) and not (slot.get("context") == "on" and slot.get("context_state") == "warm" and not isinstance(context_cost, float)) else "unknown"
     configured = dict(protocol["limits"])
     provider_execution = execution or next((item for item in reversed(stage_run["executions"]) if item is not None), None)
     provider_limits = provider_execution.get("applied_limits") if provider_execution is not None else None
@@ -541,10 +873,17 @@ def invoke_slot(protocol: Mapping[str, Any], slot: Mapping[str, Any], case: Mapp
         "source": {"expected_manifest_sha256": slot["source_manifest_sha256"], "observed_pre_manifest_sha256": pre["sha256"], "observed_post_manifest_sha256": post["sha256"], "valid": source_ok},
         "stage_lineage": stage_run["lineage"], "stage_receipts": stage_receipts,
         "execution_receipt_sha256": digest(provider_execution) if provider_execution is not None else None, "raw_response_sha256": file_digest(raw) if raw else None, "trusted_source_excerpts": excerpts,
-        "first_finding_wallclock_seconds": first_finding, "lifecycle": lifecycle,
+        "first_candidate_wallclock_seconds": first_candidate, "candidate_times_wallclock_seconds": candidate_times,
+        "candidate_timing_granularity": "adapter_completion",
+        "first_finding_wallclock_seconds": first_finding, "verified_finding_wallclock_seconds": None, "lifecycle": lifecycle,
         "result": "completed_unscored" if completed else "skipped" if skipped else "error", "reason_code": "source_mutated" if not source_ok else "effective_prompt_provenance_mismatch" if not prompt_ok else execution.get("reason") if execution is not None else "stage_execution_unavailable",
         "usage": {**usage, "wall_clock_seconds": wall_clock}, "accounting_state": accounting, "limit_evidence": None,
     }
+    if protocol.get("evaluation_mode") == CONTEXT_FACTORIAL_MODE:
+        receipt.update({"context": slot["context"], "context_state": slot["context_state"], "context_receipt": stage_run.get("context_receipt"),
+                        "context_artifact_sha256": stage_run.get("context", {}).get("artifact_sha256"),
+                        "context_creation_cost_usd": stage_run.get("context", {}).get("amortized_cost_usd"),
+                        "context_creation_cost_source": stage_run.get("context", {}).get("amortized_cost_source", "unknown")})
     if finalize:
         write_once(output / "benchmark-invocation-receipt.json", receipt)
     return receipt
@@ -560,8 +899,10 @@ def adapter_metadata(path: Path) -> dict[str, Any]:
     loaded = value.get("loaded_skill_sha256")
     if loaded is not None and not _sha256(loaded):
         return {}
-    timestamp = value.get("first_finding_unix_seconds")
-    if timestamp is not None and (isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(float(timestamp))):
+    events = value.get("candidate_events")
+    if events is not None and (not isinstance(events, list) or any(not isinstance(item, Mapping) for item in events)):
+        return {}
+    if "candidate_events_sha256" in value and not _sha256(value.get("candidate_events_sha256")):
         return {}
     return dict(value)
 
@@ -581,15 +922,43 @@ def effective_prompt_binding(effective_prompt_sha256: object, case: Mapping[str,
                    "adapter_sha256": arm["adapter_sha256"]})
 
 
-def first_finding_wallclock(epoch: object, execution: Mapping[str, Any]) -> float | None:
-    """Return actual elapsed time to the first required FINDING marker, if any."""
+def candidate_time_wallclock(raw: str, execution: Mapping[str, Any], structured_events: object = None, *, slot_start_unix_seconds: float | None = None) -> dict[str, float]:
+    """Read adapter completion observations relative to the slot origin."""
     try:
-        epoch = float(epoch)
         started = dt.datetime.fromisoformat(str(execution["started_at"]).replace("Z", "+00:00")).timestamp()
     except (OSError, ValueError, KeyError, TypeError):
-        return None
-    elapsed = epoch - started
-    return elapsed if math.isfinite(elapsed) and elapsed >= 0 else None
+        return {}
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_RESPONSE_BYTES:
+        return {}
+    origin = started if slot_start_unix_seconds is None else slot_start_unix_seconds
+    if isinstance(origin, bool) or not isinstance(origin, (int, float)) or not math.isfinite(float(origin)):
+        return {}
+    if not isinstance(structured_events, list) or not structured_events:
+        return {}
+    observed: dict[str, float] = {}
+    for candidate in structured_events:
+        if (not isinstance(candidate, Mapping) or candidate.get("capture_source") != "adapter"
+                or candidate.get("capture_granularity") != "adapter_completion"
+                or not isinstance(candidate.get("candidate_id"), str) or not candidate["candidate_id"].strip()):
+            continue
+        epoch = candidate.get("captured_at_unix_seconds")
+        if isinstance(epoch, bool) or not isinstance(epoch, (int, float)) or not math.isfinite(float(epoch)):
+            continue
+        elapsed = float(epoch) - float(origin)
+        if elapsed >= 0 and math.isfinite(elapsed):
+            observed[candidate["candidate_id"]] = min(elapsed, observed.get(candidate["candidate_id"], elapsed))
+    return observed
+
+
+def verified_finding_wallclock(_value: object, _execution: Mapping[str, Any]) -> None:
+    """Verified finding timing is unavailable until an independent verifier runs."""
+    return None
+
+
+def first_finding_wallclock(epoch: object, execution: Mapping[str, Any]) -> float | None:
+    """Compatibility shim: legacy marker timing is no longer accepted."""
+    del epoch, execution
+    return None
 
 
 
@@ -599,7 +968,7 @@ def _error_receipt(protocol: Mapping[str, Any], slot: Mapping[str, Any], source:
     configured = dict(protocol["limits"])
     observed = source.get("sha256") if isinstance(source, Mapping) else None
     host = str(slot["host"])
-    return {
+    receipt = {
         "schema_version": 1, **{key: slot[key] for key in ("experiment_id", "host", "model", "case_id", "repetition", "limit_profile", "arm", "stage_block", "ordinal", "schedule_slot_sha256", "order_slot_sha256")},
         "schedule_sha256": protocol["schedule_sha256"], "execution_order_sha256": protocol["execution_order_sha256"], "evaluation_mode": protocol["evaluation_mode"], "effective_prompt_sha256": None, "effective_prompt_binding_sha256": None,
         "provenance": {"model_version": protocol["hosts"][host]["model_version"], **protocol["hosts"][host]["arms"][slot["arm"]]},
@@ -608,9 +977,13 @@ def _error_receipt(protocol: Mapping[str, Any], slot: Mapping[str, Any], source:
         "source": {"expected_manifest_sha256": slot["source_manifest_sha256"], "observed_pre_manifest_sha256": observed, "observed_post_manifest_sha256": observed, "valid": observed == slot["source_manifest_sha256"]},
         "stage_lineage": {"block_id": slot["stage_block"], "stages": [], "stage_count": None, "role": "detect_only", "host": host, "model": slot["model"], "model_version": protocol["hosts"][host]["model_version"], "source_manifest_sha256": slot["source_manifest_sha256"], "deadline_epoch": None, "configured_total_limits": configured, "stage_prompt_template_sha256": {}, "proxy": {}}, "stage_receipts": [],
         "execution_receipt_sha256": None, "raw_response_sha256": None, "trusted_source_excerpts": [],
-        "first_finding_wallclock_seconds": None, "lifecycle": "error", "result": "error", "reason_code": reason[:160],
-        "usage": {"input_tokens": None, "output_tokens": None, "total_tokens": None, "cost_usd": None, "cost_source": "unknown", "provider": host, "wall_clock_seconds": None, "rate_table_version": None, "rate_table_sha256": None}, "accounting_state": "unknown", "limit_evidence": None,
+        "first_candidate_wallclock_seconds": None, "candidate_times_wallclock_seconds": {}, "candidate_timing_granularity": "adapter_completion", "first_finding_wallclock_seconds": None, "verified_finding_wallclock_seconds": None, "lifecycle": "error", "result": "error", "reason_code": reason[:160],
+        "usage": {"input_tokens": None, "output_tokens": None, "total_tokens": None, "cost_usd": None, "cost_source": "unknown", "provider": host, "wall_clock_seconds": None, "rate_table_version": None, "rate_table_sha256": None, "context_creation_cost_usd": None, "context_creation_cost_source": "unknown"}, "accounting_state": "unknown", "limit_evidence": None,
     }
+    if protocol.get("evaluation_mode") == CONTEXT_FACTORIAL_MODE:
+        receipt.update({"context": slot.get("context"), "context_state": slot.get("context_state"), "context_receipt": None,
+                        "context_artifact_sha256": None, "context_creation_cost_usd": None, "context_creation_cost_source": "unknown"})
+    return receipt
 
 
 def _await_prestarted_profile(path: Path, wait_seconds: int) -> dict[str, Any]:
@@ -679,7 +1052,7 @@ def invoke_all(protocol: Mapping[str, Any], cases: list[Mapping[str, Any]], sour
     else:
         os.environ["BENCH_TRUSTED_BENCHMARK_PROFILE"] = old_profile
     write_once(output_root / "benchmark-receipts.json", receipts)
-    write_once(output_root / "coordinator-receipt.json", {"schema_version": 1, "schedule_sha256": protocol["schedule_sha256"], "execution_order_sha256": protocol["execution_order_sha256"], "receipt_sha256": digest(receipts), "expected_slots": len(order), "proxy_lifecycle": "external_prestarted_per_slot_profiles", "clock_sources": {"wall_clock_seconds": "trusted_execution_receipt_started_at_finished_at", "first_finding_wallclock_seconds": "adapter_FINDING_marker_unix_time"}})
+    write_once(output_root / "coordinator-receipt.json", {"schema_version": 1, "schedule_sha256": protocol["schedule_sha256"], "execution_order_sha256": protocol["execution_order_sha256"], "receipt_sha256": digest(receipts), "expected_slots": len(order), "proxy_lifecycle": "external_prestarted_per_slot_profiles", "clock_sources": {"wall_clock_seconds": "trusted_execution_receipt_started_at_finished_at", "candidate_wallclock_seconds": "adapter_completion_observation_json", "verified_finding_wallclock_seconds": "unavailable_until_external_verifier"}})
     return receipts
 
 
@@ -843,7 +1216,7 @@ def invoke_all_managed(protocol: Mapping[str, Any], cases: list[Mapping[str, Any
         else:
             os.environ["BENCH_TRUSTED_BENCHMARK_PROFILE"] = old_profile
     write_once(output_root / "benchmark-receipts.json", receipts)
-    write_once(output_root / "coordinator-receipt.json", {"schema_version": 1, "schedule_sha256": protocol["schedule_sha256"], "execution_order_sha256": protocol["execution_order_sha256"], "receipt_sha256": digest(receipts), "expected_slots": len(order), "proxy_lifecycle": lifecycle, "cleanup_pending_ordinals": [record["ordinal"] for record in lifecycle if record["cleanup_pending"]], "clock_sources": {"wall_clock_seconds": "trusted_execution_receipt_started_at_finished_at", "first_finding_wallclock_seconds": "adapter_FINDING_marker_unix_time"}})
+    write_once(output_root / "coordinator-receipt.json", {"schema_version": 1, "schedule_sha256": protocol["schedule_sha256"], "execution_order_sha256": protocol["execution_order_sha256"], "receipt_sha256": digest(receipts), "expected_slots": len(order), "proxy_lifecycle": lifecycle, "cleanup_pending_ordinals": [record["ordinal"] for record in lifecycle if record["cleanup_pending"]], "clock_sources": {"wall_clock_seconds": "trusted_execution_receipt_started_at_finished_at", "candidate_wallclock_seconds": "adapter_completion_observation_json", "verified_finding_wallclock_seconds": "unavailable_until_external_verifier"}})
     if interrupted is not None:
         raise interrupted
     return receipts

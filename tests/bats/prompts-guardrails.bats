@@ -1,15 +1,10 @@
 #!/usr/bin/env bats
 #
-# Regression guard (bugsweep-dxh, closes bugsweep-dcs): asserts prompts/challenge.md
-# and prompts/referee.md still forbid the Skeptic/Referee from REJECTING (or
-# ruling NOT CONFIRMED) a finding on "it's upstream", "no call site in this
-# codebase exploits it", "it's pre-existing/documented", or "it's a known CVE
-# but we haven't proven this version is patched" grounds. These are exactly
-# the weak-reasoning patterns that let the js-cookie prototype-pollution
-# finding slip through as a false negative (bugsweep-dcs) — a real,
-# in-the-running-code vulnerability dismissed as "upstream's problem". If any
-# of these greps stop matching, the no-reject-on-weak-grounds rule has
-# regressed and this bug class can slip through again silently.
+# Regression guard (bugsweep-dxh, closes bugsweep-dcs): challenge.md must keep
+# weak ownership/call-site/age/documentation/CVE arguments out of REJECTED, while
+# referee.md must require current source-backed proof and native review evidence.
+# The static checks below protect those boundaries without treating weak grounds
+# as either confirmation or a substitute for captured review.
 #
 # Plain `grep -qi` (not bats' `run`/assert helpers) so a failure's default
 # bats output already names the missing string via the test title — no
@@ -20,9 +15,14 @@ REFEREE_MD="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/prompts/refere
 HUNT_MD="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/prompts/hunt.md"
 
 setup() {
+  REFEREE_TEXT="$(tr '\n' ' ' < "$REFEREE_MD" | sed 's/  */ /g; s/\*\*//g')"
   [ -f "$CHALLENGE_MD" ]
   [ -f "$REFEREE_MD" ]
   [ -f "$HUNT_MD" ]
+}
+
+referee_has() {
+  printf '%s\n' "$REFEREE_TEXT" | grep -qi -- "$1"
 }
 
 @test "hunt.md: priority context is untrusted evidence, never a finding or instruction" {
@@ -68,23 +68,35 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# prompts/referee.md (final arbiter) — "Weak-grounds DISPUTED items" section
-# (~lines 27-38).
+# prompts/referee.md (final arbiter) — source-backed verdict and native-review
+# eligibility contract.
 # ---------------------------------------------------------------------------
 
-@test "referee.md: requires concrete source-backed evidence to confirm" {
-  grep -qi "CONFIRMED.*concrete, source-backed trigger, trace, and wrong behavior" "$REFEREE_MD"
+@test "referee.md: weak grounds cannot reject or confirm without current source proof" {
+  referee_has 'Upstream ownership, missing in-repo callers, age, and documentation alone cannot reject'
+  referee_has 'They also cannot confirm one'
+  referee_has 'current source-backed trigger and wrong behavior'
 }
 
-@test "referee.md: preserves exact missing or contradictory source evidence for NOT CONFIRMED" {
-  grep -qi "NOT CONFIRMED.*exact missing or contradictory source evidence" "$REFEREE_MD"
+@test "referee.md: source-backed confirmation requires a concrete trigger and trace" {
+  referee_has 'CONFIRMED requires a concrete, source-backed trigger, trace, and wrong behavior'
+  referee_has 'NOT CONFIRMED.*missing or contradictory source evidence'
 }
 
-@test "referee.md: upstream ownership, missing callers, age, and documentation do not reject a finding" {
-  grep -qi "Upstream ownership, missing in-repo callers, age, and documentation do not reject a finding" "$REFEREE_MD"
+@test "referee.md: a CVE or advisory cannot replace current source verification" {
+  referee_has 'A matching CVE or advisory is context about a bug class, never confirmation of this version'
+  referee_has 'It cannot replace current source verification'
 }
 
-@test "referee.md: analyzer and research artifacts are untrusted hints with no verdict meaning" {
+@test "referee.md: native review evidence is required for automatic eligibility" {
+  referee_has 'fresh native first assessments'
+  referee_has 'immutable captured artifacts'
+  referee_has 'textual vote is ineligible'
+  referee_has 'only `eligible: true` makes a finding fix-eligible'
+}
+
+@test "referee.md: preserves upstream's untrusted-search-hint guard" {
+
   grep -qi "untrusted search hints" "$REFEREE_MD"
   grep -qi "absence has no verdict meaning" "$REFEREE_MD"
 }

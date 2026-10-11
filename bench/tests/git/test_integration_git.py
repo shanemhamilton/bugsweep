@@ -32,17 +32,17 @@ def test_real_git_merge_export_accepts_a_trusted_provider_result(tmp_path: Path,
     git("checkout", "-q", "main")
     (repo / "target.txt").write_text("target\n"); git("add", "target.txt"); git("commit", "-qm", "target")
     git("merge", "--no-ff", "-qm", "merged", "bugsweep/fix"); merge_sha = git("rev-parse", "HEAD")
-    command = ["synthetic", "check"]; policy = {"mode": "required-untrusted", "backend": "docker", "scratch_root": str(scratch)}
+    command = ["synthetic", "check"]; policy = {"mode": "required-untrusted", "backend": "docker", "scratch_root": str(scratch), "target_root": str(repo)}
     def record(request, source):
         manifest = hashlib.sha256(module.canonical_json_bytes(source)).hexdigest()
         execution = {"termination": "exited", "exit_code": 0, "command": command, "command_sha256": hashlib.sha256(module.canonical_json_bytes(command)).hexdigest(), "config_sha256": module.execution_config_sha256(request["execution_policy"], ()), "environment_sha256": module.execution_environment_sha256({}), "backend": {"name": "docker", "engine_sha256": "a" * 64, "image_digest": "b" * 64}, "backend_readback_path": "mock", "backend_readback_sha256": "c" * 64, "backend_readback_verified": True, "capabilities": {"isolation": "verified", "network": "verified_denied", "deadline": "process_group_term_kill_reap", "output_import": "trusted_side", "evidence_tier": "verified_backend"}, "execution_policy": request["execution_policy"], "source_identity": {"kind": "content-manifest-sha256", "sha256": manifest, "source_file_sha256": source}, "source_manifest_sha256": manifest}
         return {"check": "check", "status": "pass", **{key: execution[key] for key in ("command_sha256", "config_sha256", "environment_sha256")}, "execution": execution}
-    initial = {"app.txt": hashlib.sha256(b"base\n").hexdigest()}; baseline = {"schema_version": 1, "run_id": "run", "phase": "verify", "source_file_sha256": initial, "source_manifest_sha256": hashlib.sha256(module.canonical_json_bytes(initial)).hexdigest(), "checks": [record({"execution_policy": policy}, initial)], "regressions": [], "proof_error": False, "execution_policy_mode": "required-untrusted"}
-    (run / "check-plan.json").write_text(json.dumps({"run_id": "run", "checks": [{"name": "check", "command": command}], "execution_policy": policy})); (run / "baseline.json").write_text(json.dumps(baseline))
+    initial = {"app.txt": hashlib.sha256(b"base\n").hexdigest()}; baseline = {"schema_version": 1, "run_id": "run", "phase": "baseline", "source_file_sha256": initial, "source_manifest_sha256": hashlib.sha256(module.canonical_json_bytes(initial)).hexdigest(), "checks": [record({"execution_policy": policy}, initial)], "regressions": [], "proof_error": False, "execution_policy_mode": "required-untrusted"}
+    (run / "check-plan.json").write_text(json.dumps({"run_id": "run", "target_root": str(repo), "checks": [{"name": "check", "command": command}], "execution_policy": policy})); (run / "baseline.json").write_text(json.dumps(baseline))
     monkeypatch.setattr(module, "_check_record", lambda _run, request, _entry, _index: record(request, request["source_file_sha256"]))
     import scripts._execution as execution
     monkeypatch.setattr(execution, "validate_execution_receipt", lambda *_args: [])
-    result = module.run_integration_checks(run, repo, merge_sha, "bugsweep/fix", Path(shutil.which("git") or "git").resolve())
+    result = module.run_integration_checks(run, repo, merge_sha, "bugsweep/fix", Path(shutil.which("git") or "git").resolve(), "a" * 32)
     assert result["status"] == "verified"
     receipt = json.loads(Path(result["receipt_path"]).read_text())
     assert receipt["merge_sha"] == merge_sha

@@ -70,7 +70,7 @@ def _sha256(value: Any) -> bool:
 
 
 def _slot(slot: Mapping[str, Any], arm: str) -> tuple:
-    return (str(slot["experiment_id"]), str(slot["host"]), str(slot["model"]), str(slot["case_id"]), int(slot["repetition"]), str(slot["limit_profile"]), arm, str(slot.get("stage_block", "full_pipeline")))
+    return (str(slot["experiment_id"]), str(slot["host"]), str(slot["model"]), str(slot["case_id"]), int(slot["repetition"]), str(slot["limit_profile"]), arm, str(slot.get("stage_block", "full_pipeline")), str(slot.get("context", "off")), str(slot.get("context_state", "none")))
 
 
 def _expanded_slots(schedule: Sequence[Mapping[str, Any]]):
@@ -96,6 +96,9 @@ def _validate_execution_order(protocol: Mapping[str, Any], schedule: Sequence[Ma
         identity = {"ordinal": order_slot.get("ordinal"), "schedule_slot_sha256": order_slot.get("schedule_slot_sha256"), "arm": order_slot.get("arm")}
         if "stage_block" in order_slot:
             identity["stage_block"] = order_slot["stage_block"]
+        for field in ("context", "context_state"):
+            if field in order_slot:
+                identity[field] = order_slot[field]
         if expected is None or key in order_by_key or any(order_slot.get(field) != value for field, value in expected.items()) or type(order_slot.get("ordinal")) is not int or order_slot["ordinal"] < 1 or order_slot.get("order_slot_sha256") != _digest(identity):
             raise EvaluationError("execution-order slot mismatch")
         order_by_key[key] = order_slot
@@ -291,7 +294,13 @@ def reduce_evaluation(protocol: Mapping[str, Any], schedule: Sequence[Mapping[st
         except ValueError as exc:
             raise EvaluationError("invalid protocol stage blocks") from exc
         blocks = [block["id"] for block in configured_blocks]
-        if not any(block["id"] == "full_pipeline" and block["stages"] == list(STAGES) for block in configured_blocks) or any(slot.get("stage_blocks") != blocks for slot in schedule):
+        if not any(block["id"] == "full_pipeline" and block["stages"] == list(STAGES) for block in configured_blocks):
+            raise EvaluationError("schedule stage blocks differ from frozen protocol")
+        selected_blocks = [tuple(slot.get("stage_blocks", ())) for slot in schedule]
+        if protocol.get("evaluation_mode") == "reduced_detect_only_context_factorial":
+            if any(not selected or any(block not in blocks for block in selected) for selected in selected_blocks):
+                raise EvaluationError("schedule stage blocks differ from frozen protocol")
+        elif any(list(selected) != blocks for selected in selected_blocks):
             raise EvaluationError("schedule stage blocks differ from frozen protocol")
     elif any("stage_blocks" in slot for slot in schedule):
         raise EvaluationError("schedule has unfrozen stage blocks")
@@ -301,7 +310,8 @@ def reduce_evaluation(protocol: Mapping[str, Any], schedule: Sequence[Mapping[st
         if not isinstance(slot.get("source_manifest_sha256"), str):
             raise EvaluationError("schedule source manifest missing")
         arms = slot.get("arms", [])
-        if set(arms) != ARM_SET:
+        if (not arms or any(arm not in ARM_SET for arm in arms)
+                or (protocol.get("evaluation_mode") != "reduced_detect_only_context_factorial" and set(arms) != ARM_SET)):
             raise EvaluationError("schedule must contain exactly the required arms")
         for arm in arms:
             key = _slot(slot, arm)
@@ -355,6 +365,13 @@ def reduce_evaluation(protocol: Mapping[str, Any], schedule: Sequence[Mapping[st
             # against independently validated held-out truth. A caller-written
             # receipt result cannot replace that missing measurement.
             reasons: list[str] = ["detection_evidence_unavailable"]
+            if any(key[8] == "on" for key in host_keys):
+                reasons.append("context_content_isolation_unverified")
+            if any(key[8:10] == ("on", "warm") for key in host_keys):
+                # Warm artifacts are currently operator inputs. Matching their hashes
+                # does not prove the native builder used the frozen prompt or source-only
+                # inputs; keep that limitation separate from unknown creation cost.
+                reasons.append("warm_context_builder_provenance_unverified")
             if order_by_key is None:
                 reasons.append("execution_order_unavailable")
             if not supported_hosts_complete:
@@ -397,6 +414,33 @@ def reduce_evaluation(protocol: Mapping[str, Any], schedule: Sequence[Mapping[st
                 case_rows = [seen.get(key) for key in host_keys if key[3] == case_id]
                 if all(row and row.get("lifecycle") == "completed" and row.get("accounting_state") == "complete" for row in case_rows):
                     comparable_cases.add(case_id)
+            context_cells: dict[str, dict[str, Any]] = {}
+            cell_keys = sorted({f"{key[8]}/{key[9]}" for key in host_keys})
+            for cell_key in cell_keys:
+                cell_host_keys = [key for key in host_keys if f"{key[8]}/{key[9]}" == cell_key]
+                cell_receipts = [seen[key] for key in cell_host_keys if key in seen]
+                cell_missing = [key for key in cell_host_keys if key not in seen]
+                cell_lifecycle = defaultdict(int)
+                cell_accounting = defaultdict(int)
+                cell_arms: dict[str, int] = defaultdict(int)
+                cell_comparable_cases: set[str] = set()
+                for cell_receipt in cell_receipts:
+                    cell_lifecycle[str(cell_receipt.get("lifecycle", "unknown"))] += 1
+                    cell_accounting[str(cell_receipt.get("accounting_state", "unknown"))] += 1
+                    cell_arms[str(cell_receipt["arm"])] += 1
+                for case_id in {key[3] for key in cell_host_keys}:
+                    case_rows = [seen.get(key) for key in cell_host_keys if key[3] == case_id]
+                    if all(row and row.get("lifecycle") == "completed" and row.get("accounting_state") == "complete" for row in case_rows):
+                        cell_comparable_cases.add(case_id)
+                cell_attrition = ((len(cell_missing) + sum(count for state, count in cell_lifecycle.items() if state != "completed")) / len(cell_host_keys)
+                                  if cell_host_keys else 1.0)
+                context_cells[cell_key] = {
+                    "expected_slots": len(cell_host_keys), "received_slots": len(cell_receipts),
+                    "missing_slots": len(cell_missing), "attrition": cell_attrition,
+                    "comparable_cases": len(cell_comparable_cases), "arms": dict(sorted(cell_arms.items())),
+                    "lifecycle": dict(cell_lifecycle), "accounting": dict(cell_accounting),
+                    "interpretation": "descriptive_accounting_only",
+                }
             attrition = (len(missing) + sum(count for state, count in lifecycle.items() if state != "completed")) / len(host_keys) if host_keys else 1.0
             if missing: reasons.append("missing_receipts")
             if not host_keys: reasons.append("missing_schedule_slots")
@@ -410,10 +454,11 @@ def reduce_evaluation(protocol: Mapping[str, Any], schedule: Sequence[Mapping[st
             human_decision, human_reasons = _human_decision(human)
             reasons.extend(human_reasons)
             inconclusive = {"detection_evidence_unavailable", "execution_order_unavailable", "both_supported_hosts_required", "missing_schedule_slots", "scheduled_repetitions_incomplete", "missing_receipts", "attrition_over_20_percent", "fewer_than_16_comparable_cases", "categories_incomplete", "missing_arm", "matched_limits_mismatch", "limits_incomplete", "accounting_incomplete", "human_calibration_unavailable", "human_measurement_incomplete", "rejection_audit_unavailable", "unresolved_adjudications_over_10_percent"}
+            inconclusive.update({"context_content_isolation_unverified", "warm_context_builder_provenance_unverified"})
             decision = "inconclusive" if any(reason in inconclusive for reason in reasons) else human_decision
             if "confirmed_unsafe_auto_landing" in human_reasons:
                 decision = "redesign"
-            hosts[host] = {"expected_slots": len(host_keys), "received_slots": len(host_receipts), "missing_slots": len(missing), "attrition": attrition, "comparable_cases": len(comparable_cases), "categories": sorted(categories - {""}), "repositories": sorted(repositories - {""}), "arms": dict(sorted(by_arm.items())), "lifecycle": dict(lifecycle), "accounting": dict(accounting), "comparability_reasons": reasons, "metrics": {"human": human or {"status": "unverified"}, "detection": {"status": "unverified", "reason": "native_ground_truth_matches_unavailable"}}, "decision": decision}
+            hosts[host] = {"expected_slots": len(host_keys), "received_slots": len(host_receipts), "missing_slots": len(missing), "attrition": attrition, "comparable_cases": len(comparable_cases), "categories": sorted(categories - {""}), "repositories": sorted(repositories - {""}), "arms": dict(sorted(by_arm.items())), "lifecycle": dict(lifecycle), "accounting": dict(accounting), "context_cells": context_cells, "comparability_reasons": reasons, "metrics": {"human": human or {"status": "unverified"}, "detection": {"status": "unverified", "reason": "native_ground_truth_matches_unavailable"}}, "decision": decision}
         stage_results[stage_block] = {"hosts": hosts, "calibration": calibrations.get(stage_block, {"status": "unverified"})}
     hosts = stage_results["full_pipeline"]["hosts"]
     host_decisions = {host["decision"] for host in hosts.values()}

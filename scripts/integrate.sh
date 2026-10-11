@@ -114,13 +114,36 @@ RUN_DIR="$(cd "$RUN_DIR" && pwd)"
 [ -f "${RUN_DIR}/check-plan.json" ] || die_usage "RUN_DIR lacks frozen check-plan.json"
 [ -f "${RUN_DIR}/baseline.json" ] || die_usage "RUN_DIR lacks baseline.json"
 command -v python3 >/dev/null 2>&1 || die_usage "python3 is required for trusted integration checks"
+[ "${BUGSWEEP_FORCE_NO_PYTHON:-0}" != "1" ] || die_usage "python3 is required for immutable integration receipts"
+ATTEMPT_ID="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+latest_results_path="${RUN_DIR}/integrate-results.json"
+attempts_dir="${RUN_DIR}/integration-attempts"
+if [ -L "$latest_results_path" ] || { [ -e "$latest_results_path" ] && [ ! -f "$latest_results_path" ]; }; then
+  die_usage "integrate-results.json must be a regular file"
+fi
+if [ -L "$attempts_dir" ] || { [ -e "$attempts_dir" ] && [ ! -d "$attempts_dir" ]; }; then
+  die_usage "integration-attempts must be a directory"
+fi
 
 # --- Preconditions -------------------------------------------------------------
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die_usage "not inside a git repo"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-# _integration_checks.py accepts only a canonical regular executable. `command
-# -v git` may be a Homebrew symlink, so resolve it before the trusted handoff.
-GIT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$(command -v git)")"
+git_candidate="$(command -v git)" || die_usage "git is required for source-bound integration checks"
+GIT_PATH="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve(strict=True))' "$git_candidate")" \
+  || die_usage "could not resolve the canonical git executable"
+
+# Validate the authority layout and the exact candidate tree before any checkout.
+# The Python helper repeats this check after exporting the merged tree, so a
+# tracked path that appears only on an incoming branch cannot replace run state.
+validate_authority_tree() {
+  local tree_sha="$1"
+  python3 -B "${SCRIPT_DIR}/_integration_checks.py" \
+    --validate-authority \
+    --run-dir "$RUN_DIR" \
+    --repo-root "$REPO_ROOT" \
+    --git-path "$GIT_PATH" \
+    --tree-sha "$tree_sha" >/dev/null
+}
 
 git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
 case "$git_common_dir" in
@@ -163,6 +186,19 @@ for b in "${BRANCHES[@]}"; do
   branch_exists "$b" || die_usage "branch '$b' does not exist"
 done
 
+initial_target_sha="$(git rev-parse --verify "refs/heads/${TARGET_BRANCH}^{commit}")" \
+  || die_usage "could not resolve target branch '${TARGET_BRANCH}'"
+if ! validate_authority_tree "$initial_target_sha"; then
+  die_usage "frozen authority boundary rejects target branch '${TARGET_BRANCH}'"
+fi
+for b in "${BRANCHES[@]}"; do
+  candidate_sha="$(git rev-parse --verify "refs/heads/${b}^{commit}")" \
+    || die_usage "could not resolve branch '$b'"
+  if ! validate_authority_tree "$candidate_sha"; then
+    die_usage "frozen authority boundary rejects branch '$b'"
+  fi
+done
+
 # --- Quality gate command resolution --------------------------------------------
 # This label is evidence metadata. Target execution happens only inside the shared
 # provider, against the exact merged-tree export made by _integration_checks.py.
@@ -178,7 +214,8 @@ run_quality_gate() {
     --repo-root "$REPO_ROOT" \
     --merge-sha "$merge_sha" \
     --branch "$branch" \
-    --git-path "$GIT_PATH"
+    --git-path "$GIT_PATH" \
+    --attempt-id "$ATTEMPT_ID"
 }
 
 # --- Containment idiom -----------------------------------------------------------
@@ -211,19 +248,38 @@ record_result() {
 }
 
 # --- Core per-branch integration -------------------------------------------------
-# Prints the outcome code on stdout (merged|already_contained|conflict|gate_failed|
-# gate_dirtied_tree|update_failed). Never moves the target branch to a bad state: it detaches HEAD
+# Prints the outcome code on stdout (merged|already_contained|authority_invalid|
+# conflict|gate_failed|gate_dirtied_tree|update_failed). Never moves the target branch to a bad state: it detaches HEAD
 # at the target's current tip, builds the merge commit there, gates it, and only
 # fast-forwards the real target ref onto a gate-passed commit. The next branch's
 # iteration re-derives the tip from $TARGET_BRANCH, so there is no cross-iteration
 # state to carry.
 integrate_one() {
-  local branch="$1" tip merge_sha gate_sha
+  local branch="$1" branch_tip="$2" tip merge_sha gate_sha
 
-  if branch_contained_in_target "$branch" "$TARGET_BRANCH"; then
+  # Re-resolve the target at each merge, but merge the exact source commit that
+  # the caller checked.  This keeps a moving branch ref from changing the tree
+  # after its authority inventory was validated.
+  tip="$(git rev-parse --verify "refs/heads/${TARGET_BRANCH}^{commit}")" || {
+    log "could not resolve target '$TARGET_BRANCH' while integrating $branch"
+    printf 'authority_invalid'
+    return 1
+  }
+  if ! validate_authority_tree "$tip"; then
+    log "frozen authority boundary rejects target '$TARGET_BRANCH' while integrating $branch"
+    printf 'authority_invalid'
+    return 1
+  fi
+  if ! validate_authority_tree "$branch_tip"; then
+    log "frozen authority boundary rejects source '$branch' at $branch_tip"
+    printf 'authority_invalid'
+    return 1
+  fi
+
+  if branch_contained_in_target "$branch_tip" "$tip"; then
     log "$branch is already contained in $TARGET_BRANCH — re-running the quality gate for a tip-bound receipt"
     local contained_output contained_status=0
-    gate_sha="$(git rev-parse "$TARGET_BRANCH")"
+    gate_sha="$tip"
     contained_output="$(run_quality_gate "$gate_sha" "$branch" 2>&1)" || contained_status=$?
     [ -n "$contained_output" ] && printf '%s\n' "$contained_output" | sed 's/^/integrate:   gate> /' >&2
     if ! tree_is_clean; then
@@ -236,11 +292,19 @@ integrate_one() {
       printf 'gate_failed'
       return 1
     fi
+    # Reattach without checking out an unchecked tree. The initial checkout is
+    # detached, so an invocation containing only already-landed branches must
+    # restore the target's symbolic HEAD after its exact tip passes the gate.
+    if [ "$(git rev-parse HEAD)" != "$tip" ] \
+      || [ "$(git rev-parse "refs/heads/${TARGET_BRANCH}")" != "$tip" ] \
+      || ! git symbolic-ref HEAD "refs/heads/${TARGET_BRANCH}"; then
+      log "target moved while re-verifying $branch — preserving, stopping"
+      printf 'update_failed'
+      return 1
+    fi
     printf 'already_contained'
     return 0
   fi
-
-  tip="$(git rev-parse "$TARGET_BRANCH")"
 
   # (1) Detach HEAD at the current target tip. The target ref itself does not move.
   # The tree was verified clean just before this in the main loop, so the checkout
@@ -253,7 +317,7 @@ integrate_one() {
   fi
 
   # (2) Build the merge commit on the detached HEAD. Conflict -> abort, preserve, stop.
-  if ! git merge --no-ff -m "integrate(bugsweep): ${branch}" "$branch" >/dev/null 2>&1; then
+  if ! git merge --no-ff -m "integrate(bugsweep): ${branch}" "$branch_tip" >/dev/null 2>&1; then
     git merge --abort >/dev/null 2>&1 || true
     git checkout -q "$TARGET_BRANCH"      # target ref never moved; return HEAD to it
     log "CONFLICT merging $branch — aborted cleanly; branch preserved, remaining branches untouched"
@@ -324,7 +388,8 @@ integrate_one() {
 # step): the orchestrator drives this script and is responsible for whatever
 # happens next (push, further integration, etc.) — see the header note that this
 # script itself never pushes.
-git checkout -q "$TARGET_BRANCH" 2>/dev/null || die_usage "could not check out target branch '$TARGET_BRANCH'"
+git checkout -q --detach "$initial_target_sha" 2>/dev/null \
+  || die_usage "could not check out target branch '$TARGET_BRANCH' tip"
 
 STOP=0
 idx=0
@@ -360,8 +425,8 @@ while [ "$idx" -lt "$total" ]; do
   # echoes it. Because `|| true` disables set -e inside the substitution,
   # integrate_one checks its own critical exit statuses (e.g. update-ref CAS)
   # explicitly rather than relying on set -e — see MAJOR 2, retry 2.
-  source_tip="$(git rev-parse "$branch")"
-  code="$(integrate_one "$branch")" || true
+  source_tip="$(git rev-parse --verify "refs/heads/${branch}^{commit}")"
+  code="$(integrate_one "$branch" "$source_tip")" || true
   target_tip="$(git rev-parse "$TARGET_BRANCH")"
   gate_passed=false
   case "$code" in merged|already_contained) gate_passed=true ;; esac
@@ -370,7 +435,8 @@ while [ "$idx" -lt "$total" ]; do
     merged)            MERGED_COUNT=$((MERGED_COUNT + 1)) ;;
     already_contained) ALREADY_CONTAINED_COUNT=$((ALREADY_CONTAINED_COUNT + 1)) ;;
     *)
-      # conflict | gate_failed | gate_dirtied_tree | update_failed -> preserve, stop.
+      # authority_invalid | conflict | gate_failed | gate_dirtied_tree | update_failed
+      # -> preserve, stop.
       PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
       STOP=1
       STOPPED_AT="$branch"
@@ -401,43 +467,8 @@ fi
 # --- Write integrate-results.json -------------------------------------------------
 # RUN_DIR is mandatory because successful rows must bind immutable provider and
 # merged-source evidence held outside the target repository.
-results_json_path="${RUN_DIR}/integrate-results.json"
-
-# JSON string escaper for the degraded (no-python3) fallback: escapes backslash,
-# double-quote, and control chars so a branch name containing any of them still
-# produces valid JSON (MAJOR 4). git permits a literal '"' in ref names (verified
-# via git check-ref-format) — that's the case a naive writer breaks on. It rejects
-# backslash, but we escape it anyway for defense in depth. Special-char match and
-# replacement literals are built with printf so no ambiguous shell-escaping of a
-# backslash or quote is needed (keeps this shellcheck-clean).
-json_escape() {
-  local s="$1" out="" i c
-  local bs dq tab nl cr
-  bs="$(printf '\134')"   # backslash
-  dq="$(printf '\042')"   # double-quote
-  tab="$(printf '\t')"
-  nl="$(printf '\n')"
-  cr="$(printf '\r')"
-  i=0
-  while [ "$i" -lt "${#s}" ]; do
-    c="${s:$i:1}"
-    if [ "$c" = "$bs" ]; then
-      out="${out}${bs}${bs}"
-    elif [ "$c" = "$dq" ]; then
-      out="${out}${bs}${dq}"
-    elif [ "$c" = "$tab" ]; then
-      out="${out}${bs}t"
-    elif [ "$c" = "$nl" ]; then
-      out="${out}${bs}n"
-    elif [ "$c" = "$cr" ]; then
-      out="${out}${bs}r"
-    else
-      out="${out}${c}"
-    fi
-    i=$((i + 1))
-  done
-  printf '%s' "$out"
-}
+attempt_results_json_path="${attempts_dir}/${ATTEMPT_ID}.json"
+results_json_path="$latest_results_path"
 
 want_python() {
   command -v python3 >/dev/null 2>&1
@@ -445,8 +476,8 @@ want_python() {
 
 write_results_json() {
   local out="$1"
-  if want_python; then
-    BSW_TARGET="$TARGET_BRANCH" \
+  want_python || die_usage "python3 is required for immutable integration receipts"
+  BSW_TARGET="$TARGET_BRANCH" \
     BSW_RESULT="$INTEGRATE_RESULT" \
     BSW_STOPPED_AT="$STOPPED_AT" \
     BSW_MERGED_COUNT="$MERGED_COUNT" \
@@ -459,6 +490,7 @@ write_results_json() {
     BSW_GATE_PASSED="$(printf '%s\n' "${RESULT_GATE_PASSED[@]}")" \
     BSW_GATE_COMMAND="$QUALITY_GATE_COMMAND" \
     BSW_RUN_DIR="$RUN_DIR" \
+    BSW_ATTEMPT_ID="$ATTEMPT_ID" \
     python3 - "$out" <<'PY'
 import hashlib
 import json
@@ -480,7 +512,8 @@ for branch, code, source, target, passed in zip(
            "target_tip": target, "quality_gate_passed": passed == "true"}
     if passed == "true":
         branch_hash = hashlib.sha256(branch.encode("utf-8")).hexdigest()[:16]
-        receipt = os.path.join(run_dir, "integration-check-results", f"{target}-{branch_hash}.json")
+        attempt_id = os.environ["BSW_ATTEMPT_ID"]
+        receipt = os.path.join(run_dir, "integration-check-results", attempt_id, f"{target}-{branch_hash}.json")
         if os.path.islink(receipt) or os.path.getsize(receipt) > 256 * 1024 * 1024:
             raise SystemExit("integration suite receipt path is unsafe")
         with open(receipt, "rb") as handle:
@@ -498,6 +531,7 @@ for branch, code, source, target, passed in zip(
     rows.append(row)
 data = {
     "target_branch": os.environ["BSW_TARGET"],
+    "attempt_id": os.environ["BSW_ATTEMPT_ID"],
     "quality_gate_command": os.environ["BSW_GATE_COMMAND"],
     "result": os.environ["BSW_RESULT"],
     "stopped_at": os.environ["BSW_STOPPED_AT"] or None,
@@ -510,46 +544,35 @@ with open(out_path, "x", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 PY
-  else
-    # Degraded fallback for machines without python3 (or forced via
-    # BUGSWEEP_FORCE_NO_PYTHON): hand-rolled JSON with every interpolated string
-    # field passed through json_escape so quotes/backslashes stay valid (MAJOR 4).
-    local first=1 fidx esc_target esc_stopped esc_branch esc_code esc_source esc_result_target esc_gate_command
-    esc_target="$(json_escape "$TARGET_BRANCH")"
-    esc_gate_command="$(json_escape "$QUALITY_GATE_COMMAND")"
-    {
-      printf '{\n'
-      printf '  "target_branch": "%s",\n' "$esc_target"
-      printf '  "quality_gate_command": "%s",\n' "$esc_gate_command"
-      printf '  "result": "%s",\n' "$INTEGRATE_RESULT"
-      if [ -n "$STOPPED_AT" ]; then
-        esc_stopped="$(json_escape "$STOPPED_AT")"
-        printf '  "stopped_at": "%s",\n' "$esc_stopped"
-      else
-        printf '  "stopped_at": null,\n'
-      fi
-      printf '  "merged_count": %s,\n' "$MERGED_COUNT"
-      printf '  "already_contained_count": %s,\n' "$ALREADY_CONTAINED_COUNT"
-      printf '  "preserved_count": %s,\n' "$PRESERVED_COUNT"
-      printf '  "branches": [\n'
-      fidx=0
-      while [ "$fidx" -lt "$total" ]; do
-        [ "$first" -eq 1 ] || printf ',\n'
-        first=0
-        esc_branch="$(json_escape "${RESULT_BRANCHES[$fidx]}")"
-        esc_code="$(json_escape "${RESULT_CODES[$fidx]}")"
-        esc_source="$(json_escape "${RESULT_SOURCE_TIPS[$fidx]}")"
-        esc_result_target="$(json_escape "${RESULT_TARGET_TIPS[$fidx]}")"
-        printf '    {"branch": "%s", "status": "%s", "source_tip": "%s", "target_tip": "%s", "quality_gate_passed": %s}' \
-          "$esc_branch" "$esc_code" "$esc_source" "$esc_result_target" "${RESULT_GATE_PASSED[$fidx]}"
-        fidx=$((fidx + 1))
-      done
-      printf '\n  ]\n'
-      printf '}\n'
-    } > "$out"
-  fi
 }
-write_results_json "$results_json_path"
+mkdir -p "$attempts_dir"
+write_results_json "$attempt_results_json_path"
+
+# Publish the latest attempt only after its immutable result is complete.  A
+# pre-existing symlink or non-regular destination is rejected before the
+# atomic replacement; the per-attempt file remains the audit record.
+python3 - "$attempt_results_json_path" "$results_json_path" <<'PY'
+import os
+import sys
+import uuid
+from pathlib import Path
+
+source, destination = map(Path, sys.argv[1:])
+if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+    raise SystemExit("integrate-results.json must be a regular file")
+destination.parent.mkdir(mode=0o700, exist_ok=True)
+temporary = destination.with_name("." + destination.name + "." + uuid.uuid4().hex)
+try:
+    with source.open("rb") as handle:
+        payload = handle.read()
+    with temporary.open("xb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, destination)
+finally:
+    temporary.unlink(missing_ok=True)
+PY
 
 # --- Stable output contract -------------------------------------------------------
 idx=0

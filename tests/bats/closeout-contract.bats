@@ -42,7 +42,8 @@ TRACKER_MD="${ROOT}/references/tracker-closeout.md"
 @test "skill: recall, vote, and repro evidence are visible without changing fix eligibility" {
   grep -q '/bugsweep --recall' "$SKILL_MD"
   grep -q 'Near misses (review, never auto-fixed)' "$SKILL_MD"
-  grep -q 'vote split for high/critical' "$SKILL_MD"
+  grep -Fq '<repro status> · <vote split> · <one-line cause>' "$SKILL_MD"
+  ! grep -q 'vote split for high/critical' "$SKILL_MD"
   grep -q 'repro status' "$SKILL_MD"
 }
 

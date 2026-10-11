@@ -12,6 +12,7 @@ from scripts._terminal_lifecycle import (  # noqa: E402
     LifecycleError,
     advance_closeout,
     initialize_closeout,
+    load_state,
     read_run_status,
     write_terminal_receipt,
 )
@@ -23,9 +24,12 @@ def _state(run: Path) -> dict[str, str]:
         "BUGSWEEP_BRANCH": "bugsweep/run-1",
         "BUGSWEEP_ORIG_BRANCH": "main",
         "BUGSWEEP_WORKTREE": str(run / "worktree"),
-    "BUGSWEEP_ORIG_HEAD": "a" * 40,
+        "BUGSWEEP_ORIG_HEAD": "a" * 40,
         "BUGSWEEP_REPO_ROOT": str(run.parent / "repo"),
         "BUGSWEEP_RUN_DIR": str(run),
+        "BUGSWEEP_TARGET_ROOT": str(run.parent / "target"),
+        "BUGSWEEP_SOURCE_ROOT": str(run.parent / "target"),
+        "BUGSWEEP_INDEX_DIR": str(run / "indexes"),
     }
 
 
@@ -106,6 +110,36 @@ def test_missing_worktree_key_is_invalid_but_empty_is_allowed(tmp_path: Path) ->
         encoding="utf-8",
     )
     assert read_run_status(run)["exit_code"] == 2
+
+
+def test_preflight_state_accepts_source_bindings_and_rejects_unknown_keys(tmp_path: Path) -> None:
+    run = tmp_path / "run"; run.mkdir()
+    state = _state(run)
+    initialize_closeout(run, state, "PENDING_CLOSEOUT")
+    state_path = run / "state.env"
+    state_path.write_text(
+        "\n".join(f"{key}='{value}'" for key, value in state.items()) + "\n",
+        encoding="utf-8",
+    )
+    assert load_state(state_path) == state
+    assert read_run_status(run)["exit_code"] == 10
+
+    state["BUGSWEEP_TARGET_ROOT"] = str(run.parent / "other-target")
+    state_path.write_text(
+        "\n".join(f"{key}='{value}'" for key, value in state.items()) + "\n",
+        encoding="utf-8",
+    )
+    assert read_run_status(run)["exit_code"] == 2
+
+    state["BUGSWEEP_TARGET_ROOT"] = str(run.parent / "target")
+    state_path.write_text(
+        "\n".join(f"{key}='{value}'" for key, value in state.items())
+        + "\nBUGSWEEP_UNEXPECTED='reject-me'\n",
+        encoding="utf-8",
+    )
+    invalid = read_run_status(run)
+    assert invalid["exit_code"] == 2
+    assert "unknown" in invalid["reason"]
 
 
 def test_run_directory_identity_accepts_an_absolute_symlink_alias(tmp_path: Path) -> None:

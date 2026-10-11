@@ -30,20 +30,22 @@ _make_run_dir() {
 
   local ts="20991231T000000Z"
   local branch="bugsweep/${ts}"
+  local orig_head
+  orig_head="$(git -C "$repo" rev-parse "$orig_branch")"
   git -C "$repo" checkout -b "$branch" -q 2>/dev/null || true
 
   cat > "${run_dir}/state.env" <<ENV
-BUGSWEEP_TS=${ts}
-BUGSWEEP_RUN_ID=${ts}
-BUGSWEEP_RUN_DIR=${run_dir}
-BUGSWEEP_REPO_ROOT=${repo}
-BUGSWEEP_BRANCH=${branch}
-BUGSWEEP_ORIG_BRANCH=${orig_branch}
-BUGSWEEP_ORIG_HEAD=$(git -C "$repo" rev-parse HEAD)
-BUGSWEEP_STASH_REF=none
-BUGSWEEP_START_EPOCH=$(date +%s)
-BUGSWEEP_MODE=detect-only
-BUGSWEEP_WORKTREE=${repo}
+BUGSWEEP_TS='${ts}'
+BUGSWEEP_RUN_ID='${ts}'
+BUGSWEEP_RUN_DIR='${run_dir}'
+BUGSWEEP_REPO_ROOT='${repo}'
+BUGSWEEP_BRANCH='${branch}'
+BUGSWEEP_ORIG_BRANCH='${orig_branch}'
+BUGSWEEP_ORIG_HEAD='${orig_head}'
+BUGSWEEP_STASH_REF='none'
+BUGSWEEP_START_EPOCH='$(date +%s)'
+BUGSWEEP_MODE='detect-only'
+BUGSWEEP_WORKTREE='${repo}'
 ENV
 
   touch "${run_dir}/ledger.jsonl"
@@ -98,7 +100,7 @@ JSON
 
 setup() {
   START_CWD="$(pwd)"
-  BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$(mktemp -d)" && pwd -P)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
   ORIG_BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD)"

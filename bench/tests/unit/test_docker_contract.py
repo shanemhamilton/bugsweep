@@ -1,7 +1,8 @@
 """Static WU6 image-contract checks; no Docker build, CLI, or network use."""
 
 import os
-import shutil
+import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -10,21 +11,14 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def _fake_bin(tmp_path: Path, payload: str) -> Path:
-    """Fake native CLIs that print one JSON line portably under any /bin/sh.
-
-    The runners target the Linux bench image, which ships coreutils. macOS CI
-    runners lack sha256sum, so shim it with shasum when it is absent.
-    """
+    """Create portable native-CLI fixtures for both adapter entrypoints."""
     fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
+    fake_bin.mkdir(parents=True)
+    quoted_payload = shlex.quote(payload)
     for binary in ("claude", "codex"):
         executable = fake_bin / binary
-        executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{payload}'\n")
+        executable.write_text(f"#!/bin/sh\nprintf '%s\\n' {quoted_payload}\n")
         executable.chmod(0o755)
-    if shutil.which("sha256sum") is None:
-        shim = fake_bin / "sha256sum"
-        shim.write_text('#!/bin/sh\nexec shasum -a 256 "$@"\n')
-        shim.chmod(0o755)
     return fake_bin
 
 
@@ -86,7 +80,8 @@ def test_benchmark_arms_are_prompt_bound_to_detect_only_skill_excerpts() -> None
     for runner in (claude, codex):
         assert '"${skill_root}/SKILL.md"' in runner
         assert "IMMUTABLE BENCHMARK SKILL EXCERPT" in runner
-        assert "first-finding-unix-seconds.txt" in runner
+        assert "candidate-events.json" in runner
+        assert "first-finding-unix-seconds.txt" not in runner
         assert "adapter-metadata.json" in runner
         assert "--sandbox read-only" in runner or 'allowed_tools="Read"' in runner
 
@@ -105,13 +100,24 @@ def test_review_adapter_streams_fake_native_json_without_scratch_artifacts(tmp_p
 
 
 def test_benchmark_adapter_imports_fake_native_json_and_metadata(tmp_path: Path) -> None:
-    fake_bin = _fake_bin(tmp_path, '{"text":"FINDING: app.py:1"}')
-    output = tmp_path / "output"; output.mkdir()
+    # Native provider envelopes contain strict JSON candidates; legacy textual
+    # FINDING markers are intentionally not part of this fixture.
     for host, endpoint in (("claude", "ANTHROPIC_BASE_URL"), ("codex", "CODEX_BENCH_BASE_URL")):
+        message = json.dumps({"candidates": [{"bug_id": "b1"}]})
+        native = {"type": "result", "result": message} if host == "claude" else {
+            "type": "item.completed", "item": {"type": "agent_message", "text": message}
+        }
+        native_line = json.dumps(native)
+        fake_bin = _fake_bin(tmp_path / host, native_line)
+        output = tmp_path / f"output-{host}"; output.mkdir()
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", endpoint: "http://owned-proxy:8888",
                "BENCH_INERT_CLIENT_ID": "benchmark-inert-client-credential", "BUGSWEEP_OUTPUT_DIR": str(output)}
         result = subprocess.run(["bash", str(ROOT / "bench/runners" / f"{host}_json.sh"), "pinned", "benchmark prompt", "no_skill_baseline"], env=env, check=True, text=True, capture_output=True)
-        assert "FINDING:" in result.stdout
+        assert result.stdout == native_line + "\n"
         metadata = (output / "adapter-metadata.json").read_text()
         assert '"loaded_skill_sha256":null' in metadata
-        (output / "response.jsonl").unlink(); (output / "adapter-metadata.json").unlink()
+        events = json.loads((output / "candidate-events.json").read_text())
+        assert len(events) == 1 and events[0]["candidate_id"] == "b1"
+        assert events[0]["capture_source"] == "adapter"
+        assert events[0]["capture_granularity"] == "adapter_completion"
+        (output / "response.jsonl").unlink(); (output / "adapter-metadata.json").unlink(); (output / "candidate-events.json").unlink()

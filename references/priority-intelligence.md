@@ -1,14 +1,15 @@
 # Priority intelligence
 
-Bugsweep still hunts every tracked file in its configured scope. Priority intelligence answers
+Bugsweep retains every tracked file in its configured scope and hunts admitted batches
+within the run budget. Priority intelligence answers
 a narrower question: **what should it investigate first on this run, and why now?** It never
 decides that a bug exists and never changes the confirmation, fix, merge, or push gates. Its
 ranking weights are fixed code, not a self-modifying policy.
 
 ## What it reads automatically
 
-`scripts/priority-context.sh build <RUN_DIR>` runs after baseline checks and uses bounded,
-local-only evidence:
+`scripts/priority-context.sh build <RUN_DIR>` runs in every mode, after baseline checks when available, and uses bounded,
+local-only evidence. Missing execution or baseline checks do not suppress other signals:
 
 - exact tracked-file changes since the last finalized Bugsweep run on the same original
   branch; the legacy global head is only a compatibility fallback, and the first run or an
@@ -67,21 +68,25 @@ already saturated. `priority_score` is investigation order only; severity and co
 separate.
 
 `scripts/priority-context.sh apply <RUN_DIR>` verifies the exact batch-ID and file multisets
-before persisting any reorder. Existing critical frontier batches remain ahead of newly promoted
-work. A candidate can clear `deferred` only when its **entire batch** fits both independent
-added-work budgets:
+before persisting any reorder. For a bounded run, it orders the frontier, selects the
+base batch budget, then considers explicit high-priority additions. Exact current-catalog
+membership plus matching content fingerprints can move fresh audited batches later;
+unknown history cannot establish freshness. A candidate outside the base allocation can
+clear `deferred` only when its **entire batch** fits both independent added-work budgets:
 
 - `priority.promotion_limit` — maximum newly promoted deferred batches (hard cap 20);
 - `priority.max_promoted_files` — maximum total files inside those promoted batches (hard cap
   1,000).
 
-Already non-deferred batches consume no promotion budget. Elevated recency/churn alone cannot
-promote a batch. Unknown paths cannot enter the plan, and a large batch that exceeds the file
-budget remains deferred even when it contains a high-ranked file.
+Base batches consume no promotion budget. Elevated recency/churn alone cannot
+promote a batch. Unknown paths cannot enter the plan, and a large batch outside the base
+allocation that exceeds the added-file budget remains deferred. `recon.json.admission`
+freezes the selected base and extra IDs on the first application; checkpoints and repeated
+applications do not replenish the run's budget. Later runs build a new allocation.
 
 On success, apply writes `<RUN_DIR>/priority-application.json`, validated by
 `schemas/priority-application.schema.json`. This is the durable receipt for what actually
-happened: candidate count, promoted batch IDs, added-file count, candidates already inside the
+happened: candidate count, extra batch IDs, added-file count, candidates already inside the
 run budget, and candidates skipped as outside the plan or budget-limited. Reporting reads this
 receipt rather than inferring applied work from the ranked candidates.
 

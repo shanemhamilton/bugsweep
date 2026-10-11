@@ -98,7 +98,6 @@ abs_path() {
 # analysis client sends only the inert literal; the policy proxy injects the
 # mounted provider key and never logs either value.
 print_cmd() {
-  require_docker
   cat <<EOF
 # bench egress reverse-proxy wiring (dry-run; no live forwarder launched)
 network=${BENCH_NETWORK_PREFIX}-<run-id>
@@ -326,7 +325,6 @@ PY
 cmd_start() {
   if [[ "${BENCH_PROXY_NO_LAUNCH:-0}" == "1" && $# -eq 1 ]]; then
     safe_run_id "$1"
-    require_docker
     init_usage_log "$1" >/dev/null
     echo "proxy.sh: BENCH_PROXY_NO_LAUNCH=1 — wiring only, forwarder NOT launched (test-only)"
     return 0
@@ -336,7 +334,15 @@ cmd_start() {
   safe_run_id "${run_id}"; upstream_for_host "${host}" >/dev/null
   [[ "${secret_file}" == /* && -f "${secret_file}" && ! -L "${secret_file}" ]] || die "proxy secret must be an absolute regular file"
   [[ "${limits_file}" == /* && -f "${limits_file}" && ! -L "${limits_file}" ]] || die "limits receipt must be an absolute regular file"
-  [[ "$(stat -f '%Lp' "${secret_file}" 2>/dev/null || stat -c '%a' "${secret_file}" 2>/dev/null)" == "600" ]] || die "proxy secret must have mode 0600"
+  local secret_mode=""
+  if secret_mode="$(stat -c '%a' -- "${secret_file}" 2>/dev/null)"; then
+    :
+  elif secret_mode="$(stat -f '%Lp' "${secret_file}" 2>/dev/null)"; then
+    :
+  else
+    die "could not inspect proxy secret permissions"
+  fi
+  [[ "${secret_mode}" == "600" ]] || die "proxy secret must have mode 0600"
   require_docker
   local log
   log="$(init_usage_log "${run_id}")"
@@ -354,12 +360,13 @@ cmd_stop() {
   [[ $# -eq 1 ]] || usage
   local run_id="$1"
   safe_run_id "${run_id}"
-  require_docker
 
   if [[ "${BENCH_PROXY_NO_LAUNCH:-0}" == "1" ]]; then
     echo "proxy.sh: BENCH_PROXY_NO_LAUNCH=1 — nothing to tear down (test-only)"
     return 0
   fi
+
+  require_docker
 
   local receipt_dir="${BENCH_PROXY_RECEIPTS_DIR:-}" receipt
   [[ "${receipt_dir}" == /* ]] || die "BENCH_PROXY_RECEIPTS_DIR is required for owned teardown"

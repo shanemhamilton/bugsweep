@@ -120,11 +120,32 @@ assert_no_remote_op() { :; }
 # back at the ONE main repository's .git dir, so all concurrent subagents
 # share a single .bugsweep/state/ (this is why the meta.json lock below exists
 # — many processes legitimately target the same files at once).
-_bugsweep_git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+_bugsweep_target_root="${BUGSWEEP_TARGET_ROOT:-}"
+_bugsweep_common_dir_base=""
+if [ -n "$_bugsweep_target_root" ]; then
+  case "$_bugsweep_target_root" in
+    /*) : ;;
+    *) _bugsweep_target_root="$(cd "$_bugsweep_target_root" 2>/dev/null && pwd || true)" ;;
+  esac
+  # Explicit target roots are the source of truth for helper invocations launched from a
+  # different checkout (or outside Git). Their common dir still owns shared learning/state.
+  _bugsweep_git_common_dir="$(git -C "$_bugsweep_target_root" rev-parse --git-common-dir 2>/dev/null || true)"
+  _bugsweep_common_dir_base="$_bugsweep_target_root"
+else
+  _bugsweep_target_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  # Preserve Git's path spelling from the caller's checkout. In particular, macOS commonly
+  # exposes /var through /private/var; resolving the common dir through Git's absolute
+  # --show-toplevel changes the shared-state path spelling and breaks callers that compare
+  # recorded lease/run paths. The direct command also resolves a relative common-dir from the
+  # actual CWD, matching the historical helper contract.
+  _bugsweep_git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+  _bugsweep_common_dir_base="${PWD:-$(pwd)}"
+fi
 if [ -n "$_bugsweep_git_common_dir" ]; then
   case "$_bugsweep_git_common_dir" in
     /*) : ;;                                            # already absolute
-    *)  _bugsweep_git_common_dir="$(cd "$_bugsweep_git_common_dir" && pwd)" ;;
+    *)  _bugsweep_git_common_dir="$(cd "$_bugsweep_common_dir_base" 2>/dev/null \
+          && cd "$_bugsweep_git_common_dir" 2>/dev/null && pwd || true)" ;;
   esac
 fi
 # The absolute common git dir itself is also exported: preflight.sh writes the
@@ -136,13 +157,23 @@ fi
 # shellcheck disable=SC2034  # consumed by preflight.sh after sourcing common.sh
 BUGSWEEP_GIT_COMMON_DIR="$_bugsweep_git_common_dir"
 BUGSWEEP_REPO_ROOT="${_bugsweep_git_common_dir:+$(dirname "$_bugsweep_git_common_dir")}"
-unset _bugsweep_git_common_dir
+unset _bugsweep_git_common_dir _bugsweep_common_dir_base
 BUGSWEEP_STATE_DIR="${BUGSWEEP_REPO_ROOT:+${BUGSWEEP_REPO_ROOT}/.bugsweep/state}"
 # Where linked worktrees for `preflight.sh --worktree` are created. Anchored the
 # same way as BUGSWEEP_STATE_DIR so every concurrent subagent creates its own
 # worktree in one shared, discoverable location under the main repo.
 # shellcheck disable=SC2034  # consumed by preflight.sh after sourcing common.sh
 BUGSWEEP_WORKTREES_DIR="${BUGSWEEP_REPO_ROOT:+${BUGSWEEP_REPO_ROOT}/.bugsweep/worktrees}"
+
+BUGSWEEP_TARGET_ROOT="$_bugsweep_target_root"
+# shellcheck disable=SC2034  # exported for helpers and recorded run state
+BUGSWEEP_SOURCE_ROOT="$BUGSWEEP_TARGET_ROOT"
+BUGSWEEP_RUN_DIR="${BUGSWEEP_RUN_DIR:-}"
+# Run-local indexes are immutable evidence for one audited checkout. Manual helper invocations
+# without RUN_DIR retain the historical shared-state paths for compatibility, but shared
+# manifests are deliberately not published because no producer lock can bind payload+manifest.
+BUGSWEEP_INDEX_DIR="${BUGSWEEP_INDEX_DIR:-${BUGSWEEP_RUN_DIR:+${BUGSWEEP_RUN_DIR}/indexes}}"
+[ -n "$BUGSWEEP_INDEX_DIR" ] || BUGSWEEP_INDEX_DIR="${BUGSWEEP_STATE_DIR:-}"
 
 # True only when a project-scoped state dir is known (i.e. a git repo root resolved).
 # Writers MUST gate on this before touching cross-run state, so a stray invocation
@@ -154,14 +185,321 @@ bugsweep_state_dir_ready() { [ -n "${BUGSWEEP_STATE_DIR:-}" ]; }
 # behavior can be exercised on machines that DO have python3 installed.
 have_python() { [ -z "${BUGSWEEP_NO_PYTHON:-}" ] && command -v python3 >/dev/null 2>&1; }
 
+# --- Source-bound extractor artifacts -----------------------------------------
+# Every generated index carries the exact checkout, Git tree, content manifest, config, and
+# extractor bytes that produced it.  Consumers compare this binding before reading an index;
+# a missing or mismatched binding is degraded/reopened rather than trusted.
+bugsweep_file_sha256() {
+  local path="${1:-}"
+  [ -f "$path" ] || { printf ''; return 0; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" 2>/dev/null | awk '{print $1}'
+  else
+    printf ''
+  fi
+}
+
+# Extractors all source this file, so its behavior is part of their identity.  Keep the
+# combined digest in the existing extractor_sha256 field for compatibility with the manifest
+# shape; old manifests naturally fail closed because the digest no longer matches.
+bugsweep_extractor_identity() {
+  local extractor="${1:-}" extractor_hash common_hash payload
+  extractor_hash="$(bugsweep_file_sha256 "$extractor")"
+  common_hash="$(bugsweep_file_sha256 "${BUGSWEEP_SCRIPT_DIR}/common.sh")"
+  [ -n "$extractor_hash" ] && [ -n "$common_hash" ] || { printf ''; return 0; }
+  payload="${extractor_hash}
+${common_hash}
+"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$payload" | sha256sum 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$payload" | shasum -a 256 2>/dev/null | awk '{print $1}'
+  else
+    printf ''
+  fi
+}
+
+bugsweep_source_manifest_prepare() {
+  local root="${1:-$BUGSWEEP_TARGET_ROOT}"
+  if [ -z "$root" ]; then
+    _BSW_SOURCE_MANIFEST_ROOT=""
+    _BSW_SOURCE_MANIFEST_HASH=""
+    return 0
+  fi
+  if [ "${_BSW_SOURCE_MANIFEST_ROOT:-}" = "$root" ] && [ -n "${_BSW_SOURCE_MANIFEST_HASH:-}" ]; then
+    return 0
+  fi
+  if have_python; then
+    local value
+    value="$(BSW_ROOT="$root" python3 - <<'PY' 2>/dev/null || true
+import hashlib, json, os, subprocess
+root = os.environ["BSW_ROOT"]
+try:
+    raw = subprocess.check_output(["git", "-C", root, "ls-files", "-z"])
+except Exception:
+    print("", end="")
+    raise SystemExit
+files = {}
+for path in raw.decode("utf-8", "surrogateescape").split("\x00"):
+    if not path:
+        continue
+    try:
+        with open(os.path.join(root, path), "rb") as handle:
+            digest = hashlib.sha256()
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            files[path] = digest.hexdigest()
+    except OSError:
+        # A tracked file that is absent or unreadable means this is not a complete
+        # source snapshot.  Do not publish a valid-looking partial identity: every
+        # consumer must degrade to unknown and widen its work.
+        print("", end="")
+        raise SystemExit
+payload = json.dumps(files, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8", "surrogateescape")
+print(hashlib.sha256(payload).hexdigest())
+PY
+    )"
+    _BSW_SOURCE_MANIFEST_ROOT="$root"
+    _BSW_SOURCE_MANIFEST_HASH="$value"
+    return 0
+  fi
+  # The no-Python path cannot safely hash arbitrary filenames/content portably; retain the
+  # historical Git-tree identity only when every tracked path is present.  A missing path still
+  # makes the snapshot unavailable, so a partial checkout cannot look current.
+  local value files path missing=0
+  files="$(git -C "$root" ls-files 2>/dev/null || true)"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [ ! -f "${root}/${path}" ]; then
+      missing=1
+      break
+    fi
+  done <<EOF
+$files
+EOF
+  if [ "$missing" -ne 0 ]; then
+    value=""
+  else
+    value="$(git -C "$root" rev-parse 'HEAD^{tree}' 2>/dev/null || true)"
+  fi
+  _BSW_SOURCE_MANIFEST_ROOT="$root"
+  _BSW_SOURCE_MANIFEST_HASH="$value"
+}
+
+bugsweep_source_manifest_hash() {
+  bugsweep_source_manifest_prepare "${1:-$BUGSWEEP_TARGET_ROOT}"
+  printf '%s' "${_BSW_SOURCE_MANIFEST_HASH:-}"
+}
+
+bugsweep_tree_prepare() {
+  local root="${1:-$BUGSWEEP_TARGET_ROOT}" value
+  if [ -z "$root" ]; then
+    _BSW_TREE_ROOT=""
+    _BSW_TREE_ID=""
+    return 0
+  fi
+  if [ "${_BSW_TREE_ROOT:-}" = "$root" ] && [ -n "${_BSW_TREE_ID:-}" ]; then
+    return 0
+  fi
+  value="$(git -C "$root" rev-parse 'HEAD^{tree}' 2>/dev/null || true)"
+  _BSW_TREE_ROOT="$root"
+  _BSW_TREE_ID="$value"
+}
+
+bugsweep_tree_id() {
+  bugsweep_tree_prepare "${1:-$BUGSWEEP_TARGET_ROOT}"
+  printf '%s' "${_BSW_TREE_ID:-}"
+}
+
+bugsweep_manifest_path() {
+  local name="${1:-}" dir="${BUGSWEEP_INDEX_DIR:-${BUGSWEEP_STATE_DIR:-}}"
+  [ -n "$name" ] && [ -n "$dir" ] && printf '%s/%s.manifest.json' "$dir" "$name"
+}
+
+# Return the payload path for an index. Variant replay intentionally keeps its payload in the
+# run root for compatibility; all other indexes live beside their manifest.
+bugsweep_index_artifact_path() {
+  local name="${1:-}" dir="${2:-${BUGSWEEP_INDEX_DIR:-${BUGSWEEP_STATE_DIR:-}}}"
+  if [ "$name" = "variant-matches" ] && [ -n "${BUGSWEEP_INDEX_ARTIFACT_PATH:-}" ]; then
+    printf '%s' "$BUGSWEEP_INDEX_ARTIFACT_PATH"
+  elif [ "$name" = "variant-matches" ] && [ -n "${BUGSWEEP_RUN_DIR:-}" ] &&
+       [ -f "${BUGSWEEP_RUN_DIR}/variant-matches.jsonl" ]; then
+    printf '%s' "${BUGSWEEP_RUN_DIR}/variant-matches.jsonl"
+  else
+    printf '%s/%s.jsonl' "$dir" "$name"
+  fi
+}
+
+# Return a digest of upstream artifact payloads plus their source bindings. A dependency's
+# current manifest is also validated, so changing an upstream extractor invalidates downstream
+# facts before that upstream artifact is rebuilt. This is a small acyclic graph:
+# symbol-index -> graph/entry-points -> sinks/sink-reachability.
+bugsweep_index_dependency_hash() {
+  local name="${1:-}" dir="${2:-${BUGSWEEP_INDEX_DIR:-${BUGSWEEP_STATE_DIR:-}}}"
+  local deps="" dep artifact manifest artifact_hash manifest_hash payload san_path san_hash producer producer_hash
+  case "$name" in
+    graph|entry-points) deps="symbol-index" ;;
+    sinks|sink-reachability) deps="graph entry-points" ;;
+  esac
+  payload=""
+  for dep in $deps; do
+    artifact="$(bugsweep_index_artifact_path "$dep" "$dir")"
+    manifest="${dir}/${dep}.manifest.json"
+    [ -f "$artifact" ] && [ -f "$manifest" ] || { printf ''; return 0; }
+    artifact_hash="$(bugsweep_file_sha256 "$artifact")"
+    manifest_hash="$(bugsweep_file_sha256 "$manifest")"
+    [ -n "$artifact_hash" ] && [ -n "$manifest_hash" ] || { printf ''; return 0; }
+    case "$dep" in
+      symbol-index) producer="${BUGSWEEP_SCRIPT_DIR}/symbols.sh" ;;
+      graph|entry-points) producer="${BUGSWEEP_SCRIPT_DIR}/graph.sh" ;;
+      *) producer="" ;;
+    esac
+    producer_hash="$(bugsweep_extractor_identity "$producer")"
+    [ -n "$producer_hash" ] || { printf ''; return 0; }
+    # Python consumers fail closed on stale upstream manifests. The shell fallback keeps
+    # portability; its callers already treat missing validation as degraded.
+    if have_python && [ -n "$producer" ]; then
+      bugsweep_index_manifest_current "$dep" "$producer" || { printf ''; return 0; }
+    fi
+    payload="${payload}${dep}|${artifact_hash}|${manifest_hash}|${producer_hash}
+"
+  done
+  case "$name" in
+    sinks|sink-reachability)
+      san_path="${BUGSWEEP_STATE_DIR:+${BUGSWEEP_STATE_DIR}/sanitizers.jsonl}"
+      if [ -n "$san_path" ] && [ -f "$san_path" ]; then
+        san_hash="$(bugsweep_file_sha256 "$san_path")"
+        [ -n "$san_hash" ] || { printf ''; return 0; }
+        payload="${payload}sanitizers|${san_hash}
+"
+      else
+        payload="${payload}sanitizers|missing
+"
+      fi
+      ;;
+  esac
+  [ -n "$payload" ] || payload="none
+"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$payload" | sha256sum 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$payload" | shasum -a 256 2>/dev/null | awk '{print $1}'
+  else
+    printf ''
+  fi
+}
+
+bugsweep_write_index_manifest() {
+  local name="${1:-}" extractor="${2:-}" dir="${BUGSWEEP_INDEX_DIR:-${BUGSWEEP_STATE_DIR:-}}" out
+  [ -n "$name" ] && [ -n "$dir" ] || return 1
+  mkdir -p "$dir" 2>/dev/null || return 1
+  out="$(bugsweep_manifest_path "$name")"
+  local root tree source_hash config_hash extractor_hash artifact_hash dependency_hash artifact_path
+  root="${BUGSWEEP_TARGET_ROOT:-}"
+  bugsweep_tree_prepare "$root"
+  tree="${_BSW_TREE_ID:-}"
+  bugsweep_source_manifest_prepare "$root"
+  source_hash="${_BSW_SOURCE_MANIFEST_HASH:-}"
+  config_hash="$(bugsweep_file_sha256 "${BUGSWEEP_CONFIG:-}")"
+  extractor_hash="$(bugsweep_extractor_identity "$extractor")"
+  # Shared state has no producer lock and can pair another invocation's payload with this
+  # manifest. Run-local indexes are immutable evidence and are the only paths allowed to carry
+  # a reusable binding; shared manual helpers still write facts but deliberately degrade their
+  # manifest consumers until a run-local build publishes a coherent pair.
+  [ -n "${BUGSWEEP_RUN_DIR:-}" ] || return 1
+  artifact_path="$(bugsweep_index_artifact_path "$name" "$dir")"
+  artifact_hash="$(bugsweep_file_sha256 "$artifact_path")"
+  dependency_hash="$(bugsweep_index_dependency_hash "$name" "$dir")"
+  [ -n "$root" ] && [ -n "$tree" ] && [ -n "$source_hash" ] && [ -n "$config_hash" ] && \
+    [ -n "$extractor_hash" ] && [ -n "$artifact_hash" ] && [ -n "$dependency_hash" ] || return 1
+  if have_python; then
+    BSW_OUT="$out" BSW_NAME="$name" BSW_ROOT="$root" BSW_TREE="$tree" \
+    BSW_SOURCE="$source_hash" BSW_CONFIG="$config_hash" BSW_EXTRACTOR="$extractor_hash" \
+    BSW_ARTIFACT="$artifact_hash" BSW_DEPENDENCY="$dependency_hash" \
+    python3 - <<'PY' 2>/dev/null || return 1
+import hashlib, json, os
+value = {
+    "schema_version": 1,
+    "artifact": os.environ["BSW_NAME"],
+    "source_root": os.environ["BSW_ROOT"],
+    "tree": os.environ["BSW_TREE"],
+    "source_manifest_sha256": os.environ["BSW_SOURCE"],
+    "config_sha256": os.environ["BSW_CONFIG"],
+    "extractor_sha256": os.environ["BSW_EXTRACTOR"],
+    "artifact_sha256": os.environ["BSW_ARTIFACT"],
+    "dependency_sha256": os.environ["BSW_DEPENDENCY"],
+}
+binding = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+value["generation"] = hashlib.sha256(binding).hexdigest()
+tmp = os.environ["BSW_OUT"] + ".tmp"
+with open(tmp, "w") as handle:
+    json.dump(value, handle, sort_keys=True)
+    handle.write("\n")
+os.replace(tmp, os.environ["BSW_OUT"])
+PY
+  else
+    printf '%s\n' "{\"schema_version\":1,\"artifact\":\"$(_bsw_json_escape "$name")\",\"source_root\":\"$(_bsw_json_escape "$root")\",\"tree\":\"$(_bsw_json_escape "$tree")\",\"source_manifest_sha256\":\"$(_bsw_json_escape "$source_hash")\",\"config_sha256\":\"$(_bsw_json_escape "$config_hash")\",\"extractor_sha256\":\"$(_bsw_json_escape "$extractor_hash")\",\"artifact_sha256\":\"$(_bsw_json_escape "$artifact_hash")\",\"dependency_sha256\":\"$(_bsw_json_escape "$dependency_hash")\"}" > "$out"
+  fi
+}
+
+bugsweep_index_manifest_current() {
+  local name="${1:-}" extractor="${2:-}" manifest root tree source_hash config_hash extractor_hash artifact_hash dependency_hash artifact_path dir
+  manifest="$(bugsweep_manifest_path "$name")"
+  [ -f "$manifest" ] && have_python || return 1
+  root="${BUGSWEEP_TARGET_ROOT:-}"
+  bugsweep_tree_prepare "$root"
+  tree="${_BSW_TREE_ID:-}"
+  bugsweep_source_manifest_prepare "$root"
+  source_hash="${_BSW_SOURCE_MANIFEST_HASH:-}"
+  config_hash="$(bugsweep_file_sha256 "${BUGSWEEP_CONFIG:-}")"
+  extractor_hash="$(bugsweep_extractor_identity "$extractor")"
+  dir="${BUGSWEEP_INDEX_DIR:-${BUGSWEEP_STATE_DIR:-}}"
+  [ -n "${BUGSWEEP_RUN_DIR:-}" ] || return 1
+  artifact_path="$(bugsweep_index_artifact_path "$name" "$dir")"
+  artifact_hash="$(bugsweep_file_sha256 "$artifact_path")"
+  dependency_hash="$(bugsweep_index_dependency_hash "$name" "$dir")"
+  BSW_MANIFEST="$manifest" BSW_ROOT="$root" BSW_TREE="$tree" BSW_SOURCE="$source_hash" \
+  BSW_CONFIG="$config_hash" BSW_EXTRACTOR="$extractor_hash" BSW_NAME="$name" \
+  BSW_ARTIFACT="$artifact_hash" BSW_DEPENDENCY="$dependency_hash" \
+  python3 - <<'PY' 2>/dev/null
+import hashlib, json, os
+try:
+    with open(os.environ["BSW_MANIFEST"]) as handle:
+        value = json.load(handle)
+except Exception:
+    raise SystemExit(1)
+expected = {
+    "schema_version": 1,
+    "artifact": os.environ["BSW_NAME"],
+    "source_root": os.environ["BSW_ROOT"],
+    "tree": os.environ["BSW_TREE"],
+    "source_manifest_sha256": os.environ["BSW_SOURCE"],
+    "config_sha256": os.environ["BSW_CONFIG"],
+    "extractor_sha256": os.environ["BSW_EXTRACTOR"],
+    "artifact_sha256": os.environ["BSW_ARTIFACT"],
+    "dependency_sha256": os.environ["BSW_DEPENDENCY"],
+}
+if not all(isinstance(expected[k], str) and expected[k] for k in expected if k != "schema_version"):
+    raise SystemExit(1)
+binding = json.dumps(expected, sort_keys=True, separators=(",", ":")).encode("utf-8")
+raise SystemExit(0 if all(value.get(k) == v for k, v in expected.items()) and
+                  value.get("generation") == hashlib.sha256(binding).hexdigest() else 1)
+PY
+}
+
 # --- mkdir-based mutual exclusion (bugsweep-p74) -------------------------------
 # `mkdir` is atomic on every POSIX filesystem bugsweep runs on, and unlike
 # flock(1) it needs no extra binary — stock macOS bash 3.2 ships neither
 # flock(1) nor bash's own /dev/tcp-style file descriptor locking. This is a
 # short, narrowly-scoped mutex for the few genuinely-shared read-modify-write
-# sections (meta.json's run counter, the one-time shared index build) — NOT a
-# per-run mutex. Concurrent bugsweep runs must never serialize on this; every
-# caller uses a short timeout and degrades gracefully (skip / proceed
+# sections (meta.json's run counter) and each run's producer sequence — NOT a
+# cross-run index mutex. Concurrent bugsweep runs use separate index directories;
+# every caller uses a short timeout and degrades gracefully (skip / proceed
 # unlocked) rather than blocking a sibling subagent indefinitely.
 #
 # bugsweep-re9: a release-on-EXIT trap fired ALONGSIDE an unconditional

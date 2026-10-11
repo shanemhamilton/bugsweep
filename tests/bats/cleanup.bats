@@ -35,18 +35,22 @@ _branch_exists() {
 
 _make_run_dir_for_worktree() {
   local name="$1" branch="$2" worktree="$3"
-  local run_dir="${REPO}/.bugsweep/run-${name}"
+  local orig_branch="${4:-main}"
+  local run_dir="${REPO}/.bugsweep/run-${name}" orig_head
+  orig_head="$(git -C "$REPO" rev-parse "$orig_branch")"
   mkdir -p "$run_dir"
   cat > "${run_dir}/state.env" <<ENV
 BUGSWEEP_TS=${name}
+BUGSWEEP_RUN_ID=${name}
 BUGSWEEP_RUN_DIR=${run_dir}
+BUGSWEEP_REPO_ROOT=${REPO}
 BUGSWEEP_BRANCH=${branch}
-BUGSWEEP_ORIG_BRANCH=main
+BUGSWEEP_ORIG_BRANCH=${orig_branch}
+BUGSWEEP_ORIG_HEAD=${orig_head}
 BUGSWEEP_STASH_REF=none
 BUGSWEEP_START_EPOCH=1
 BUGSWEEP_MODE=detect-only
 BUGSWEEP_WORKTREE=${worktree}
-BUGSWEEP_SCRIPT_DIR=$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts
 ENV
   touch "${run_dir}/ledger.jsonl"
   printf '%s\n' "$run_dir"
@@ -62,7 +66,8 @@ ENV
 # separately to prove backward compatibility with older/hand-written files.
 _make_run_dir_for_worktree_quoted() {
   local name="$1" branch="$2" worktree="$3" orig_branch="${4:-main}"
-  local run_dir="${REPO}/.bugsweep/run-${name}"
+  local run_dir="${REPO}/.bugsweep/run-${name}" orig_head
+  orig_head="$(git -C "$REPO" rev-parse "$orig_branch")"
   local common_sh script_dir
   script_dir="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts"
   common_sh="${script_dir}/common.sh"
@@ -74,14 +79,16 @@ _make_run_dir_for_worktree_quoted() {
     . "$common_sh"
     {
       _bsw_env_kv BUGSWEEP_TS "$name"
+      _bsw_env_kv BUGSWEEP_RUN_ID "$name"
       _bsw_env_kv BUGSWEEP_RUN_DIR "$run_dir"
+      _bsw_env_kv BUGSWEEP_REPO_ROOT "$REPO"
       _bsw_env_kv BUGSWEEP_BRANCH "$branch"
       _bsw_env_kv BUGSWEEP_ORIG_BRANCH "$orig_branch"
+      _bsw_env_kv BUGSWEEP_ORIG_HEAD "$orig_head"
       _bsw_env_kv BUGSWEEP_STASH_REF "none"
       _bsw_env_kv BUGSWEEP_START_EPOCH "1"
       _bsw_env_kv BUGSWEEP_MODE "detect-only"
       _bsw_env_kv BUGSWEEP_WORKTREE "$worktree"
-      _bsw_env_kv BUGSWEEP_SCRIPT_DIR "$script_dir"
     } > "${run_dir}/state.env"
   )
   touch "${run_dir}/ledger.jsonl"
@@ -111,17 +118,19 @@ _age_ledger() {
   touch -t 202001010000 "${run_dir}/ledger.jsonl" 2>/dev/null || true
 }
 
-# bugsweep-8d0 dataloss re-review MAJOR 1: finalize.sh drops a durable
-# ".finalized" sentinel so the reaper can deterministically reap a
-# definitively-finished run. Tests that model a finished run use this.
-_mark_finalized() {
+# Current runs record finalization in the lifecycle marker. The legacy reaper
+# must preserve a mapped worktree until closeout has removed it and recorded
+# exact branch/worktree absence; a marker alone is not authority to delete it.
+_mark_finalization_marker() {
   local run_dir="$1"
-  : > "${run_dir}/.finalized"
+  local script_dir
+  script_dir="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts"
+  python3 -B "${script_dir}/_terminal_lifecycle.py" init "$run_dir" PENDING_FINALIZATION
 }
 
 setup() {
   START_CWD="$(pwd)"
-  BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$(mktemp -d)" && pwd -P)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
   cd "$REPO"
@@ -300,16 +309,14 @@ teardown() {
   git -C "$REPO" worktree add -q "$wt1" "bugsweep/reap-one"
   git -C "$REPO" worktree add -q "$wt2" "bugsweep/reap-two"
 
-  # bugsweep-8d0 dataloss re-review MAJOR 1: the reaper now reaps ONLY on
-  # positive evidence a run is over. Model these as FINISHED runs: each gets a
-  # run mapping + a durable .finalized sentinel (what finalize.sh writes), so
-  # the reaper reaps them deterministically. Without it they would be
-  # correctly preserved as ambiguous (no positive dead/done evidence).
+  # A finalization marker is positive run evidence, but it does not authorize
+  # the legacy reaper to remove a still-registered worktree. Closeout owns the
+  # destructive removal after exact readback.
   local rd1 rd2
   rd1="$(_make_run_dir_for_worktree "reap-one" "bugsweep/reap-one" "$wt1")"
   rd2="$(_make_run_dir_for_worktree "reap-two" "bugsweep/reap-two" "$wt2")"
-  _mark_finalized "$rd1"
-  _mark_finalized "$rd2"
+  _mark_finalization_marker "$rd1"
+  _mark_finalization_marker "$rd2"
 
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
     bash "$CLEANUP_SH" --reap-worktrees
@@ -323,12 +330,14 @@ teardown() {
   [ -d "$wt2" ]
   _branch_exists "bugsweep/reap-one"
   _branch_exists "bugsweep/reap-two"
+  git -C "$REPO" worktree list --porcelain | grep -q "${REPO}/.bugsweep/worktrees/"
 
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
     bash "$CLEANUP_SH" --reap-worktrees
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "WORKTREES_REMOVED=0"
   echo "$output" | grep -q "WORKTREES_PRESERVED=2"
+  echo "$output" | grep -q "BRANCHES_PRUNED=0"
 }
 
 # bugsweep-06y regression lock: a run whose state.env is written in the
@@ -337,10 +346,10 @@ teardown() {
 # run_dir_for_worktree extracted BUGSWEEP_WORKTREE via raw sed, capturing the
 # literal surrounding single quotes, so it never string-matched the bare
 # canonical worktree path — every quoted-format run was seen as "no run
-# mapping" and PRESERVED even when finalized. This test finalizes such a run
-# and asserts it is actually REAPED (not just preserved), proving the parsing
-# reads the value back exactly.
-@test "reap-worktrees: preserves a mapped quoted legacy finalized run for closeout" {
+# mapping" and PRESERVED even when the run has a current lifecycle marker. This
+# test records that marker and asserts the parser maps the run while preserving
+# the worktree until closeout.
+@test "reap-worktrees: maps and preserves a finalization marker with shipped quoted state (bugsweep-06y)" {
   _make_bugsweep_branch "bugsweep/reap-quoted" "fix reap quoted"
   _merge_branch_to_main "bugsweep/reap-quoted"
 
@@ -353,7 +362,7 @@ teardown() {
   # Prove the fixture really is in the new quoted format (guards against the
   # helper silently regressing to the old unquoted shape).
   grep -q "^BUGSWEEP_WORKTREE='" "${rd}/state.env"
-  _mark_finalized "$rd"
+  _mark_finalization_marker "$rd"
 
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
     bash "$CLEANUP_SH" --reap-worktrees
@@ -364,6 +373,7 @@ teardown() {
   echo "$output" | grep -q "WORKTREES_PRESERVED=1"
   [ -d "$wt" ]
   _branch_exists "bugsweep/reap-quoted"
+  git -C "$REPO" worktree list --porcelain | grep -q "$wt"
 }
 
 # bugsweep-06y: the per-worktree containment-target resolution
@@ -376,8 +386,9 @@ teardown() {
 # correctly (`integration`), the containment check passes and the ref is
 # deleted; if it returned `'integration'` (raw-quoted, the pre-fix bug — a
 # nonexistent ref) or empty (falling back to `main`, which does not contain the
-# branch), the ref is PRESERVED. Either failure mode => BRANCHES_PRUNED=0.
-@test "reap-worktrees: preserves quoted legacy state regardless of recorded containment target" {
+# branch), the ref is PRESERVED. A mapped run remains preserved regardless of
+# the recorded target until closeout removes the exact resources.
+@test "reap-worktrees: reads quoted BUGSWEEP_ORIG_BRANCH as the per-run containment target (bugsweep-06y)" {
   # A dedicated integration branch (never a protected/pinned branch — so the
   # per-run target can only come from the recorded state.env, not the pin).
   git -C "$REPO" branch integration main
@@ -397,7 +408,7 @@ teardown() {
   local rd
   rd="$(_make_run_dir_for_worktree_quoted "reap-orig" "bugsweep/reap-orig" "$wt" "integration")"
   grep -q "^BUGSWEEP_ORIG_BRANCH='integration'$" "${rd}/state.env"
-  _mark_finalized "$rd"
+  _mark_finalization_marker "$rd"
 
   # HEAD=integration so `git branch -d` can succeed once containment is proven;
   # the global pinned target still resolves to `main` (first existing protected
@@ -438,7 +449,7 @@ teardown() {
   git -C "$REPO" worktree add -q "$vwt" "bugsweep/victim"
   local vrd
   vrd="$(_make_run_dir_for_worktree_quoted "victim" "bugsweep/victim" "$vwt")"
-  _mark_finalized "$vrd"
+  _mark_finalization_marker "$vrd"
 
   # Hostile LEGACY (old unquoted) state.env files of untrusted provenance, each
   # carrying a different injection form in BUGSWEEP_ORIG_BRANCH. Their
@@ -463,8 +474,10 @@ teardown() {
   # THE security assertion: no injected command executed while the reaper read
   # the hostile files.
   [ ! -e "$marker" ]
-  # The mapped legacy victim remains recoverable for exact closeout.
+  # A mapped victim is preserved until closeout; the hostile values must not
+  # change that fail-closed decision.
   echo "$output" | grep -q "WORKTREES_REMOVED=0"
+  echo "$output" | grep -q "WORKTREE_PRESERVED=${vwt}"
   [ -d "$vwt" ]
 }
 
@@ -593,7 +606,7 @@ teardown() {
   # the step BLOCKER B protects.
   local run_dir
   run_dir="$(_make_run_dir_for_worktree "unreviewed" "bugsweep/unreviewed" "$wt")"
-  _mark_finalized "$run_dir"
+  _mark_finalization_marker "$run_dir"
 
   # A separate branch that legitimately descends from (contains) the
   # unreviewed branch's tip — simulating some unrelated branch that happens
@@ -713,13 +726,15 @@ teardown() {
   # alone report it.
   mkdir -p "${REPO}/.bugsweep/worktrees/ghost-dir"
   printf 'not a real worktree\n' > "${REPO}/.bugsweep/worktrees/ghost-dir/marker.txt"
+  local ghost_dir
+  ghost_dir="$(cd "${REPO}/.bugsweep/worktrees/ghost-dir" && pwd -P)"
 
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main BUGSWEEP_REAP_MIN_AGE_SECONDS=0 \
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "WORKTREES_OUT_OF_SCOPE=1"
-  echo "$output" | grep -q "WORKTREE_OUT_OF_SCOPE=${REPO}/.bugsweep/worktrees/ghost-dir"
+  echo "$output" | grep -q "WORKTREE_OUT_OF_SCOPE=${ghost_dir}"
   [ -d "${REPO}/.bugsweep/worktrees/ghost-dir" ]
 }
 
@@ -741,7 +756,7 @@ teardown() {
   # that must detect the gitignored content and preserve rather than remove.
   local run_dir
   run_dir="$(_make_run_dir_for_worktree "reap-ignored" "bugsweep/reap-ignored" "$wt")"
-  _mark_finalized "$run_dir"
+  _mark_finalization_marker "$run_dir"
   printf 'build/\n' > "${wt}/.gitignore"
   git -C "$wt" add .gitignore >/dev/null
   git -C "$wt" commit -q -m "add gitignore"
@@ -982,11 +997,11 @@ teardown() {
 
 # ---------------------------------------------------------------------------
 # bugsweep-8d0 dataloss re-review MAJOR 1 (done evidence): a run that recorded
-# a .finalized sentinel is reaped deterministically (this is how finalize.sh
-# reaps its own worktree despite a fresh ledger / released lease).
+# a finalization marker is recognized as pending lifecycle evidence, while the
+# legacy reaper preserves the still-registered worktree for closeout.
 # ---------------------------------------------------------------------------
 
-@test "reap-worktrees: a mapped .finalized run is preserved for exact closeout" {
+@test "reap-worktrees: a finalization marker preserves a mapped run despite a fresh ledger (MAJOR 1 done-evidence)" {
   _make_bugsweep_branch "bugsweep/finalized-run" "finished fix, merged"
   _merge_branch_to_main "bugsweep/finalized-run"
   local wt="${REPO}/.bugsweep/worktrees/finalized-run"
@@ -995,33 +1010,29 @@ teardown() {
   local run_dir
   run_dir="$(_make_run_dir_for_worktree "finalized-run" "bugsweep/finalized-run" "$wt")"
   # Fresh ledger (would preserve under the liveness belts) + NO lease record,
-  # but a .finalized sentinel => positive DONE evidence => reap deterministically.
+  # A current finalization marker is not terminal authority while the worktree
+  # remains registered; closeout must perform the exact removal/readback.
   printf '{"event":"finalize"}\n' >> "${run_dir}/ledger.jsonl"
-  _mark_finalized "$run_dir"
+  _mark_finalization_marker "$run_dir"
 
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "WORKTREES_REMOVED=0"
-  echo "$output" | grep -q "WORKTREES_PRESERVED=1"
+  echo "$output" | grep -q "WORKTREE_PRESERVED=${wt}"
   [ -d "$wt" ]
   _branch_exists "bugsweep/finalized-run"
 }
 
 # ---------------------------------------------------------------------------
 # bugsweep-cv0: run_dir_for_worktree returns only the FIRST matching
-# run-*/state.env for a worktree and the DONE/.finalized reap path trusts
-# that single match's sentinel without checking whether any OTHER state.env
-# naming the same worktree is currently live. If an operator manually copies
-# a .bugsweep/run-* directory (the only realistic way two state.env files
-# name the same worktree — every real preflight run mints a unique run_dir),
-# a lexically-first stale/copied ".finalized" must never let the reaper
-# bypass a genuinely live lease recorded under a different (lexically later)
-# run_dir for that same worktree.
+# run-*/state.env for a worktree. Every current mapped run is preserved until
+# closeout; a lexically-first stale marker must never bypass a genuinely live
+# lease recorded under a different (lexically later) run_dir for that worktree.
 # ---------------------------------------------------------------------------
 
-@test "reap-worktrees: a second state.env mapping the same worktree with a LIVE lease is not bypassed by a first-matched stale .finalized sentinel (bugsweep-cv0)" {
+@test "reap-worktrees: a second state.env mapping the same worktree with a LIVE lease is not bypassed by a first-matched stale marker (bugsweep-cv0)" {
   _make_bugsweep_branch "bugsweep/dup-mapping" "fix with duplicate state.env mapping"
   local wt="${REPO}/.bugsweep/worktrees/dup-mapping"
   mkdir -p "${REPO}/.bugsweep/worktrees"
@@ -1030,11 +1041,11 @@ teardown() {
 
   # Lexically-FIRST state.env for this worktree ("run-a-decoy" sorts before
   # "run-b-live" in the run-*/state.env glob): carries a stale/copied
-  # .finalized sentinel and has NO live lease of its own — this is what a
+  # finalization marker and has NO live lease of its own — this is what a
   # manually-copied .bugsweep/run-* directory looks like.
   local rd_a
   rd_a="$(_make_run_dir_for_worktree "a-decoy" "bugsweep/dup-mapping" "$wt")"
-  _mark_finalized "$rd_a"
+  _mark_finalization_marker "$rd_a"
 
   # Lexically-SECOND state.env naming the SAME worktree, with a genuinely
   # LIVE lease (this test process's own pid). The reaper must never bypass
@@ -1053,7 +1064,7 @@ teardown() {
   _branch_exists "bugsweep/dup-mapping"
 }
 
-@test "reap-worktrees: single mapped .finalized state remains preserved" {
+@test "reap-worktrees: single state.env finalization marker remains preserved (bugsweep-cv0 guard)" {
   _make_bugsweep_branch "bugsweep/single-mapping-done" "genuinely finished single-mapping run"
   _merge_branch_to_main "bugsweep/single-mapping-done"
   local wt="${REPO}/.bugsweep/worktrees/single-mapping-done"
@@ -1061,14 +1072,14 @@ teardown() {
   git -C "$REPO" worktree add -q "$wt" "bugsweep/single-mapping-done"
   local run_dir
   run_dir="$(_make_run_dir_for_worktree "single-mapping-done" "bugsweep/single-mapping-done" "$wt")"
-  _mark_finalized "$run_dir"
+  _mark_finalization_marker "$run_dir"
 
   run env BUGSWEEP_ALLOW_PROTECTED=1 BUGSWEEP_TARGET=main \
     bash "$CLEANUP_SH" --reap-worktrees
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "WORKTREES_REMOVED=0"
-  echo "$output" | grep -q "WORKTREES_PRESERVED=1"
+  echo "$output" | grep -q "WORKTREE_PRESERVED=${wt}"
   [ -d "$wt" ]
   _branch_exists "bugsweep/single-mapping-done"
 }
@@ -1141,8 +1152,8 @@ teardown() {
   _branch_exists "bugsweep/lease-reclaimed-preserved"
 }
 
-@test "reap-worktrees: stale lease on mapped run preserves resources for exact closeout" {
-  _make_bugsweep_branch "bugsweep/lease-reclaimed-reaped" "genuinely dead run, actually reaped"
+@test "reap-worktrees: LEASES_RELEASED_REAPED excludes a mapped worktree preserved for closeout (item 3 sanity)" {
+  _make_bugsweep_branch "bugsweep/lease-reclaimed-reaped" "genuinely dead run, preserved for closeout"
   local wt="${REPO}/.bugsweep/worktrees/lease-reclaimed-reaped"
   mkdir -p "${REPO}/.bugsweep/worktrees"
   git -C "$REPO" worktree add -q "$wt" "bugsweep/lease-reclaimed-reaped"

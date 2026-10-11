@@ -8,15 +8,7 @@ load helpers
 
 setup() {
   BATS_TMP="$(mktemp -d)"
-  BASH_BIN="$(command -v bash)"
-  mkdir "${BATS_TMP}/bin"
-  # Dry-run and no-launch paths only check docker is discoverable. This sentinel
-  # must never be executed; an invocation turns the fixture failure loud.
-  printf '#!/usr/bin/env bash\necho "test docker sentinel executed" >&2\nexit 99\n' > "${BATS_TMP}/bin/docker"
-  chmod +x "${BATS_TMP}/bin/docker"
-  PATH="${BATS_TMP}/bin:${PATH}"
   export BATS_TMP
-  export PATH
 }
 
 teardown() {
@@ -31,6 +23,12 @@ teardown() {
   run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
   assert_contains "$output" "--network=bench-proxynet"
+}
+
+@test "isolate --print-cmd is container-free" {
+  BENCH_FAKE_NO_DOCKER=1 run "$ISOLATE_SH" --print-cmd bench/img:latest
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "docker run"
 }
 
 @test "isolate --print-cmd emits read-only root filesystem" {
@@ -113,16 +111,17 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# isolate.sh --print-cmd : inert client credentials
+# isolate.sh --print-cmd : key handling (inert client identity)
 # ---------------------------------------------------------------------------
-# The analysis container receives only an inert literal. The per-invocation
-# proxy owns the provider credential, so no host key is passed through.
+# The analysis process receives only an inert literal.  The dedicated provider
+# key stays in the owned proxy, and every host key-shaped env stays out.
 
-@test "isolate --print-cmd passes only the inert client credential" {
+@test "isolate --print-cmd passes only an inert client identity" {
   ANTHROPIC_API_KEY="sk-dedicated-should-not-appear" \
     run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
-  assert_contains "$output" "BENCH_INERT_CLIENT_ID=benchmark-inert-client-credential"
+  assert_contains "$output" "--env BENCH_INERT_CLIENT_ID=benchmark-inert-client-credential"
+  assert_contains "$output" "--env BENCH_HOST=claude"
   refute_contains "$output" "sk-dedicated-should-not-appear"
   refute_contains "$output" "ANTHROPIC_API_KEY"
 }
@@ -150,9 +149,8 @@ teardown() {
 # isolate.sh : fail closed when docker is absent
 # ---------------------------------------------------------------------------
 
-@test "isolate fails closed (exit 1) when docker is absent" {
-  mkdir "${BATS_TMP}/empty"
-  run env PATH="${BATS_TMP}/empty" "$BASH_BIN" "$ISOLATE_SH" --print-cmd bench/img:latest
+@test "isolate fails closed (exit 1) when docker is absent for a real run" {
+  BENCH_FAKE_NO_DOCKER=1 run "$ISOLATE_SH" bench/img:latest -- true
   [ "$status" -eq 1 ]
   assert_contains "$output" "docker"
 }
@@ -161,8 +159,14 @@ teardown() {
 # proxy.sh --print-cmd : egress-proxy wiring
 # ---------------------------------------------------------------------------
 
-@test "proxy --print-cmd names the per-run internal network" {
+@test "proxy --print-cmd binds the bench proxy network" {
   run "$PROXY_SH" --print-cmd
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "network=bugsweep-bench-net-<run-id>"
+}
+
+@test "proxy --print-cmd is container-free" {
+  BENCH_FAKE_NO_DOCKER=1 run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
   assert_contains "$output" "network=bugsweep-bench-net-<run-id>"
 }
@@ -177,7 +181,7 @@ teardown() {
   refute_contains "$output" "refuse_connect"
 }
 
-@test "proxy --print-cmd publishes the per-run container base URL" {
+@test "proxy --print-cmd publishes the container's ANTHROPIC_BASE_URL" {
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
   assert_contains "$output" "container_base_url=http://bugsweep-bench-proxy-<run-id>:8888"
@@ -235,8 +239,26 @@ teardown() {
 
 @test "proxy fails closed (exit 1) when docker is absent" {
   cd "$BATS_TMP"
-  mkdir "${BATS_TMP}/empty"
-  BENCH_PROXY_NO_LAUNCH=1 run env PATH="${BATS_TMP}/empty" "$BASH_BIN" "$PROXY_SH" start run-nodock-789
+  local secret_file="$BATS_TMP/provider-key"
+  local limits_file="$BATS_TMP/limits.json"
+  printf '%s' 'provider-key-fixture' >"$secret_file"
+  chmod 600 "$secret_file"
+  printf '%s\n' '{}' >"$limits_file"
+  BENCH_FAKE_NO_DOCKER=1 run "$PROXY_SH" start run-nodock-789 claude "$secret_file" "$limits_file"
   [ "$status" -eq 1 ]
   assert_contains "$output" "docker"
+  refute_contains "$output" "0600"
+}
+
+@test "proxy rejects a secret with mode other than 0600 before docker access" {
+  cd "$BATS_TMP"
+  local secret_file="$BATS_TMP/provider-key-wrong-mode"
+  local limits_file="$BATS_TMP/limits-wrong-mode.json"
+  printf '%s' 'provider-key-fixture' >"$secret_file"
+  chmod 644 "$secret_file"
+  printf '%s\n' '{}' >"$limits_file"
+  BENCH_FAKE_NO_DOCKER=1 run "$PROXY_SH" start run-wrong-mode-790 claude "$secret_file" "$limits_file"
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "0600"
+  refute_contains "$output" "docker runtime not found"
 }

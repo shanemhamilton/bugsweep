@@ -5,7 +5,7 @@
 # untrusted entry point outranks an unreachable "critical". Builds three durable facts over
 # the WU-G graph + WU0 symbol ids, and an in-tier sort the context-build phase consumes.
 #
-#   reachability.sh build               (re)build sinks.jsonl + sink-reachability.jsonl
+#   reachability.sh build               (re)build run-local sinks.jsonl + sink-reachability.jsonl
 #   reachability.sh rank <RUN_DIR>      write <RUN_DIR>/exposure.json (context-build sort key)
 #   reachability.sh add-sanitizer <symbol_id> <class[,class...]>   persist a sanitizer fact
 #   reachability.sh stats
@@ -29,10 +29,10 @@
 #     paths sanitized" is unsafe while the graph is known to miss paths (an unsanitized path can
 #     hide behind an unresolved call). The flag is persisted for WU2 + a future demotion switch;
 #     ranking ignores it today. Documented limitation, not a contract violation.
-#   path_hash: sha256 of the SORTED symbol ids in the sink's undirected connected component
-#     (call edges both directions + import edges + file<->symbol containment). Over-approximates
-#     on purpose — it changes whenever anything near the sink changes, so WU2 can invalidate a
-#     "safe" conclusion on ANY new path to that sink (widen on uncertainty).
+#   path_hash: versioned sha256 of the component's sorted nodes, canonical directed resolved
+#     edges, and entry seeds.  Including edges and seeds is required: a new edge between two
+#     already-known nodes, or an entry classification change, must invalidate a prior conclusion
+#     even when the connected-node set is unchanged.
 #
 # ── Degrade, never fail (every path WIDENS) ──
 #   No graph.jsonl / empty graph -> sinks still classified, every bucket COLD, exposure orders
@@ -43,24 +43,31 @@
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-REPO_ROOT="$BUGSWEEP_REPO_ROOT"
+REPO_ROOT="$BUGSWEEP_TARGET_ROOT"
 STATE_DIR="$BUGSWEEP_STATE_DIR"
-GRAPH="${STATE_DIR}/graph.jsonl"
-ENTRIES="${STATE_DIR}/entry-points.jsonl"
-SINKS="${STATE_DIR}/sinks.jsonl"
-REACH="${STATE_DIR}/sink-reachability.jsonl"
+# Graph/sink facts are run-local evidence. Sanitizer facts remain shared durable learning.
+INDEX_DIR="${BUGSWEEP_INDEX_DIR:-$STATE_DIR}"
+GRAPH="${INDEX_DIR}/graph.jsonl"
+ENTRIES="${INDEX_DIR}/entry-points.jsonl"
+SINKS="${INDEX_DIR}/sinks.jsonl"
+REACH="${INDEX_DIR}/sink-reachability.jsonl"
 SANITIZERS="${STATE_DIR}/sanitizers.jsonl"
+EXTRACTOR="${BUGSWEEP_SCRIPT_DIR}/reachability.sh"
 
 # ---------------------------------------------------------------------------
 build() {
-  bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
-    || { log "reachability: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping."; return 0; }
+  [ -n "$REPO_ROOT" ] && [ -n "$INDEX_DIR" ] && mkdir -p "$INDEX_DIR" 2>/dev/null \
+    || { log "reachability: cannot use target/index dir (${REPO_ROOT:-not in a git repo}); skipping."; return 0; }
   local excludes; excludes="$(cfg_get '.exclude_globs' '')"
 
   if have_python; then
     local out
+    local graph_valid=0 entries_valid=0
+    bugsweep_index_manifest_current "graph" "${BUGSWEEP_SCRIPT_DIR}/graph.sh" && graph_valid=1 || true
+    bugsweep_index_manifest_current "entry-points" "${BUGSWEEP_SCRIPT_DIR}/graph.sh" && entries_valid=1 || true
     if out="$(REPO_ROOT="$REPO_ROOT" GRAPH="$GRAPH" ENTRIES="$ENTRIES" SINKS="$SINKS" \
-              REACH="$REACH" SANITIZERS="$SANITIZERS" EXCLUDES="$excludes" python3 - <<'PY' 2>/dev/null
+              REACH="$REACH" SANITIZERS="$SANITIZERS" EXCLUDES="$excludes" \
+              GRAPH_VALID="$graph_valid" ENTRIES_VALID="$entries_valid" python3 - <<'PY' 2>/dev/null
 import json, os, ast, fnmatch, subprocess, hashlib, re
 
 root = os.environ["REPO_ROOT"]
@@ -200,8 +207,9 @@ for path in files:
                               "evidence": "sink:%s" % cls, "lang": lang})
 
 # ── load WU-G graph + entries + sanitizer registry ──
-edges = load_jsonl(graph_p)
-entries = load_jsonl(entries_p)
+# A graph from another source/config/extractor generation is not evidence for this checkout.
+edges = load_jsonl(graph_p) if os.environ.get("GRAPH_VALID") == "1" else []
+entries = load_jsonl(entries_p) if os.environ.get("ENTRIES_VALID") == "1" else []
 sanitizer_syms = set(e.get("symbol_id") for e in load_jsonl(san_p) if e.get("symbol_id"))
 
 call_adj = {}        # directed: caller_symbol -> set(callee_symbol)  (resolved only)
@@ -265,9 +273,34 @@ def bfs(adj, seeds):
 call_reachable = bfs(call_adj, entry_syms)
 file_reachable = bfs(imp_adj, entry_files) | entry_files
 
+PATH_HASH_VERSION = "bugsweep-path-v2"
+
 def component_hash(node):
     comp = bfs(undirected, {node}) if node in undirected else {node}
-    h = hashlib.sha256("\n".join(sorted(comp)).encode("utf-8", "replace")).hexdigest()[:12]
+    files = {sym_file(value) for value in comp}
+    directed = []
+    for edge in edges:
+        kind = edge.get("kind")
+        src = edge.get("src")
+        dst = edge.get("dst")
+        if not kind or not src or not dst:
+            continue
+        if kind == "call" and edge.get("resolved") not in ("strong", "weak"):
+            continue
+        if kind not in ("call", "import"):
+            continue
+        if src in comp or dst in comp or src in files or dst in files:
+            directed.append((kind, str(src), str(dst)))
+    seeds = sorted(entry_syms & comp)
+    seed_files = sorted(entry_files & files)
+    payload = {
+        "version": PATH_HASH_VERSION,
+        "nodes": sorted(comp),
+        "edges": sorted(set(directed)),
+        "entry_symbols": seeds,
+        "entry_files": seed_files,
+    }
+    h = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:12]
     return comp, h
 
 def bucket_for(sink_sym, sink_file):
@@ -309,6 +342,8 @@ print("SINKS=%d LIVE=%d MAYBE=%d COLD=%d" % (len(usinks), live, maybe, len(reach
 PY
 )"; then
       log "reachability: built (${out:-done})."
+      bugsweep_write_index_manifest "sinks" "$EXTRACTOR" || log "reachability: sink manifest write failed; conclusions will reopen."
+      bugsweep_write_index_manifest "sink-reachability" "$EXTRACTOR" || log "reachability: reach manifest write failed; conclusions will reopen."
       return 0
     fi
     log "reachability: python build failed; falling back to file-level sink grep (all COLD)."
@@ -343,6 +378,8 @@ build_filelevel_shell() {
       "$p" "$p" "$cls" "${hash:-0}" >> "$rt"
   done < <(git -C "$REPO_ROOT" ls-files 2>/dev/null || true)
   mv "$st" "$SINKS"; mv "$rt" "$REACH"
+  bugsweep_write_index_manifest "sinks" "$EXTRACTOR" || log "reachability: sink manifest write failed; conclusions will reopen."
+  bugsweep_write_index_manifest "sink-reachability" "$EXTRACTOR" || log "reachability: reach manifest write failed; conclusions will reopen."
   log "reachability: built degraded file-level sinks ($(bugsweep_count_lines "$SINKS") sinks, all COLD)."
 }
 
@@ -356,6 +393,11 @@ rank() {
 
   if ! have_python; then
     printf '{"schema":1,"degraded":true,"files":[]}\n' > "$out"
+    echo "EXPOSURE=${out}"; return 0
+  fi
+
+  if ! bugsweep_index_manifest_current "sink-reachability" "$EXTRACTOR"; then
+    printf '{"schema":1,"degraded":true,"files":[]}' > "$out"
     echo "EXPOSURE=${out}"; return 0
   fi
 

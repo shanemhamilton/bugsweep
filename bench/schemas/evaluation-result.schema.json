@@ -171,6 +171,12 @@
             "minimum": 0
           }
         },
+        "context_cells": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/context_cell"
+          }
+        },
         "comparability_reasons": {
           "type": "array",
           "items": {
@@ -187,6 +193,32 @@
             "inconclusive"
           ]
         }
+      }
+    },
+    "context_cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_slots",
+        "received_slots",
+        "missing_slots",
+        "attrition",
+        "comparable_cases",
+        "arms",
+        "lifecycle",
+        "accounting",
+        "interpretation"
+      ],
+      "properties": {
+        "expected_slots": {"type": "integer", "minimum": 0},
+        "received_slots": {"type": "integer", "minimum": 0},
+        "missing_slots": {"type": "integer", "minimum": 0},
+        "attrition": {"type": "number", "minimum": 0, "maximum": 1},
+        "comparable_cases": {"type": "integer", "minimum": 0},
+        "arms": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "lifecycle": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "accounting": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "interpretation": {"const": "descriptive_accounting_only"}
       }
     },
     "verification": {

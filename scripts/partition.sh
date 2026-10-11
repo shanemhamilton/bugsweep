@@ -27,11 +27,11 @@
 #       id) -- it is NOT any individual subagent's own run_dir/bs_id, since the
 #       whole point is that siblings coordinate through one shared registry.
 #
-# Frontier = the batches array of <RUN_DIR>/recon.json (the live, run-scoped
+# Frontier = admitted, incomplete batches of <RUN_DIR>/recon.json (the run-scoped
 # hunt plan context-build.md seeds from recon-plan.json and updates as it
 # re-tiers), falling back to <RUN_DIR>/recon-plan.json (Step 0's raw plan,
 # before context-build.md has copied it into recon.json), generating the
-# latter on the fly via recon-plan.sh + `git ls-files` only if NEITHER exists
+# latter from frozen scope (or `git ls-files` if absent) only if NEITHER exists
 # yet. recon-plan.sh's docstring names byte-identical output as its
 # determinism contract, so independently-run sibling subagents (each doing
 # their own context-build.md Step 0 against the same file list/config) end up
@@ -64,11 +64,13 @@ set -euo pipefail
 
 STATE_DIR="$BUGSWEEP_STATE_DIR"
 
-# Sanitize a caller-supplied run id into a safe filename fragment. Mirrors
-# state.sh's _lease_id() so registry/claim-dir names are always filesystem-safe
-# even if a caller passes something with slashes or spaces.
+# Reject ambiguous run IDs rather than mapping different inputs to one registry.
+# Preflight-generated IDs already use this portable filename alphabet.
 _run_key() {
-  printf '%s' "${1:-}" | tr -c 'A-Za-z0-9._-' '_'
+  case "${1:-}" in
+    ''|*[!A-Za-z0-9._-]*) die "partition: RUN_ID must use letters, digits, dots, underscores, or hyphens" ;;
+  esac
+  printf '%s' "$1"
 }
 
 # --- frontier resolution ----------------------------------------------------
@@ -83,25 +85,68 @@ _frontier_source() {
   elif [ -f "${run_dir}/recon-plan.json" ]; then
     printf '%s' "${run_dir}/recon-plan.json"
   else
-    ( cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null \
-        && git ls-files 2>/dev/null | bash "${BUGSWEEP_SCRIPT_DIR}/recon-plan.sh" "$run_dir" >/dev/null 2>&1 ) || true
+    if [ -f "${run_dir}/scope-files.txt" ]; then
+      bash "${BUGSWEEP_SCRIPT_DIR}/recon-plan.sh" "$run_dir" "${run_dir}/scope-files.txt" >/dev/null
+    else
+      local target
+      target="$(_bsw_state_env_get "${run_dir}/state.env" BUGSWEEP_TARGET_ROOT)"
+      [ -n "$target" ] || target="$(_bsw_state_env_get "${run_dir}/state.env" BUGSWEEP_WORKTREE)"
+      [ -n "$target" ] || target="$BUGSWEEP_TARGET_ROOT"
+      git -C "$target" ls-files | bash "${BUGSWEEP_SCRIPT_DIR}/recon-plan.sh" "$run_dir" >/dev/null
+    fi
     printf '%s' "${run_dir}/recon-plan.json"
   fi
 }
 
-# Prints one integer batch id per line, in the SAME order the batches array
-# stores them (already risk-ranked upstream -- this function does not sort or
-# re-rank anything). A plain line-oriented grep is sufficient without a JSON
-# parser: "id" is a key ONLY on batch objects in this schema (see
-# prompts/context-build.md's recon.json shape), so there is nothing else in
-# the file it could mismatch.
+# Only admitted, incomplete batches are claimable. Parse the complete plan before
+# printing any IDs, so malformed JSON cannot partially dispatch work. Scope remains in
+# the plan; deferred work is simply not admitted for this run.
 frontier() {
   local run_dir="${1:-}"
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || die "usage: partition.sh frontier <RUN_DIR>"
   run_dir="$(cd "$run_dir" && pwd)"
-  local src; src="$(_frontier_source "$run_dir")"
-  [ -f "$src" ] || return 0
-  grep -o '"id"[[:space:]]*:[[:space:]]*[0-9]*' "$src" 2>/dev/null | grep -o '[0-9]*$'
+  local src; src="$(_frontier_source "$run_dir")" || return 1
+  [ -f "$src" ] || return 1
+  if have_python; then
+    python3 - "$src" <<'PYTHON'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+batches, covered = value.get("batches"), value.get("covered", [])
+if not isinstance(batches, list) or not isinstance(covered, list):
+    raise ValueError("invalid frontier")
+if any(type(identifier) is not int or identifier < 1 for identifier in covered):
+    raise ValueError("invalid completed batch identity")
+ids, selected = set(), []
+for batch in batches:
+    identifier = batch.get("id") if isinstance(batch, dict) else None
+    if type(identifier) is not int or identifier < 1 or identifier in ids:
+        raise ValueError("invalid batch identity")
+    if type(batch.get("deferred")) is not bool:
+        raise ValueError("invalid batch admission")
+    ids.add(identifier)
+    if batch["deferred"] is False and identifier not in covered:
+        selected.append(identifier)
+for identifier in selected:
+    print(identifier)
+PYTHON
+  elif command -v jq >/dev/null 2>&1; then
+    jq -r '
+      if (.batches | type) != "array" or ((.covered // []) | type) != "array"
+      then error("invalid frontier") else . end |
+      (.covered // []) as $covered |
+      if any($covered[]; type != "number" or . < 1 or . != floor)
+      then error("invalid completed batch identity") else . end |
+      [.batches[] | if (.id | type) != "number" or .id < 1 or .id != (.id | floor)
+        or (.deferred | type) != "boolean" then error("invalid batch") else . end] as $batches |
+      if ([$batches[].id] | length) != ([$batches[].id] | unique | length)
+      then error("duplicate batch") else
+        [$batches[] | select(.deferred == false) | .id | select(. as $id | $covered | index($id) | not)][]
+      end' "$src"
+  else
+    log "partition: a JSON parser is required to verify admission; no batches claimed."
+    return 1
+  fi
 }
 
 # --- shard: deterministic pre-partition -------------------------------------
@@ -122,14 +167,15 @@ shard() {
   [ "$n" -gt 0 ] || die "partition.sh shard: N must be > 0"
   [ "$index" -lt "$n" ] || die "partition.sh shard: INDEX (${index}) must be < N (${n})"
 
-  local id pos=0
+  local id pos=0 frontier_ids
+  frontier_ids="$(frontier "$run_dir")" || return 1
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     if [ $(( pos % n )) -eq "$index" ]; then
       printf '%s\n' "$id"
     fi
     pos=$(( pos + 1 ))
-  done < <(frontier "$run_dir")
+  done <<< "$frontier_ids"
 }
 
 # --- claim: atomic self-claim ------------------------------------------------
@@ -141,28 +187,35 @@ claim() {
   run_dir="$(cd "$run_dir" && pwd)"
   bugsweep_state_dir_ready || {
     log "partition: no project-scoped state dir (${BUGSWEEP_STATE_DIR:-not in a git repo}); cannot coordinate a claim."
-    echo "NO_BATCHES_LEFT=1"
-    return 0
+    return 1
   }
 
-  local key; key="$(_run_key "$run_id")"
+  local key; key="$(_run_key "$run_id")" || return 1
   local claims_dir="${STATE_DIR}/claims-${key}.d"
   local registry="${STATE_DIR}/claims-${key}.jsonl"
-  mkdir -p "$claims_dir" 2>/dev/null || true
+  mkdir -p "$claims_dir" 2>/dev/null || { log "partition: claim directory unavailable."; return 1; }
 
-  local id
+  local id frontier_ids
+  frontier_ids="$(frontier "$run_dir")" || return 1
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     # THE atomic primitive: see the file header for why this mkdir alone is
     # sufficient (no check-then-act window; exactly one winner per path).
     if mkdir "${claims_dir}/batch-${id}.claim" 2>/dev/null; then
       local ts; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      printf '{"run":"%s","batch":%s,"owner":"%s","pid":%s,"ts":"%s"}\n' \
-        "$key" "$id" "$owner" "$$" "$ts" >> "$registry"
+      if ! printf '{"run":"%s","batch":%s,"owner":"%s","pid":%s,"ts":"%s"}\n' \
+        "$key" "$id" "$(_bsw_json_escape "$owner")" "$$" "$ts" >> "$registry"; then
+        rmdir "${claims_dir}/batch-${id}.claim" 2>/dev/null || true
+        log "partition: claim receipt could not be written."
+        return 1
+      fi
       echo "CLAIMED_BATCH=${id}"
       return 0
+    elif [ ! -d "${claims_dir}/batch-${id}.claim" ]; then
+      log "partition: batch claim failed before coordination could be established."
+      return 1
     fi
-  done < <(frontier "$run_dir")
+  done <<< "$frontier_ids"
 
   echo "NO_BATCHES_LEFT=1"
 }
@@ -172,7 +225,7 @@ claim() {
 claims() {
   local run_id="${1:-}"
   [ -n "$run_id" ] || die "usage: partition.sh claims <RUN_ID>"
-  local key; key="$(_run_key "$run_id")"
+  local key; key="$(_run_key "$run_id")" || return 1
   local claims_dir="${STATE_DIR}/claims-${key}.d"
   [ -d "$claims_dir" ] || return 0
 

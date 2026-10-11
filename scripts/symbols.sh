@@ -12,7 +12,7 @@
 #   - js/ts/go/etc. get file-level only (a wrong regex-sliced ID is worse than file-level).
 # No safety property may depend on sub-file precision; consumers fall back to the file entry.
 #
-#   symbols.sh build            (re)build .bugsweep/state/symbol-index.jsonl (incremental)
+#   symbols.sh build            (re)build a run-local symbol-index.jsonl (incremental)
 #   symbols.sh lookup <id>      print the stored hash for a symbol_id (empty if unknown)
 #   symbols.sh stale <id> <h>   exit 0 if the stored hash != <h> (changed/unknown), 1 if same
 #
@@ -22,21 +22,30 @@
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-# Repo root, state dir, have_python come from common.sh.
-REPO_ROOT="$BUGSWEEP_REPO_ROOT"
+# BUGSWEEP_REPO_ROOT owns shared state; BUGSWEEP_TARGET_ROOT is the checkout whose bytes are
+# indexed.  BUGSWEEP_INDEX_DIR is run-local when preflight supplies BUGSWEEP_RUN_DIR, while the
+# historical state path remains the manual-helper fallback.
+REPO_ROOT="$BUGSWEEP_TARGET_ROOT"
 STATE_DIR="$BUGSWEEP_STATE_DIR"
-INDEX="${STATE_DIR}/symbol-index.jsonl"
+INDEX_DIR="${BUGSWEEP_INDEX_DIR:-$STATE_DIR}"
+INDEX="${INDEX_DIR}/symbol-index.jsonl"
+EXTRACTOR="${BUGSWEEP_SCRIPT_DIR}/symbols.sh"
 
 build() {
-  bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
-    || { log "symbols: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping."; return 0; }
+  [ -n "$REPO_ROOT" ] && [ -n "$INDEX_DIR" ] && mkdir -p "$INDEX_DIR" 2>/dev/null \
+    || { log "symbols: cannot use target/index dir (${REPO_ROOT:-not in a git repo}); skipping."; return 0; }
+
+  # An old index may have the same filenames but describe another checkout, config, or
+  # extractor generation.  Reuse is an optimization only; a failed binding forces a full build.
+  local reuse=0
+  bugsweep_index_manifest_current "symbol-index" "$EXTRACTOR" && reuse=1 || true
 
   # Exclude globs come from config; pass as newline list to the extractor.
   local excludes; excludes="$(cfg_get '.exclude_globs' '')"
 
   if have_python; then
     local out
-    if out="$(REPO_ROOT="$REPO_ROOT" INDEX="$INDEX" EXCLUDES="$excludes" python3 - <<'PY' 2>/dev/null
+    if out="$(REPO_ROOT="$REPO_ROOT" INDEX="$INDEX" EXCLUDES="$excludes" REUSE="$reuse" python3 - <<'PY' 2>/dev/null
 
 import json, os, sys, hashlib, subprocess, ast, fnmatch
 root = os.environ["REPO_ROOT"]; idx = os.environ["INDEX"]
@@ -64,7 +73,7 @@ except Exception:
 
 # Prior index: file path -> (filehash, [raw json lines]) for incremental reuse.
 prior = {}
-if os.path.exists(idx):
+if os.environ.get("REUSE") == "1" and os.path.exists(idx):
     cur = None
     for line in open(idx):
         line = line.strip()
@@ -135,6 +144,7 @@ print("FILES=%d ENTRIES=%d" % (len(seen), len(entries)))
 PY
 )"; then
       log "symbols: built index (${out:-done})."
+      bugsweep_write_index_manifest "symbol-index" "$EXTRACTOR" || log "symbols: manifest write failed; consumers will reopen/degrade."
       return 0
     fi
     log "symbols: python build failed; falling back to file-level hashes only."
@@ -161,16 +171,16 @@ build_filelevel_shell() {
     [ -n "$h" ] && printf '{"symbol_id":"%s","hash":"%s","kind":"file"}\n' "$p" "$h" >> "$tmp"
   done
   mv "$tmp" "$INDEX"
+  bugsweep_write_index_manifest "symbol-index" "$EXTRACTOR" || log "symbols: manifest write failed; consumers will reopen/degrade."
   log "symbols: built file-level index ($(wc -l < "$INDEX" 2>/dev/null | tr -d ' ') files)."
 }
 
 lookup() {
   local id="${1:-}"; [ -n "$id" ] || die "usage: symbols.sh lookup <symbol_id>"
   [ -f "$INDEX" ] || return 0
-  # No-python path: extract just the hash (matching the shell-fallback's space-free JSON),
-  # so the value is comparable in `stale` rather than a whole JSON line.
-  have_python || { grep -F "\"symbol_id\":\"${id}\"" "$INDEX" 2>/dev/null | head -1 \
-    | sed -n 's/.*"hash":"\([^"]*\)".*/\1/p'; return 0; }
+  bugsweep_index_manifest_current "symbol-index" "$EXTRACTOR" || return 0
+  # Manifest validation requires Python. Without it lookup stays unknown, so stale
+  # reopens the source instead of treating an unchecked file-level hash as current.
   INDEX="$INDEX" python3 - "$id" <<'PY' 2>/dev/null || true
 import json, os, sys
 idx = os.environ["INDEX"]; want = sys.argv[1]

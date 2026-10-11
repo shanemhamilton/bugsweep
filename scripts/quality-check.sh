@@ -58,11 +58,11 @@ COVERAGE_FILE="$installer_coverage_file" PYTHONDONTWRITEBYTECODE=1 python3 -B -m
 COVERAGE_FILE="$installer_coverage_file" python3 -B -m coverage report --fail-under=80
 [ "$(bats --version)" = "Bats ${BUGSWEEP_BATS_VERSION:?BUGSWEEP_BATS_VERSION is required}" ]
 [ "$(shellcheck --version | awk '/^version:/ {print $2}')" = "${BUGSWEEP_SHELLCHECK_VERSION:?BUGSWEEP_SHELLCHECK_VERSION is required}" ]
-bats tests/bats/install-contract.bats tests/bats/run-checks-contract.bats
+bats --print-output-on-failure tests/bats/install-contract.bats tests/bats/run-checks-contract.bats
 shellcheck install.sh scripts/update-install.sh scripts/quality-check.sh
 if $FULL_GIT_CI; then
   [ "${BUGSWEEP_FULL_GIT_CI:-}" = 1 ] || { echo 'full Git CI requires BUGSWEEP_FULL_GIT_CI=1' >&2; exit 2; }
   python3 -B -m pytest -p no:cacheprovider bench/tests/unit/test_mark_batch_covered.py
   python3 -B -m pytest -p no:cacheprovider bench/tests/git
-  bats tests/bats bench/tests/bats
+  bats --print-output-on-failure tests/bats bench/tests/bats
 fi

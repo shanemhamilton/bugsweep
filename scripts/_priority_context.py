@@ -45,6 +45,7 @@ HARD_TOTAL_SIGNAL_BYTES = 256 * 1024
 HARD_JSON_BYTES = 2 * 1024 * 1024
 HARD_JSONL_LINE_BYTES = 64 * 1024
 HARD_AUDIT_BYTES = 32 * 1024 * 1024
+HARD_AUDIT_INDEX_BYTES = 64 * 1024 * 1024
 HARD_PROMOTED_FILES = 1_000
 _FIX_RE = re.compile(r"\b(fix(?:es|ed)?|bug(?:fix)?|patch(?:es|ed)?|hotfix)\b", re.I)
 _REVERT_RE = re.compile(r"^\s*revert\b|\brevert(?:ed|ing)?\b", re.I)
@@ -402,31 +403,121 @@ def _git_blob_oids(repo: Path, head: str, paths: Iterable[str]) -> dict[str, str
     return result
 
 
-def _content_changed_since_hunt(
-    repo: Path, audit_log: Path, tracked: set[str], current_head: str
-) -> tuple[set[str], str]:
-    latest: dict[str, tuple[int, str]] = {}
-    for record in _load_jsonl_tail(audit_log, max_records=200_000, max_bytes=HARD_AUDIT_BYTES):
-        if record.get("outcome") != "audited" or not record.get("blob_oid"):
-            continue
-        path = normalize_repo_path(record.get("file"), tracked)
+_GIT_OID_RE = re.compile(r"^[0-9a-fA-F]{7,128}$")
+
+
+def _audit_index_fingerprints(
+    index_path: Path,
+    tracked: set[str],
+    *,
+    expected_source_size: int | None = None,
+    expected_catalog_version: str | None = None,
+    require_exact: bool = False,
+) -> tuple[dict[str, tuple[str, str]], str, set[str]]:
+    """Read exact per-path audit fingerprints from state.sh's compact index."""
+
+    value = _load_json(index_path, max_bytes=HARD_AUDIT_INDEX_BYTES)
+    if value.get("schema") != 1 or value.get("membership_status") not in {"exact", "unknown"}:
+        return {}, "unknown", set()
+    source_size = value.get("source_size")
+    if not isinstance(source_size, int) or isinstance(source_size, bool) or source_size < 0:
+        return {}, "unknown", set()
+    if expected_source_size is not None and source_size != expected_source_size:
+        return {}, "unknown", set()
+    if require_exact and value.get("membership_status") != "exact":
+        return {}, "unknown", set()
+    raw_records = value.get("records")
+    if not isinstance(raw_records, dict):
+        return {}, "unknown", set()
+
+    fingerprints: dict[str, tuple[str, str]] = {}
+    global_unknown = value.get("membership_status") == "unknown"
+    unknown_paths: set[str] = set()
+    for raw_path, record in raw_records.items():
+        path = normalize_repo_path(raw_path, tracked) if isinstance(raw_path, str) else None
+        # Historical files outside this run's tracked scope have no current root blob to compare.
         if path is None:
             continue
-        try:
-            run = int(record.get("run", 0))
-        except (TypeError, ValueError):
+        if not isinstance(record, dict):
+            unknown_paths.add(path)
             continue
-        prior_fingerprint = latest.get(path)
-        if prior_fingerprint is None or run > prior_fingerprint[0]:
-            latest[path] = (run, str(record["blob_oid"]))
+        run = record.get("run")
+        if not isinstance(run, int) or isinstance(run, bool) or run < 0:
+            unknown_paths.add(path)
+            continue
+        if (
+            expected_catalog_version is not None
+            and record.get("catalog_version") != expected_catalog_version
+        ):
+            unknown_paths.add(path)
+            continue
+        fingerprint_status = record.get("fingerprint_status")
+        if fingerprint_status == "unknown":
+            unknown_paths.add(path)
+            continue
+        head = record.get("head")
+        blob_oid = record.get("blob_oid")
+        if (
+            fingerprint_status != "exact"
+            or not isinstance(head, str)
+            or not _GIT_OID_RE.fullmatch(head)
+            or not isinstance(blob_oid, str)
+            or not _GIT_OID_RE.fullmatch(blob_oid)
+        ):
+            unknown_paths.add(path)
+            continue
+        fingerprints[path] = (head.lower(), blob_oid.lower())
+
+    if global_unknown:
+        return fingerprints, "unknown", unknown_paths
+    if unknown_paths:
+        return fingerprints, "partial", unknown_paths
+    return fingerprints, "ok" if fingerprints else "no_fingerprints", unknown_paths
+
+
+def _git_dirty_paths(repo: Path, head: str, tracked: set[str]) -> set[str] | None:
+    """Return tracked worktree paths dirty relative to the supplied audit head."""
+
+    raw, ok = _git_result(
+        repo,
+        ["diff", "--name-only", "-z", head, "--"],
+        max_bytes=4 * 1024 * 1024,
+    )
+    if not ok:
+        return None
+    dirty: set[str] = set()
+    for raw_path in raw.split("\x00"):
+        if not raw_path:
+            continue
+        path = normalize_repo_path(raw_path, tracked)
+        if path is not None:
+            dirty.add(path)
+    return dirty
+
+
+def collect_file_blob_changes(
+    repo: Path, audit_index: Path, tracked: set[str], current_head: str
+) -> tuple[set[str], str]:
+    """Compare compact-index audit blobs with the current audited root's blobs."""
+
+    fingerprints, status, _ = _audit_index_fingerprints(audit_index, tracked)
+    if not fingerprints:
+        return set(), status
+    current_oids = _git_blob_oids(repo, current_head, fingerprints)
+    if not current_oids:
+        return set(), "unknown"
 
     changed: set[str] = set()
-    current_oids = _git_blob_oids(repo, current_head, latest)
-    for path, (_, old_oid) in latest.items():
+    missing_current = False
+    for path, (_, old_oid) in fingerprints.items():
         current_oid = current_oids.get(path)
-        if current_oid and current_oid != old_oid:
+        if not current_oid:
+            missing_current = True
+        elif current_oid.lower() != old_oid:
             changed.add(path)
-    return changed, "ok" if latest else "no_fingerprints"
+    if missing_current:
+        status = "unknown"
+    return changed, status
 
 
 def _extract_tracked_paths(log_path: Path, tracked: set[str]) -> list[str]:
@@ -447,7 +538,9 @@ def _baseline_context(
 ) -> tuple[dict[str, Any], dict[str, list[str]], str]:
     baseline = _load_json(run_dir / "baseline.json")
     if not baseline:
-        return {}, {}, "missing"
+        # A missing baseline is unavailable evidence.  It must not be rendered as a passing or
+        # clean baseline; callers surface this status and keep stability unknown.
+        return {}, {}, "unavailable"
     hits: dict[str, list[str]] = {}
     for check in baseline.get("checks", []) or []:
         if not isinstance(check, Mapping) or check.get("status") != "fail":
@@ -456,6 +549,65 @@ def _baseline_context(
         if name:
             hits[name] = _extract_tracked_paths(run_dir / f"baseline-{name}.log", tracked)
     return baseline, hits, "ok"
+
+
+def _merge_bound_audit_membership(prior: dict[str, Any], common_root: Path) -> dict[str, Any]:
+    """Merge shared exact membership only when it matches this prior snapshot."""
+
+    marker = prior.get("audit_membership")
+    if not isinstance(marker, Mapping):
+        # Compatibility with prior-coverage artifacts written before exact membership existed.
+        return prior
+
+    merged = dict(prior)
+
+    def unknown() -> dict[str, Any]:
+        marker_copy = dict(marker)
+        marker_copy["status"] = "unknown"
+        merged["audit_membership"] = marker_copy
+        merged["files_audited_current_catalog_exact"] = []
+        merged["files_audited_stale_catalog_exact"] = []
+        return merged
+
+    if marker.get("status") != "exact":
+        return unknown()
+    catalog_version = prior.get("catalog_version")
+    prior_runs = prior.get("prior_runs")
+    source_size = marker.get("source_size")
+    if (
+        not isinstance(catalog_version, str)
+        or not isinstance(prior_runs, int)
+        or isinstance(prior_runs, bool)
+        or prior_runs < 0
+        or not isinstance(source_size, int)
+        or isinstance(source_size, bool)
+        or source_size < 0
+        or marker.get("index") != "audit-index.json"
+        or marker.get("path") != "audit-membership.json"
+    ):
+        return unknown()
+
+    membership = _load_json(common_root / ".bugsweep" / "state" / "audit-membership.json")
+    if (
+        membership.get("schema") != 1
+        or membership.get("status") != "exact"
+        or membership.get("index") != "audit-index.json"
+        or membership.get("catalog_version") != catalog_version
+        or membership.get("prior_runs") != prior_runs
+        or membership.get("source_size") != source_size
+    ):
+        return unknown()
+    current = membership.get("files_audited_current_catalog")
+    stale = membership.get("files_audited_stale_catalog")
+    if (
+        not isinstance(current, list)
+        or not isinstance(stale, list)
+        or not all(isinstance(path, str) for path in current + stale)
+    ):
+        return unknown()
+    merged["files_audited_current_catalog_exact"] = current
+    merged["files_audited_stale_catalog_exact"] = stale
+    return merged
 
 
 def _file_scope_tokens(record: Mapping[str, Any]) -> list[object]:
@@ -853,6 +1005,85 @@ def _atomic_bytes(path: Path, encoded: bytes) -> None:
                 pass
 
 
+def _state_env_value(path: Path, key: str) -> str:
+    """Read one state.env value as inert text; never source or evaluate it."""
+
+    try:
+        text = _read_bounded(path, HARD_LOG_BYTES).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    prefix = key + "="
+    for line in text.splitlines():
+        if not line.startswith(prefix):
+            continue
+        value = line[len(prefix) :]
+        if value.startswith("'") and value.endswith("'") and len(value) >= 2:
+            return value[1:-1].replace("'\\''", "'")
+        return value
+    return ""
+
+
+def _fresh_audited_files(
+    repo: Path,
+    audit_index: Path,
+    prior: Mapping[str, Any],
+    tracked: set[str],
+    current_head: str,
+) -> list[str]:
+    """Return only exact current-catalog files whose recorded root blobs are unchanged."""
+
+    marker = prior.get("audit_membership")
+    candidates = prior.get("files_audited_current_catalog_exact")
+    if (
+        not isinstance(marker, Mapping)
+        or marker.get("status") != "exact"
+        or not isinstance(candidates, list)
+        or not all(isinstance(path, str) for path in candidates)
+    ):
+        return []
+    source_size = marker.get("source_size")
+    # state.sh writes catalog_version on the run-level prior-coverage object;
+    # the nested marker carries only the binding metadata for the shared file.
+    catalog_version = prior.get("catalog_version")
+    if (
+        not isinstance(source_size, int)
+        or isinstance(source_size, bool)
+        or source_size < 0
+        or not isinstance(catalog_version, str)
+    ):
+        return []
+    fingerprints, status, _ = _audit_index_fingerprints(
+        audit_index,
+        tracked,
+        expected_source_size=source_size,
+        expected_catalog_version=catalog_version,
+        require_exact=True,
+    )
+    if status not in {"ok", "partial"} or not fingerprints:
+        return []
+    current_oids = _git_blob_oids(repo, current_head, fingerprints)
+    if any(path not in current_oids for path in fingerprints):
+        return []
+    dirty_paths = _git_dirty_paths(repo, current_head, set(fingerprints))
+    if dirty_paths is None:
+        return []
+    if any(current_oids[path].lower() != old_oid for path, (_, old_oid) in fingerprints.items()):
+        # Changed files are simply ineligible for freshness; unknown evidence above is the
+        # fail-closed case that suppresses all demotion.
+        unchanged = {
+            path
+            for path, (_, old_oid) in fingerprints.items()
+            if current_oids[path].lower() == old_oid and path not in dirty_paths
+        }
+    else:
+        unchanged = set(fingerprints) - dirty_paths
+    return sorted(
+        path
+        for raw_path in candidates
+        if (path := normalize_repo_path(raw_path, tracked)) is not None and path in unchanged
+    )
+
+
 def build(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     common_root = Path(args.common_root).resolve()
@@ -902,8 +1133,8 @@ def build(args: argparse.Namespace) -> int:
 
     recent = _recent_commits(repo, current_head, recent_count, tracked)
     changes, change_status = _change_window(repo, previous_head, current_head, recent, tracked)
-    content_changed, fingerprint_status = _content_changed_since_hunt(
-        repo, common_root / ".bugsweep" / "state" / "audit-log.jsonl", tracked, current_head
+    content_changed, fingerprint_status = collect_file_blob_changes(
+        repo, common_root / ".bugsweep" / "state" / "audit-index.json", tracked, current_head
     )
     baseline, baseline_hits, baseline_status = _baseline_context(run_dir, tracked)
     history, history_status = _history_records(Path(args.history), tracked)
@@ -932,6 +1163,9 @@ def build(args: argparse.Namespace) -> int:
     critical_globs: list[object] = (
         list(raw_critical_globs) if isinstance(raw_critical_globs, list) else []
     )
+    prior_coverage = _merge_bound_audit_membership(
+        _load_json(run_dir / "prior-coverage.json"), common_root
+    )
     context = build_priority_context(
         tracked_files=tracked_list,
         current_head=current_head,
@@ -943,7 +1177,7 @@ def build(args: argparse.Namespace) -> int:
         baseline=baseline,
         baseline_file_hits=baseline_hits,
         exposure=exposure,
-        prior_coverage=_load_json(run_dir / "prior-coverage.json"),
+        prior_coverage=prior_coverage,
         reopened=_line_paths(run_dir / "reopened-conclusions.txt", tracked),
         variant_matches=_line_paths(run_dir / "variant-requeue.txt", tracked),
         issue_signals=issues,
@@ -970,6 +1204,10 @@ def build(args: argparse.Namespace) -> int:
         },
     )
     context["degraded"] = False
+    if baseline_status != "ok":
+        project_signals = context.get("project_signals")
+        if isinstance(project_signals, dict):
+            project_signals["baseline_stability"] = "unknown"
     _atomic_json(Path(args.output), context)
     return 0
 
@@ -997,13 +1235,42 @@ def apply(args: argparse.Namespace) -> int:
     context = _load_json(context_path)
     if not recon or not context:
         raise RuntimeError("recon.json or priority-context.json missing/unreadable")
+    state_path = run_dir / "state.env"
+    common_root = Path(
+        _state_env_value(state_path, "BUGSWEEP_REPO_ROOT") or run_dir.parent.parent
+    ).resolve()
+    target_value = (
+        _state_env_value(state_path, "BUGSWEEP_TARGET_ROOT")
+        or _state_env_value(state_path, "BUGSWEEP_WORKTREE")
+        or str(common_root)
+    )
+    target_root = Path(target_value).resolve()
     before_files = _recon_files(recon)
     before_batch_ids = Counter(
         str(batch.get("id"))
         for batch in recon.get("batches", []) or []
         if isinstance(batch, Mapping)
     )
-    result = reprioritize_recon(recon, context)
+    prior_coverage = _merge_bound_audit_membership(
+        _load_json(run_dir / "prior-coverage.json"), common_root
+    )
+    current_head = _state_env_value(state_path, "BUGSWEEP_ORIG_HEAD")
+    if not _valid_commit(target_root, current_head):
+        current_head = _git(target_root, ["rev-parse", "HEAD"]).strip()
+    fresh_audited = []
+    if _valid_commit(target_root, current_head):
+        fresh_audited = _fresh_audited_files(
+            target_root,
+            common_root / ".bugsweep" / "state" / "audit-index.json",
+            prior_coverage,
+            set(before_files),
+            current_head,
+        )
+    result = reprioritize_recon(
+        recon,
+        context,
+        fresh_audited_files=fresh_audited,
+    )
     after_files = _recon_files(result)
     after_batch_ids = Counter(
         str(batch.get("id"))
@@ -1023,12 +1290,45 @@ def apply(args: argparse.Namespace) -> int:
         for batch in result.get("batches", [])
         if isinstance(batch, Mapping) and "id" in batch
     }
-    promoted_batches = [
-        batch_id
-        for batch_id in after_by_id
-        if before_by_id[batch_id].get("deferred") is True
-        and after_by_id[batch_id].get("deferred") is False
-    ]
+    admission = result.get("admission")
+    admission_base: set[str] | None = None
+    admission_promoted: list[str] | None = None
+    if admission is not None:
+        if not isinstance(admission, Mapping) or admission.get("schema_version") != 1:
+            raise RuntimeError("priority application returned malformed admission")
+
+        def admission_ids(key: str) -> list[str]:
+            raw_ids = admission.get(key)
+            if not isinstance(raw_ids, list):
+                raise RuntimeError(f"priority application admission missing {key}")
+            result_ids: list[str] = []
+            for raw_id in raw_ids:
+                if not isinstance(raw_id, int) or isinstance(raw_id, bool):
+                    raise RuntimeError(f"priority application admission has invalid {key}")
+                batch_id = str(raw_id)
+                if batch_id not in after_by_id or batch_id in result_ids:
+                    raise RuntimeError(f"priority application admission has unknown {key}")
+                result_ids.append(batch_id)
+            return result_ids
+
+        base_ids = admission_ids("base_batch_ids")
+        promoted_ids = admission_ids("promoted_batch_ids")
+        if set(base_ids) & set(promoted_ids):
+            raise RuntimeError("priority application admission overlaps base and promoted IDs")
+        admission_base = set(base_ids)
+        admission_promoted = promoted_ids
+
+    if admission_promoted is None:
+        # Legacy scorer output: infer promotions only from a deferred -> admitted transition.
+        promoted_batches = [
+            batch_id
+            for batch_id in after_by_id
+            if before_by_id[batch_id].get("deferred") is True
+            and after_by_id[batch_id].get("deferred") is False
+        ]
+    else:
+        # Admission is authoritative: a base-frontier reorder is not a promotion.
+        promoted_batches = admission_promoted
     promoted_set = set(promoted_batches)
     file_to_batch = {
         path: batch_id
@@ -1044,7 +1344,9 @@ def apply(args: argparse.Namespace) -> int:
         batch_id = file_to_batch.get(path)
         if batch_id is None:
             skipped.append({"file": path, "reason": "outside_recon"})
-        elif before_by_id[batch_id].get("deferred") is False:
+        elif admission_base is not None and batch_id in admission_base:
+            already_in_budget.append(path)
+        elif admission_base is None and before_by_id[batch_id].get("deferred") is False:
             already_in_budget.append(path)
         elif batch_id not in promoted_set:
             skipped.append({"file": path, "reason": "budget_limited"})

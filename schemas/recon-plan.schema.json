@@ -34,6 +34,34 @@
       "type": ["integer", "null"],
       "minimum": 0
     },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "base_batch_ids", "promoted_batch_ids"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "base_batch_ids": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
+        "promoted_batch_ids": {"type": "array", "maxItems": 20, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "max_batch_files": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "max_batch_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "missing_size_files": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "oversized_files": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
     "batches": {
       "type": "array",
       "items": {
@@ -46,7 +74,17 @@
           "tier": {"type": "string", "enum": ["critical", "normal", "low"]},
           "files": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {"type": "string"},
+            "uniqueItems": true
+          },
+          "file_count": {"type": "integer", "minimum": 1},
+          "byte_count": {"type": ["integer", "null"], "minimum": 0},
+          "size_status": {"type": "string", "enum": ["known", "missing", "oversized"]},
+          "oversized": {"type": "boolean"},
+          "missing_size_files": {
+            "type": "array",
+            "items": {"type": "string"},
+            "uniqueItems": true
           },
           "deferred": {"type": "boolean"}
         }

@@ -123,6 +123,12 @@ def test_unattributed_baseline_failure_does_not_arbitrarily_boost_a_file() -> No
     assert context["project_signals"]["failing_checks"] == ["test"]  # type: ignore[index]
 
 
+def test_missing_baseline_is_unknown_without_erasing_other_priority_signals() -> None:
+    context = _build(baseline=None)
+    assert context["project_signals"]["baseline_stability"] == "unknown"  # type: ignore[index]
+    assert _target(context, "src/checkout.py")["priority_score"] > 0
+
+
 def test_open_local_bug_issue_uses_only_validated_tracked_paths() -> None:
     context = _build(
         issue_signals=[
@@ -249,6 +255,152 @@ def test_reprioritize_preserves_scope_exactly_and_caps_promotions() -> None:
     assert prioritized["batches"][0]["deferred"] is False
 
 
+def test_reprioritize_keeps_deferred_admission_bounded_after_ranking() -> None:
+    recon = {
+        "schema_version": 1,
+        "files_in_scope": 6,
+        "batch_count": 3,
+        "large_repo_mode": True,
+        "budget_batches": 1,
+        "max_batch_files": 2,
+        "max_batch_bytes": 8,
+        "batches": [
+            {"id": 1, "dir": "src", "tier": "normal", "files": ["src/a.py", "src/b.py"], "deferred": True, "file_count": 2, "byte_count": 8},
+            {"id": 2, "dir": "src", "tier": "normal", "files": ["src/c.py", "src/d.py"], "deferred": True, "file_count": 2, "byte_count": 8},
+            {"id": 3, "dir": "src", "tier": "normal", "files": ["src/e.py", "src/f.py"], "deferred": True, "file_count": 2, "byte_count": 8},
+        ],
+        "modeled": [],
+        "covered": [],
+    }
+    context = _build(
+        tracked_files=[f"src/{letter}.py" for letter in "abcdef"],
+        change_window={f"src/{letter}.py": "modified" for letter in "abcdef"},
+        content_changed={f"src/{letter}.py" for letter in "abcdef"},
+        history_records=[],
+        recent_commits=[],
+        exposure={},
+        prior_coverage={"prior_runs": 0, "high_risk_files": []},
+        promotion_limit=1,
+        promotion_file_budget=2,
+    )
+
+    prioritized = reprioritize_recon(recon, context)
+
+    # One base batch plus the single bounded hard-focus promotion may be
+    # admitted; all remaining batches stay deferred after ranking.
+    assert sum(batch["deferred"] is False for batch in prioritized["batches"]) == 2
+    assert sorted(path for batch in prioritized["batches"] for path in batch["files"]) == sorted(recon["batches"][0]["files"] + recon["batches"][1]["files"] + recon["batches"][2]["files"])
+    assert all(batch["file_count"] <= 2 for batch in prioritized["batches"])
+    assert all(batch["byte_count"] <= 8 for batch in prioritized["batches"])
+
+
+def test_reprioritize_enforces_first_pass_budget_when_priority_artifact_is_degraded() -> None:
+    recon = {
+        "schema_version": 1,
+        "files_in_scope": 2,
+        "batch_count": 2,
+        "large_repo_mode": True,
+        "budget_batches": 1,
+        "batches": [
+            {"id": 1, "dir": "a", "tier": "normal", "files": ["a.py"], "deferred": False},
+            # Simulate a model or hand-edited artifact clearing deferral.
+            {"id": 2, "dir": "b", "tier": "normal", "files": ["b.py"], "deferred": False},
+        ],
+        "covered": [],
+    }
+
+    prioritized = reprioritize_recon(recon, {"degraded": True})
+
+    assert [batch["deferred"] for batch in prioritized["batches"]] == [False, True]
+
+
+def test_reprioritize_admits_base_frontier_after_final_ordering() -> None:
+    batches = [
+        {"id": batch_id, "dir": f"dir{batch_id}", "tier": "normal", "files": [f"f{batch_id}.py"], "deferred": True}
+        for batch_id in range(41, 51)
+    ] + [
+        {"id": batch_id, "dir": f"dir{batch_id}", "tier": "normal", "files": [f"f{batch_id}.py"], "deferred": False}
+        for batch_id in range(1, 41)
+    ]
+    recon = {
+        "schema_version": 1,
+        "files_in_scope": 50,
+        "batch_count": 50,
+        "large_repo_mode": True,
+        "budget_batches": 40,
+        "batches": batches,
+        "covered": [],
+    }
+
+    prioritized = reprioritize_recon(recon, {"degraded": True})
+
+    assert sum(batch["deferred"] is False for batch in prioritized["batches"]) == 40
+    assert [batch["id"] for batch in prioritized["batches"][:40]] == list(range(41, 51)) + list(range(1, 31))
+    assert all(batch["deferred"] for batch in prioritized["batches"][40:])
+
+
+def test_reprioritize_preserves_covered_progress_and_is_idempotent() -> None:
+    recon = {
+        "schema_version": 1,
+        "large_repo_mode": True,
+        "budget_batches": 1,
+        "batches": [
+            {"id": 1, "tier": "normal", "files": ["src/a.py"], "deferred": True},
+            {"id": 2, "tier": "normal", "files": ["src/b.py"], "deferred": True},
+            {"id": 3, "tier": "normal", "files": ["src/c.py"], "deferred": True},
+        ],
+        "covered": [1],
+    }
+
+    first = reprioritize_recon(recon, {"degraded": True})
+    second = reprioritize_recon(first, {"degraded": True})
+
+    assert [batch["deferred"] for batch in first["batches"]] == [False, True, True]
+    assert second == first
+
+
+def test_checkpoint_and_reapply_do_not_extend_the_run_budget() -> None:
+    recon = {
+        "large_repo_mode": True, "budget_batches": 1, "covered": [],
+        "batches": [
+            {"id": i, "tier": "normal", "files": [f"src/{i}.py"], "deferred": False}
+            for i in range(1, 4)
+        ],
+    }
+    first = reprioritize_recon(recon, {"degraded": True})
+    first["covered"] = [1]
+    resumed = reprioritize_recon(first, {"degraded": True})
+    assert resumed == first
+    assert resumed["admission"]["base_batch_ids"] == [1]
+    assert [b["id"] for b in resumed["batches"] if not b["deferred"]] == [1]
+
+
+def test_exact_fresh_membership_rotates_the_next_run_without_growing_scope() -> None:
+    recon = {
+        "large_repo_mode": True, "budget_batches": 1, "covered": [],
+        "batches": [
+            {"id": i, "tier": "normal", "files": [f"src/{i}.py"], "deferred": i > 1}
+            for i in range(1, 4)
+        ],
+    }
+    warm = reprioritize_recon(recon, {"degraded": True}, fresh_audited_files=["src/1.py"])
+    assert [b["id"] for b in warm["batches"] if not b["deferred"]] == [2]
+    assert sorted(p for b in warm["batches"] for p in b["files"]) == ["src/1.py", "src/2.py", "src/3.py"]
+    # Unknown membership supplies no fresh paths; it never infers prior safety.
+    unknown = reprioritize_recon(recon, {"degraded": True})
+    assert [b["id"] for b in unknown["batches"] if not b["deferred"]] == [1]
+
+
+def test_frozen_admission_rejects_unbudgeted_or_malformed_ids() -> None:
+    recon = {
+        "large_repo_mode": True, "budget_batches": 1, "covered": [],
+        "batches": [{"id": 1, "tier": "normal", "files": ["src/1.py"], "deferred": False}],
+        "admission": {"schema_version": 1, "base_batch_ids": [True], "promoted_batch_ids": []},
+    }
+    with pytest.raises(ValueError, match="admission"):
+        reprioritize_recon(recon, {"degraded": True})
+
+
 def test_path_and_text_normalization_rejects_hostile_values() -> None:
     tracked = {"src/app.py"}
     assert normalize_repo_path("./src/app.py", tracked) == "src/app.py"
@@ -260,6 +412,48 @@ def test_path_and_text_normalization_rejects_hostile_values() -> None:
     assert "\x1b" not in text
     assert "\n" not in text
     assert len(text) <= 24
+
+
+def test_priority_context_uses_exact_audit_membership_over_capped_display_lists() -> None:
+    context = _build(
+        change_window={},
+        content_changed=set(),
+        history_records=[],
+        recent_commits=[],
+        exposure={},
+        prior_coverage={
+            "prior_runs": 2,
+            "files_audited_stale_catalog": [],
+            "files_audited_stale_catalog_count": 1,
+            "files_audited_stale_catalog_exact": ["src/legacy.py"],
+            "audit_membership": {"status": "exact"},
+            "high_risk_files": [],
+        },
+    )
+    target = _target(context, "src/legacy.py")
+    assert any(reason["code"] == "stale_audit" for reason in target["reasons"])
+
+
+def test_priority_context_does_not_treat_unknown_audit_membership_as_empty_exact_set() -> None:
+    context = _build(
+        change_window={},
+        content_changed=set(),
+        history_records=[],
+        recent_commits=[],
+        exposure={},
+        prior_coverage={
+            "prior_runs": 2,
+            "files_audited_stale_catalog": ["src/legacy.py"],
+            "files_audited_stale_catalog_exact": [],
+            "audit_membership": {"status": "unknown"},
+            "high_risk_files": [],
+        },
+    )
+    assert not any(
+        reason["code"] == "stale_audit"
+        for target in context["targets"]
+        for reason in target["reasons"]
+    )
 
 
 def test_priority_context_matches_its_machine_readable_schema() -> None:

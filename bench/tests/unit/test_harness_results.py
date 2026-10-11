@@ -23,6 +23,21 @@ def test_candidates_keep_full_slot_identity_rejections_and_trusted_source():
     assert missing[0]["evidence"]["status"] == "unverified"
 
 
+def test_candidates_and_runs_bind_context_factorial_cell_identity():
+    receipt = {"experiment_id": "e", "host": "codex", "arm": "current_skill", "case_id": "c",
+               "repetition": 1, "order_slot_sha256": "a" * 64, "stage_block": "full_pipeline",
+               "context": "on", "context_state": "warm", "trusted_source_excerpts": []}
+    candidate = {"bug_id": "B1", "file": "app.py", "location": "app.py:1", "line": 1,
+                "severity": "high", "status": "rejected", "rationale": "reason", "trigger": "condition"}
+    row = candidates_from_message(json.dumps({"candidates": [candidate]}), receipt,
+                                  {"category": "logic", "repository": "repo", "context": "on", "context_state": "warm"})[0]
+    assert row["context"] == "on" and row["context_state"] == "warm"
+    off = candidates_from_message(json.dumps({"candidates": [candidate]}),
+                                  {**receipt, "context": "off", "context_state": "cold"},
+                                  {"category": "logic", "repository": "repo", "context": "off", "context_state": "cold"})[0]
+    assert row["candidate_id"] != off["candidate_id"]
+
+
 @pytest.mark.parametrize("message", ['prose', '{"candidates": [null]}', '{"candidates": [{}]}', '{"candidates":[],"candidates":[]}'])
 def test_invalid_native_candidate_output_cannot_become_zero_findings(message):
     with pytest.raises(ValueError):

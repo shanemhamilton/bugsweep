@@ -36,6 +36,8 @@ _make_run_dir() {
   mkdir -p "$run_dir"
 
   local branch="bugsweep/deadline-test"
+  local orig_head
+  orig_head="$(git -C "$repo" rev-parse "$orig_branch")"
   git -C "$repo" checkout -q -b "$branch" 2>/dev/null || true
 
   cat > "${run_dir}/state.env" <<ENV
@@ -45,7 +47,7 @@ BUGSWEEP_RUN_DIR=${run_dir}
 BUGSWEEP_REPO_ROOT=${repo}
 BUGSWEEP_BRANCH=${branch}
 BUGSWEEP_ORIG_BRANCH=${orig_branch}
-BUGSWEEP_ORIG_HEAD=$(git -C "$repo" rev-parse HEAD)
+BUGSWEEP_ORIG_HEAD=${orig_head}
 BUGSWEEP_STASH_REF=none
 BUGSWEEP_START_EPOCH=${start_epoch}
 BUGSWEEP_DEADLINE_EPOCH=${deadline_epoch}
@@ -86,7 +88,7 @@ JSON
 
 setup() {
   START_CWD="$(pwd)"
-  BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$(mktemp -d)" && pwd -P)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
   ORIG_BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD)"
@@ -169,7 +171,16 @@ assert d["coverage"] == {"covered": 1, "total": 4}, d["coverage"]
 PY
 }
 
-@test "SKILL.md requires guard checkpoints and routes non-fix-cap STOP to closeout" {
+@test "SKILL.md links per-slice guard stops to closeout and preserves fix-cap detection" {
+  grep -q 'after each context batch' "$SKILL_MD"
+  grep -q 'scripts/guard.sh' "$SKILL_MD"
+  grep -q 'STOP fix_cap_reached' "$SKILL_MD"
+  grep -q 'Any other `STOP` goes to closeout' "$SKILL_MD"
+  grep -q 'A hard kill leaves a recoverable pending run' "$SKILL_MD"
+  ! grep -q 'After context-build completes, run' "$SKILL_MD"
+}
+
+@test "SKILL.md requires guard checkpoints at expensive phase boundaries" {
   grep -qi 'At every expensive phase boundary and after each context batch' "$SKILL_MD"
   grep -q 'scripts/guard.sh' "$SKILL_MD"
   grep -q 'STOP fix_cap_reached' "$SKILL_MD"

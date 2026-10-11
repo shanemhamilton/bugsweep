@@ -74,6 +74,15 @@ def test_reducer_preserves_arm_specific_pins_and_missing_slots() -> None:
     assert result["evaluation_decision"] == "inconclusive"
 
 
+def test_reducer_reports_descriptive_context_cell_accounting_without_detection_claims() -> None:
+    protocol, schedule, receipts = _inputs()
+    result = reduce_evaluation(protocol, schedule, receipts)
+    cell = result["hosts"]["codex"]["context_cells"]["off/none"]
+    assert cell["expected_slots"] == 3 and cell["received_slots"] == 3 and cell["missing_slots"] == 0
+    assert cell["arms"] == {"current_skill": 1, "no_skill_baseline": 1, "previous_release": 1}
+    assert "metrics" not in cell
+
+
 def test_reducer_retains_bound_error_receipt_in_denominator() -> None:
     protocol, schedule, receipts = _inputs()
     order = _bind_execution_order(protocol, schedule, receipts)
@@ -88,6 +97,18 @@ def test_reducer_retains_bound_error_receipt_in_denominator() -> None:
     assert host["received_slots"] == host["expected_slots"] == 3
     assert host["lifecycle"]["error"] == 1
     assert host["attrition"] == pytest.approx(1 / 3)
+
+
+def test_context_comparison_requires_content_and_native_warm_builder_provenance() -> None:
+    protocol, schedule, _receipts = _inputs()
+    schedule[0].update(context="on", context_state="warm")
+    protocol["schedule_sha256"] = _digest(schedule)
+    result = reduce_evaluation(protocol, schedule, [])
+    reasons = result["hosts"]["codex"]["comparability_reasons"]
+    assert "context_content_isolation_unverified" in reasons
+    assert "warm_context_builder_provenance_unverified" in reasons
+    assert result["evaluation_decision"] == "inconclusive"
+    assert result["release_eligibility"] is False
 
 
 def test_reducer_retains_truthful_post_start_error_limit_observations() -> None:

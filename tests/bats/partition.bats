@@ -258,7 +258,7 @@ JSON
   [ "$status" -ne 0 ]
 }
 
-@test "partition.sh claim: outside a git repo, degrades to NO_BATCHES_LEFT instead of failing" {
+@test "partition.sh claim: unavailable coordination is not reported as exhausted work" {
   local nogit="${BATS_TMP}/no-git-here"
   local rd="${nogit}/run-x"
   mkdir -p "$rd"
@@ -267,11 +267,8 @@ JSON
   cd "$nogit"
   run bash "$PARTITION_SH" claim run-nogit "$rd" workerA
   cd "$REPO"
-  [ "$status" -eq 0 ]
-  # `run` merges stderr into $output, and the degraded path logs a warning
-  # there — match on the stdout contract (the last line) rather than the
-  # whole combined stream.
-  [ "$(echo "$output" | tail -1)" = "NO_BATCHES_LEFT=1" ]
+  [ "$status" -ne 0 ]
+  [[ "$output" != *NO_BATCHES_LEFT* ]]
 }
 
 @test "partition.sh: unknown subcommand exits non-zero" {
@@ -397,4 +394,94 @@ WORKER
   local no_left_lines
   no_left_lines="$(grep -c '^NO_BATCHES_LEFT=1$' "${BATS_TMP}/storm2-out.txt" || true)"
   [ "$no_left_lines" -eq $((25 - m)) ]
+}
+
+@test "partition excludes deferred and completed batches before sharding or claiming" {
+  local rd="${BATS_TMP}/run-admission"
+  mkdir -p "$rd"
+  cat > "${rd}/recon.json" <<'JSON'
+{"batches":[{"id":9,"deferred":true},{"id":4,"deferred":false},{"id":7,"deferred":false},{"id":2,"deferred":false}],"covered":[4]}
+JSON
+  run bash "$PARTITION_SH" frontier "$rd"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '7\n2')" ]
+  run bash "$PARTITION_SH" shard "$rd" 2 1
+  [ "$status" -eq 0 ]
+  [ "$output" = 2 ]
+  run bash "$PARTITION_SH" claim run-admission "$rd" worker
+  [ "$status" -eq 0 ]
+  [ "$output" = CLAIMED_BATCH=7 ]
+  run bash "$PARTITION_SH" claim run-admission "$rd" worker
+  [ "$status" -eq 0 ]
+  [ "$output" = CLAIMED_BATCH=2 ]
+  run bash "$PARTITION_SH" claim run-admission "$rd" worker
+  [ "$status" -eq 0 ]
+  [ "$output" = NO_BATCHES_LEFT=1 ]
+}
+
+@test "partition rejects malformed admission data without claiming a batch" {
+  local rd="${BATS_TMP}/run-invalid-admission"
+  mkdir -p "$rd"
+  printf '%s\n' '{"batches":[{"id":1,"deferred":"false"}],"covered":[]}' > "${rd}/recon.json"
+  run bash "$PARTITION_SH" claim invalid-admission "$rd" worker
+  [ "$status" -ne 0 ]
+  [ ! -d "${REPO}/.bugsweep/state/claims-invalid-admission.d/batch-1.claim" ]
+}
+
+@test "partition fallback retains a frozen path scope" {
+  local rd="${BATS_TMP}/run-frozen-scope"
+  mkdir -p "$rd" "${REPO}/src"
+  printf x > "${REPO}/src/in.py"
+  printf y > "${REPO}/outside.py"
+  git add src/in.py outside.py
+  printf '%s\n' src/in.py > "${rd}/scope-files.txt"
+  run bash "$PARTITION_SH" frontier "$rd"
+  [ "$status" -eq 0 ]
+  python3 - "${rd}/recon-plan.json" <<'PY'
+import json, sys
+plan = json.load(open(sys.argv[1]))
+assert [p for b in plan['batches'] for p in b['files']] == ['src/in.py']
+PY
+}
+
+@test "partition rejects boolean coverage instead of silently skipping batch one" {
+  local rd="${BATS_TMP}/run-boolean-coverage"
+  mkdir -p "$rd"
+  printf '%s\n' '{"batches":[{"id":1,"deferred":false}],"covered":[true]}' > "${rd}/recon.json"
+  run bash "$PARTITION_SH" frontier "$rd"
+  [ "$status" -ne 0 ]
+}
+
+@test "partition rejects ambiguous run IDs and JSON-escapes the owner" {
+  local rd="${BATS_TMP}/run-key"
+  _make_recon_fixture 1 "$rd"
+  run bash "$PARTITION_SH" claim audit/1 "$rd" worker
+  [ "$status" -ne 0 ]
+  run bash "$PARTITION_SH" claim audit_1 "$rd" 'worker"x'
+  [ "$status" -eq 0 ]
+  [ "$output" = CLAIMED_BATCH=1 ]
+  python3 - "${REPO}/.bugsweep/state/claims-audit_1.jsonl" <<'PYTEST'
+import json, sys
+with open(sys.argv[1]) as handle:
+    assert json.loads(handle.readline())["owner"] == 'worker"x'
+PYTEST
+}
+
+@test "partition reports unavailable claim storage separately from exhaustion" {
+  local rd="${BATS_TMP}/run-unavailable-storage"
+  _make_recon_fixture 1 "$rd"
+  mkdir -p "${REPO}/.bugsweep/state"
+  touch "${REPO}/.bugsweep/state/claims-unavailable.d"
+  run bash "$PARTITION_SH" claim unavailable "$rd" worker
+  [ "$status" -ne 0 ]
+  [[ "$output" != *NO_BATCHES_LEFT* ]]
+}
+
+@test "partition releases its claim when the receipt cannot be written" {
+  local rd="${BATS_TMP}/run-unavailable-receipt"
+  _make_recon_fixture 1 "$rd"
+  mkdir -p "${REPO}/.bugsweep/state/claims-receipt.jsonl"
+  run bash "$PARTITION_SH" claim receipt "$rd" worker
+  [ "$status" -ne 0 ]
+  [ ! -d "${REPO}/.bugsweep/state/claims-receipt.d/batch-1.claim" ]
 }

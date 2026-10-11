@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-11
+
+### Changed
+
+- Bound context batches by configurable file and byte limits, retain deferred work,
+  and complete context, hunt, review, and checkpoint for each admitted slice.
+- Trace lifecycle, shared-state, transaction, and API/error contracts alongside
+  security paths, while retaining the same source, review, and executable-proof gates.
+- Build local priority evidence in detect-only mode even when baseline execution is
+  unavailable; missing checks remain unknown.
+
+### Fixed
+
+- Keep exact audit membership separate from the 200-file display summary so larger
+  histories do not make previously audited paths look new.
+- Bind extraction to the audited checkout with run-local indexes, and invalidate
+  reachability conclusions when directed edges or entry seeds change.
+- Accept baseline receipts at the integration baseline gate and preserve immutable
+  evidence across integration retries without relaxing verification or source checks.
+- Preserve the saved run counter on Linux when using the no-Python state fallback.
+- Read proxy secret permissions portably while still requiring a regular file with
+  mode `0600` before any Docker access.
+- Record canonical run/worktree paths and resolve the Git executable so filesystem
+  aliases on macOS satisfy the same strict identity checks used on Linux.
+- Bind landed closeout to its run ID and load trusted proof modules independently
+  of the audited checkout, preserving the integration receipt's proof fields.
+- Support preflight's sibling worktree and evidence layout during integration,
+  rejecting tracked paths that could overwrite evidence before Git changes trees.
+
+### Evaluation
+
+- Add optional context on/off and cold/warm measurement with explicit provenance and
+  accounting. Runtime oracles and live paired runs are still required before claiming
+  improved detection, precision, or cost.
+
 ## [0.7.1] - 2026-09-26
 
 Hardened review-gate alignment, prompt injection defenses, and lifecycle test suite
@@ -334,7 +369,8 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.5.0...v0.6.0

@@ -5,7 +5,7 @@
 # stand on: a graph of who-reaches-what, and which symbols are attacker-reachable
 # entry points. Both are keyed by the WU0 stable symbol-ids so the layers join.
 #
-#   graph.sh build      (re)build .bugsweep/state/graph.jsonl + entry-points.jsonl
+#   graph.sh build      (re)build a run-local graph.jsonl + entry-points.jsonl
 #   graph.sh stats      print a one-line summary of the current graph (for tests/ops)
 #
 # ── Honest scope (tree-sitter is absent; we never ship a fragile sub-file regex slicer) ──
@@ -56,15 +56,19 @@
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-# Repo root, state dir, have_python come from common.sh.
-REPO_ROOT="$BUGSWEEP_REPO_ROOT"
+# Shared state lives at BUGSWEEP_REPO_ROOT, but graph extraction follows the explicit audited
+# checkout.  A run-local index directory prevents concurrent targets from replacing one
+# another's graph while preserving the old state paths for manual helper calls.
+REPO_ROOT="$BUGSWEEP_TARGET_ROOT"
 STATE_DIR="$BUGSWEEP_STATE_DIR"
-GRAPH="${STATE_DIR}/graph.jsonl"
-ENTRIES="${STATE_DIR}/entry-points.jsonl"
+INDEX_DIR="${BUGSWEEP_INDEX_DIR:-$STATE_DIR}"
+GRAPH="${INDEX_DIR}/graph.jsonl"
+ENTRIES="${INDEX_DIR}/entry-points.jsonl"
+EXTRACTOR="${BUGSWEEP_SCRIPT_DIR}/graph.sh"
 
 build() {
-  bugsweep_state_dir_ready && mkdir -p "$STATE_DIR" 2>/dev/null \
-    || { log "graph: cannot use project-scoped state dir (${STATE_DIR:-not in a git repo}); skipping."; return 0; }
+  [ -n "$REPO_ROOT" ] && [ -n "$INDEX_DIR" ] && mkdir -p "$INDEX_DIR" 2>/dev/null \
+    || { log "graph: cannot use target/index dir (${REPO_ROOT:-not in a git repo}); skipping."; return 0; }
 
   local excludes; excludes="$(cfg_get '.exclude_globs' '')"
 
@@ -389,6 +393,8 @@ print("FILES=%d EDGES=%d ENTRIES=%d" % (len(tracked), len(graph_edges), len(entr
 PY
 )"; then
       log "graph: built (${out:-done})."
+      bugsweep_write_index_manifest "graph" "$EXTRACTOR" || log "graph: manifest write failed; reachability will degrade."
+      bugsweep_write_index_manifest "entry-points" "$EXTRACTOR" || log "graph: entry manifest write failed; reachability will degrade."
       return 0
     fi
     log "graph: python build failed; falling back to file-level import edges + entry grep."
@@ -446,6 +452,8 @@ EOF
     fi
   done < <(git -C "$REPO_ROOT" ls-files 2>/dev/null || true)
   mv "$gt" "$GRAPH"; mv "$et" "$ENTRIES"
+  bugsweep_write_index_manifest "graph" "$EXTRACTOR" || log "graph: manifest write failed; reachability will degrade."
+  bugsweep_write_index_manifest "entry-points" "$EXTRACTOR" || log "graph: entry manifest write failed; reachability will degrade."
   log "graph: built degraded file-level graph ($(bugsweep_count_lines "$GRAPH") edges, $(bugsweep_count_lines "$ENTRIES") entries)."
 }
 

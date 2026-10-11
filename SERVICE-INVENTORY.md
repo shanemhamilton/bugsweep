@@ -9,6 +9,8 @@
 | Native first-assessment lineage and withheld prior verdicts | `scripts/_review_evidence.py` | Review and closeout |
 | Configured SARIF capture and bounded receipt/source-verified import | `scripts/_prepare_analyzers.py`, `bench/scorer/analyzer_norm.py` | Hunter hints |
 | Exact operational identity, transitions and retryable closeout | `scripts/_terminal_lifecycle.py`, `scripts/closeout.sh` | Status and recovery |
+| Bounded source batches, exact audit membership, and admission | `bench/scorer/recon_plan.py`, `priority_context.py`, `scripts/state.sh`, `scripts/partition.sh` | Slice planning and worker assignment |
+| Audited source identity and run-local index manifests | `scripts/common.sh`, `symbols.sh`, `graph.sh`, `reachability.sh` | Priority evidence and conclusion invalidation |
 | Audit and session summaries | `bench/scorer/run_summary.py`, `session_summary.py` | Reports and schedulers |
 | Installer replacement, registration ownership and recovery | `scripts/installer_helper.py`, `install.sh` | Active-install updater |
 | Frozen evaluation schedule and native host invocation | `bench/harness.py`, `bench/_stages.py`, `bench/runners/`, `bench/docker/bench-host-adapter` | Benchmark |

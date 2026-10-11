@@ -43,6 +43,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from bench.scorer.recon_plan import (  # noqa: E402
     DEFAULT_FIRST_PASS_BATCHES,
     DEFAULT_FILE_THRESHOLD,
+    DEFAULT_MAX_BATCH_BYTES,
+    DEFAULT_MAX_BATCH_FILES,
     SCHEMA_VERSION,
     build_plan,
     is_large_repo_mode,
@@ -158,7 +160,9 @@ def test_plan_respects_exclusion_globs() -> None:
 
 def test_plan_root_level_files_form_their_own_batch() -> None:
     files = ["README.md", "setup.py", "src/app.py"]
-    plan = build_plan(files=files)
+    # Supply audited-tree sizes so this test exercises grouping rather than
+    # the planner's deliberate missing-size isolation behavior.
+    plan = build_plan(files=files, file_sizes={path: 1 for path in files})
 
     root_batches = [b for b in plan["batches"] if b["dir"] == "."]
     assert len(root_batches) == 1
@@ -298,3 +302,71 @@ def test_build_plan_result_is_json_serializable() -> None:
     # Must round-trip cleanly through json (no sets/tuples leaking out).
     round_tripped = json.loads(json.dumps(plan))
     assert round_tripped == plan
+
+
+def test_plan_splits_a_large_top_level_directory_by_file_and_byte_caps() -> None:
+    files = [f"src/file{i}.py" for i in range(5)]
+    sizes = {path: 4 for path in files}
+
+    plan = build_plan(
+        files=files,
+        file_sizes=sizes,
+        max_batch_files=2,
+        max_batch_bytes=10,
+    )
+
+    assert [batch["files"] for batch in plan["batches"]] == [
+        ["src/file0.py", "src/file1.py"],
+        ["src/file2.py", "src/file3.py"],
+        ["src/file4.py"],
+    ]
+    assert [batch["file_count"] for batch in plan["batches"]] == [2, 2, 1]
+    assert [batch["byte_count"] for batch in plan["batches"]] == [8, 8, 4]
+    assert all(batch["size_status"] == "known" for batch in plan["batches"])
+    assert plan["files_in_scope"] == 5
+    _validate_against_schema(plan)
+
+
+def test_plan_isolates_oversized_and_missing_size_files_without_dropping_scope() -> None:
+    files = ["src/oversized.py", "src/missing.py", "src/known.py"]
+    plan = build_plan(
+        files=files,
+        file_sizes={"src/oversized.py": 100, "src/known.py": 3},
+        max_batch_files=25,
+        max_batch_bytes=10,
+    )
+
+    batches = {batch["files"][0]: batch for batch in plan["batches"]}
+    assert batches["src/oversized.py"]["size_status"] == "oversized"
+    assert batches["src/oversized.py"]["oversized"] is True
+    assert batches["src/oversized.py"]["byte_count"] == 100
+    assert batches["src/missing.py"]["size_status"] == "missing"
+    assert batches["src/missing.py"]["missing_size_files"] == ["src/missing.py"]
+    assert batches["src/missing.py"]["byte_count"] is None
+    assert plan["oversized_files"] == ["src/oversized.py"]
+    assert plan["missing_size_files"] == ["src/missing.py"]
+    assert sorted(path for batch in plan["batches"] for path in batch["files"]) == sorted(files)
+
+
+def test_plan_default_batch_caps_are_explicit_and_stable() -> None:
+    assert DEFAULT_MAX_BATCH_FILES == 25
+    assert DEFAULT_MAX_BATCH_BYTES == 131072
+    plan = build_plan(files=["src/a.py"], file_sizes={"src/a.py": 1})
+    assert plan["max_batch_files"] == DEFAULT_MAX_BATCH_FILES
+    assert plan["max_batch_bytes"] == DEFAULT_MAX_BATCH_BYTES
+
+
+def test_cold_1474_file_src_tree_retains_scope_and_admits_only_the_budget() -> None:
+    files = [f"src/file{i:04d}.py" for i in range(1474)]
+    plan = build_plan(files=files, file_sizes={path: 100 for path in files})
+    assert plan["batch_count"] == 59
+    assert sum(not batch["deferred"] for batch in plan["batches"]) == 40
+    assert all(batch["file_count"] <= 25 for batch in plan["batches"])
+    assert [path for batch in plan["batches"] for path in batch["files"]] == files
+
+
+def test_byte_limit_splits_before_the_file_limit() -> None:
+    files = ["src/a.py", "src/b.py", "src/c.py"]
+    plan = build_plan(files=files, file_sizes={path: 6 for path in files},
+                      max_batch_files=25, max_batch_bytes=10)
+    assert [batch["files"] for batch in plan["batches"]] == [[path] for path in files]
