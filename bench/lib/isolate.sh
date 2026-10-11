@@ -144,7 +144,6 @@ build_argv() {
 
 print_cmd() {
   [[ $# -ge 1 ]] || usage
-  require_docker
   local image="$1"
   local clone_dir="${2:-${BENCH_CLONE:-/tmp/bench-clone}}"
   build_argv "${image}" "${clone_dir}"

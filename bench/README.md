@@ -238,8 +238,10 @@ The verifier supports native CI and canonical human-calibration artifacts. Host-
 sandbox-negative, analyzer-compatibility, installer-recovery and independent-final-review
 release artifact kinds remain unsupported. These gaps and unverified detection evidence
 prevent release eligibility in this development build.
-The legacy two-arm `bench/run.sh` path and its test-only bypasses are retained for old
-fixtures; their outputs are not accepted as this evaluation's native receipts.
+The legacy two-arm `bench/run.sh --cases` execution path is retired and fails closed
+before accessing Docker or credentials. Use `bench/run.sh evaluation` with a frozen
+protocol and the shared execution provider. Legacy dry-run fixtures cannot produce
+accepted native receipts.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the pure local gate and separate Git-backed CI.
 
 ## Optional context factorial pilot

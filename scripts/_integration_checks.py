@@ -37,6 +37,7 @@ MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 MAX_INDEX_BYTES = 32 * 1024 * 1024
 _SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_ATTEMPT_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 def _digest(value: object) -> str:
@@ -388,14 +389,21 @@ def _receipt_name(merge_sha: str, branch: str) -> str:
     return f"{merge_sha}-{branch_digest}.json"
 
 
+def _receipt_path(run_dir: Path, attempt_id: str, merge_sha: str, branch: str) -> Path:
+    if not _ATTEMPT_RE.fullmatch(attempt_id):
+        raise ValueError("integration attempt identity is invalid")
+    return run_dir / "integration-check-results" / attempt_id / _receipt_name(merge_sha, branch)
+
+
 def run_integration_checks(
-    run_dir: Path, repo: Path, merge_sha: str, branch: str, git_path: Path
+    run_dir: Path, repo: Path, merge_sha: str, branch: str, git_path: Path, attempt_id: str
 ) -> dict[str, object]:
     run = run_dir.resolve(strict=True)
     source_repo = repo.resolve(strict=True)
     executable = git_path.resolve(strict=True)
     if (
         not _SHA_RE.fullmatch(merge_sha)
+        or not _ATTEMPT_RE.fullmatch(attempt_id)
         or not branch
         or "\x00" in branch
         or len(branch.encode("utf-8")) > 1024
@@ -423,7 +431,10 @@ def run_integration_checks(
     ):
         raise ValueError("frozen integration plan or baseline is invalid")
     baseline_validation = validate_suite_receipt(
-        baseline, cast(str, plan["run_id"]), cast(Mapping[str, str], baseline_sources)
+        baseline,
+        cast(str, plan["run_id"]),
+        cast(Mapping[str, str], baseline_sources),
+        expected_phase="baseline",
     )
     if baseline_validation.get("complete") is not True:
         raise ValueError("baseline execution evidence is invalid")
@@ -435,10 +446,15 @@ def run_integration_checks(
         raise ValueError("frozen execution policy lacks scratch_root")
     scratch_root = Path(scratch_value).resolve(strict=True)
     projection: Path | None = None
-    destination = run / "integration-check-results" / _receipt_name(merge_sha, branch)
+    destination = _receipt_path(run, attempt_id, merge_sha, branch)
+    results_root = run / "integration-check-results"
+    attempt_root = results_root / attempt_id
+    for directory, label in ((results_root, "integration-check-results"), (attempt_root, "integration attempt")):
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise ValueError(f"{label} directory is not a private directory")
     if destination.exists() or destination.is_symlink():
         raise ValueError("integration suite receipt already exists")
-    destination.parent.mkdir(mode=0o700, exist_ok=True)
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         projection, sources, modes, inventory = _export_source(
             source_repo, run, scratch_root, merge_sha, executable
@@ -547,6 +563,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--merge-sha", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--git-path", required=True, type=Path)
+    parser.add_argument("--attempt-id", required=True)
     arguments = parser.parse_args(argv)
     try:
         result = run_integration_checks(
@@ -555,6 +572,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
             arguments.merge_sha,
             arguments.branch,
             arguments.git_path,
+            arguments.attempt_id,
         )
     except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError, tarfile.TarError) as exc:
         print(f"integration-checks: {exc}", file=sys.stderr)

@@ -240,15 +240,23 @@ JSON
   local rd="${BATS_TMP}/run-finalize"
   local ts="20991231T111111Z"
   local branch="bugsweep/${ts}"
+  local orig_branch
+  orig_branch="$(git -C "$REPO" symbolic-ref --short HEAD)"
+  local orig_head
+  orig_head="$(git -C "$REPO" rev-parse HEAD)"
   git -C "$REPO" checkout -b "$branch" -q
   mkdir -p "$rd"
   cat > "${rd}/state.env" <<ENV
-BUGSWEEP_TS="${ts}"
-BUGSWEEP_BRANCH="${branch}"
-BUGSWEEP_ORIG_BRANCH="master"
-BUGSWEEP_STASH_REF="none"
-BUGSWEEP_START_EPOCH="$(date +%s)"
-BUGSWEEP_SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts"
+BUGSWEEP_TS='${ts}'
+BUGSWEEP_RUN_ID='${ts}'
+BUGSWEEP_RUN_DIR='${rd}'
+BUGSWEEP_REPO_ROOT='${REPO}'
+BUGSWEEP_BRANCH='${branch}'
+BUGSWEEP_ORIG_BRANCH='${orig_branch}'
+BUGSWEEP_ORIG_HEAD='${orig_head}'
+BUGSWEEP_STASH_REF='none'
+BUGSWEEP_START_EPOCH='$(date +%s)'
+BUGSWEEP_WORKTREE=''
 ENV
   touch "${rd}/ledger.jsonl"
 

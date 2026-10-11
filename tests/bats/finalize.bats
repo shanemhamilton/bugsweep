@@ -25,15 +25,21 @@ _make_run_dir() {
 
   local ts="20991231T000000Z"
   local branch="bugsweep/${ts}"
+  local orig_head
+  orig_head="$(git -C "$repo" rev-parse "$orig_branch")"
   git -C "$repo" checkout -b "$branch" -q 2>/dev/null || true
 
   cat > "${run_dir}/state.env" <<ENV
-BUGSWEEP_TS="${ts}"
-BUGSWEEP_BRANCH="${branch}"
-BUGSWEEP_ORIG_BRANCH="${orig_branch}"
-BUGSWEEP_STASH_REF="none"
-BUGSWEEP_START_EPOCH="$(date +%s)"
-BUGSWEEP_SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts"
+BUGSWEEP_TS='${ts}'
+BUGSWEEP_RUN_ID='${ts}'
+BUGSWEEP_RUN_DIR='${run_dir}'
+BUGSWEEP_REPO_ROOT='${repo}'
+BUGSWEEP_BRANCH='${branch}'
+BUGSWEEP_ORIG_BRANCH='${orig_branch}'
+BUGSWEEP_ORIG_HEAD='${orig_head}'
+BUGSWEEP_STASH_REF='none'
+BUGSWEEP_START_EPOCH='$(date +%s)'
+BUGSWEEP_WORKTREE=''
 ENV
 
   touch "${run_dir}/ledger.jsonl"
@@ -109,7 +115,7 @@ REPORT
 
 setup() {
   START_CWD="$(pwd)"
-  BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$(mktemp -d)" && pwd -P)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
   ORIG_BRANCH="$(git -C "$REPO" symbolic-ref --short HEAD)"
@@ -392,16 +398,10 @@ PY
   [ ! -f "${RUN_DIR}/.rollup-appended" ]
 }
 
-@test "finalize: rollup digest works on the bare-machine (no jq, no python3) grep/awk fallback tier" {
-  # Regression test: the Tier-3 grep fallback previously aborted finalize.sh
-  # entirely (under this script's `set -euo pipefail`) whenever a field was
-  # legitimately absent — e.g. stop_reason is JSON null (not a string) on
-  # every "complete" run, so `grep -o '"stop_reason":..."[^"]*"'` finds no
-  # match, exits non-zero, and pipefail propagated that failure through the
-  # rest of the pipe even though `head`/`sed` themselves succeeded. Forces
-  # BOTH jq and python3 out of PATH (have_python() is separately gated by
-  # BUGSWEEP_NO_PYTHON) to exercise the real grep/awk-only code path end to
-  # end, and asserts finalize.sh still exits 0 and appends a well-formed line.
+@test "finalize: no-python bare machine fails closed before writing handoff artifacts" {
+  # Lifecycle identity validation is Python-backed and mandatory. A host with
+  # no Python must stop before producing closeout handoff evidence; it must
+  # leave the run and its throwaway branch available for recovery.
   _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
   _make_recon_json "$RUN_DIR" 5 5
   _make_real_report "$RUN_DIR"
@@ -415,23 +415,11 @@ PY
 
   local rollup="${BATS_TMP}/rollup.log"
   PATH="$fakebin" BUGSWEEP_NO_PYTHON=1 BUGSWEEP_ROLLUP_FILE="$rollup" run bash "$FINALIZE_SH" "$RUN_DIR"
-  [ "$status" -eq 0 ]
-
-  [ -f "$rollup" ]
-  local repo_name
-  repo_name="$(basename "$REPO")"
-  # summarize.sh ALSO degrades under BUGSWEEP_NO_PYTHON=1 (it has no jq tier
-  # of its own), so run-summary.json comes out as the minimal degraded shape
-  # (counts/fixed/quarantined/confirmed_unfixed all zero/empty) — this test
-  # asserts the grep/awk tier reads that real degraded shape correctly. Exact
-  # Git-object coverage cannot be verified without Python, so the summary
-  # deliberately underreports covered batches as zero.
-  # (notably: an EMPTY array must count as 0, not 1 — the original bug
-  # miscounted the JSON key name itself as an array element).
-  local expected="20991231T000000Z ${repo_name} bugsweep/20991231T000000Z - confirmed 0/0/0/0 - fixed 0 quarantined 0 - coverage 0/5 - complete - ACTION: discard (${RUN_DIR}/report.md)"
-  local actual
-  actual="$(cat "$rollup")"
-  [ "$actual" = "$expected" ]
+  [ "$status" -ne 0 ]
+  [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "bugsweep/20991231T000000Z" ]
+  [ ! -f "${RUN_DIR}/post-finalize-handoff.json" ]
+  [ ! -f "$rollup" ]
+  [ -f "${RUN_DIR}/state.env" ]
 }
 
 @test "finalize: a failing rollup digest NEVER strands the user on the bugsweep branch (trust contract)" {

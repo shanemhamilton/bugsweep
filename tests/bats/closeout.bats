@@ -4,6 +4,8 @@ ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 CLOSEOUT_SH="${ROOT}/scripts/closeout.sh"
 INTEGRATE_SH="${ROOT}/scripts/integrate.sh"
 
+load integration-fixture
+
 setup() {
   START_CWD="$(pwd)"
   TMP="$(mktemp -d)"
@@ -19,7 +21,11 @@ setup() {
   RUN_ID="test-run"
   BRANCH="bugsweep/${RUN_ID}"
   WT="${REPO}/.bugsweep/worktrees/${RUN_ID}"
-  RUN_DIR="${REPO}/.bugsweep/run-${RUN_ID}"
+  # Integration authority is deliberately outside the source repository.  The
+  # production integration checker rejects an authority nested under either
+  # the repository or its source workspace; closeout still binds the run to
+  # REPO_ROOT through state.env below.
+  RUN_DIR="${TMP}/integration-authority"
   mkdir -p "$(dirname "$WT")" "$RUN_DIR" "${REPO}/.bugsweep/state/closeout-blocked"
   git -C "$REPO" worktree add -q -b "$BRANCH" "$WT" HEAD
   cat > "${RUN_DIR}/state.env" <<ENV
@@ -34,7 +40,12 @@ BUGSWEEP_STASH_REF='none'
 BUGSWEEP_WORKTREE='${WT}'
 ENV
   : > "${RUN_DIR}/ledger.jsonl"
-  printf '{"confirmed_unfixed":[],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  REAL_PYTHON="$(command -v python3)"
+  PROVIDER_STUB_DIR="${TMP}/provider-stub"
+  _write_integration_provider_stub "$PROVIDER_STUB_DIR" "$REAL_PYTHON"
+  export REAL_PYTHON PROVIDER_STUB_DIR
+  export PATH="${PROVIDER_STUB_DIR}:${PATH}"
+  _write_summary
   printf '{"state":"PENDING_CLOSEOUT"}\n' > "${REPO}/.bugsweep/state/closeout-blocked/${RUN_ID}.json"
 }
 
@@ -44,7 +55,19 @@ teardown() {
 }
 
 _set_fixed_summary() {
-  printf '{"fixed":["BUG-1"],"confirmed_unfixed":[],"quarantined":[],"follow_up":[]}\n' \
+  _write_summary '["BUG-1"]'
+}
+
+_write_summary() {
+  local fixed="${1:-[]}" confirmed="${2:-[]}" quarantined="${3:-[]}"
+  local follow_up="${4:-[]}" degraded="${5:-false}" findings="${6:-[]}"
+  local status="complete" stop_reason="null"
+  if [ "$degraded" = true ]; then
+    status="partial"
+    stop_reason='"degraded reduction"'
+  fi
+  printf '{"schema_version":1,"mode":"detect-only","status":"%s","stop_reason":%s,"degraded":%s,"coverage":{"covered":0,"total":0},"counts":{"critical":0,"high":0,"medium":0,"low":0,"architectural":0},"fixed":%s,"confirmed_unfixed":%s,"quarantined":%s,"findings":%s,"follow_up":%s}\n' \
+    "$status" "$stop_reason" "$degraded" "$fixed" "$confirmed" "$quarantined" "$findings" "$follow_up" \
     > "${RUN_DIR}/run-summary.json"
 }
 
@@ -67,7 +90,7 @@ _set_fixed_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): test'
-  printf '{"confirmed_unfixed":["BUG-1"],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '[]' '["BUG-1"]'
 
   cd "$REPO"
   run bash "$CLOSEOUT_SH" "$RUN_DIR" recorded
@@ -83,7 +106,7 @@ _set_fixed_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): test'
-  printf '{"confirmed_unfixed":["BUG-1"],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '[]' '["BUG-1"]'
   git -C "$REPO" bundle create "${RUN_DIR}/recovery.bundle" "refs/heads/${BRANCH}"
   tip="$(git -C "$REPO" rev-parse "$BRANCH")"
   sha="$(shasum -a 256 "${RUN_DIR}/recovery.bundle" | awk '{print $1}')"
@@ -106,7 +129,7 @@ _set_fixed_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): test'
-  printf '{"degraded":false,"fixed":[],"confirmed_unfixed":["BUG-1"],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '[]' '["BUG-1"]'
   git -C "$REPO" bundle create "${RUN_DIR}/recovery.bundle" "refs/heads/${ORIG}"
   tip="$(git -C "$REPO" rev-parse "$BRANCH")"
   sha="$(shasum -a 256 "${RUN_DIR}/recovery.bundle" | awk '{print $1}')"
@@ -125,7 +148,7 @@ _set_fixed_summary() {
 }
 
 @test "closeout: degraded summary cannot silently erase tracker obligations" {
-  printf '{"degraded":true,"fixed":[],"confirmed_unfixed":[],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '[]' '[]' '[]' '[]' true
 
   cd "$REPO"
   run bash "$CLOSEOUT_SH" "$RUN_DIR" recorded
@@ -163,6 +186,7 @@ _set_fixed_summary() {
 
 @test "closeout: landed rejects a run with no fixed findings" {
   cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
   run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
   [ "$status" -eq 0 ]
 
@@ -178,10 +202,11 @@ _set_fixed_summary() {
   printf 'fix\n' >> "${WT}/app.txt"
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): contained fix'
-  printf '{"fixed":["BUG-1"],"confirmed_unfixed":[],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '["BUG-1"]'
   git -C "$REPO" merge -q --no-ff "$BRANCH" -m 'manual merge fixed work'
 
   cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
   run bash "$CLOSEOUT_SH" "$RUN_DIR" recorded
 
   [ "$status" -ne 0 ]
@@ -191,8 +216,9 @@ _set_fixed_summary() {
 }
 
 @test "closeout: landed still requires tracker receipts for unresolved bugs" {
-  printf '{"degraded":false,"fixed":["BUG-FIX"],"confirmed_unfixed":["BUG-1"],"quarantined":[],"follow_up":[]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '["BUG-FIX"]' '["BUG-1"]'
   cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
   run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
   [ "$status" -eq 0 ]
 
@@ -210,6 +236,7 @@ _set_fixed_summary() {
   git -C "$WT" add app.txt
   git -C "$WT" commit -q -m 'fix(bugsweep): first tip'
   cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
   run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
   [ "$status" -eq 0 ]
 
@@ -234,6 +261,7 @@ _set_fixed_summary() {
   printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
   run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
   [ "$status" -eq 0 ]
 
@@ -255,6 +283,7 @@ _set_fixed_summary() {
   printf '{"event":"approval","bug_id":"BUG-1","approved":true}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium"}\n' >> "${RUN_DIR}/ledger.jsonl"
   cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
   run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
   [ "$status" -eq 0 ]
 
@@ -274,8 +303,9 @@ _set_fixed_summary() {
   printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"high","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"high","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"high","verdict":"NOT_CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
-  printf '{"degraded":false,"fixed":["BUG-1"],"confirmed_unfixed":[],"quarantined":[],"follow_up":[],"findings":[{"bug_id":"BUG-1","fixed":true,"severity":"high","vote_split":{"confirmed":2,"total":3,"eligible":true}}]}\n' > "${RUN_DIR}/run-summary.json"
+  _write_summary '["BUG-1"]' '[]' '[]' '[]' false '[{"bug_id":"BUG-1","fixed":true,"severity":"high","category":"security","file":"a.py","line":1,"rationale":"r","vote_split":{"confirmed":2,"total":3,"eligible":true}}]'
   cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
   run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
   [ "$status" -eq 0 ]
 
@@ -294,6 +324,7 @@ _set_fixed_summary() {
   printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
   printf '{"event":"fix_committed","bug_id":"BUG-1"}\n' >> "${RUN_DIR}/ledger.jsonl"
   cd "$REPO"
+  _write_integration_authority "$RUN_DIR"
   run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
   [ "$status" -eq 0 ]
 

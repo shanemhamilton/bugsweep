@@ -25,6 +25,12 @@ teardown() {
   assert_contains "$output" "--network=bench-proxynet"
 }
 
+@test "isolate --print-cmd is container-free" {
+  BENCH_FAKE_NO_DOCKER=1 run "$ISOLATE_SH" --print-cmd bench/img:latest
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "docker run"
+}
+
 @test "isolate --print-cmd emits read-only root filesystem" {
   run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
@@ -105,20 +111,19 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# isolate.sh --print-cmd : key handling (key-in-container model)
+# isolate.sh --print-cmd : key handling (inert client identity)
 # ---------------------------------------------------------------------------
-# The dedicated, revocable ANTHROPIC_API_KEY is the ONE permitted passthrough,
-# injected BY NAME (docker reads the value from the host env; the value never
-# appears in the argv). Every other key-shaped env stays out — most importantly
-# the OpenAI judge key, which is host-only.
+# The analysis process receives only an inert literal.  The dedicated provider
+# key stays in the owned proxy, and every host key-shaped env stays out.
 
-@test "isolate --print-cmd passes ANTHROPIC_API_KEY by name, never its value" {
+@test "isolate --print-cmd passes only an inert client identity" {
   ANTHROPIC_API_KEY="sk-dedicated-should-not-appear" \
     run "$ISOLATE_SH" --print-cmd bench/img:latest
   [ "$status" -eq 0 ]
-  assert_contains "$output" "--env ANTHROPIC_API_KEY"
+  assert_contains "$output" "--env BENCH_INERT_CLIENT_ID=benchmark-inert-client-credential"
+  assert_contains "$output" "--env BENCH_HOST=claude"
   refute_contains "$output" "sk-dedicated-should-not-appear"
-  refute_contains "$output" "ANTHROPIC_API_KEY="
+  refute_contains "$output" "ANTHROPIC_API_KEY"
 }
 
 @test "isolate --print-cmd refuses the OpenAI judge key (host-only)" {
@@ -144,8 +149,8 @@ teardown() {
 # isolate.sh : fail closed when docker is absent
 # ---------------------------------------------------------------------------
 
-@test "isolate fails closed (exit 1) when docker is absent" {
-  BENCH_FAKE_NO_DOCKER=1 run "$ISOLATE_SH" --print-cmd bench/img:latest
+@test "isolate fails closed (exit 1) when docker is absent for a real run" {
+  BENCH_FAKE_NO_DOCKER=1 run "$ISOLATE_SH" bench/img:latest -- true
   [ "$status" -eq 1 ]
   assert_contains "$output" "docker"
 }
@@ -157,7 +162,13 @@ teardown() {
 @test "proxy --print-cmd binds the bench proxy network" {
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
-  assert_contains "$output" "network=bench-proxynet"
+  assert_contains "$output" "network=bugsweep-bench-net-<run-id>"
+}
+
+@test "proxy --print-cmd is container-free" {
+  BENCH_FAKE_NO_DOCKER=1 run "$PROXY_SH" --print-cmd
+  [ "$status" -eq 0 ]
+  assert_contains "$output" "network=bugsweep-bench-net-<run-id>"
 }
 
 @test "proxy --print-cmd declares reverse-proxy mode to the single API upstream" {
@@ -173,7 +184,7 @@ teardown() {
 @test "proxy --print-cmd publishes the container's ANTHROPIC_BASE_URL" {
   run "$PROXY_SH" --print-cmd
   [ "$status" -eq 0 ]
-  assert_contains "$output" "container_base_url=http://bench-proxy:8888"
+  assert_contains "$output" "container_base_url=http://bugsweep-bench-proxy-<run-id>:8888"
 }
 
 @test "proxy --print-cmd marks the analysis network internal (no internet)" {
@@ -228,7 +239,12 @@ teardown() {
 
 @test "proxy fails closed (exit 1) when docker is absent" {
   cd "$BATS_TMP"
-  BENCH_FAKE_NO_DOCKER=1 run "$PROXY_SH" start run-nodock-789
+  local secret_file="$BATS_TMP/provider-key"
+  local limits_file="$BATS_TMP/limits.json"
+  printf '%s' 'provider-key-fixture' >"$secret_file"
+  chmod 600 "$secret_file"
+  printf '%s\n' '{}' >"$limits_file"
+  BENCH_FAKE_NO_DOCKER=1 run "$PROXY_SH" start run-nodock-789 claude "$secret_file" "$limits_file"
   [ "$status" -eq 1 ]
   assert_contains "$output" "docker"
 }

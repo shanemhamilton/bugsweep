@@ -164,6 +164,14 @@ _leaderboard_path() {
   [ "$status" -ne 0 ]
 }
 
+@test "retired real container path fails closed before launching Docker" {
+  run env -u BENCH_NO_CONTAINER "$RUN_SH" \
+    --cases "$CASES_DIR" --arm bugsweep -k 1 \
+    --results-root "$RESULTS_ROOT"
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "legacy real container path is retired"
+}
+
 # ---------------------------------------------------------------------------
 # faked end-to-end → leaderboard.md
 # ---------------------------------------------------------------------------

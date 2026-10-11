@@ -140,3 +140,18 @@ def test_semantic_continuity_ignores_source_but_rejects_command_or_policy_change
     assert module._frozen_plan_reasons(plan, baseline) == [
         "baseline_not_bound_to_frozen_plan:test"
     ]
+
+
+def test_integration_receipts_are_scoped_to_immutable_attempt_ids(tmp_path: Path) -> None:
+    module = _load_module()
+    run_dir = tmp_path / "authority"
+    attempt = "a" * 32
+    merge_sha = "b" * 40
+
+    path = module._receipt_path(run_dir, attempt, merge_sha, "bugsweep/one")
+
+    branch_digest = hashlib.sha256("bugsweep/one".encode("utf-8")).hexdigest()[:16]
+    assert path == run_dir / "integration-check-results" / attempt / f"{merge_sha}-{branch_digest}.json"
+    assert path.parent.name == attempt
+    with pytest.raises(ValueError):
+        module._receipt_path(run_dir, "not-an-attempt", merge_sha, "bugsweep/one")

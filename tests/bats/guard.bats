@@ -36,19 +36,23 @@ _make_run_dir() {
   mkdir -p "$run_dir"
 
   local branch="bugsweep/deadline-test"
+  local orig_head
+  orig_head="$(git -C "$repo" rev-parse "$orig_branch")"
   git -C "$repo" checkout -q -b "$branch" 2>/dev/null || true
 
   cat > "${run_dir}/state.env" <<ENV
 BUGSWEEP_TS=deadline-test
+BUGSWEEP_RUN_ID=deadline-test
 BUGSWEEP_RUN_DIR=${run_dir}
+BUGSWEEP_REPO_ROOT=${repo}
 BUGSWEEP_BRANCH=${branch}
 BUGSWEEP_ORIG_BRANCH=${orig_branch}
+BUGSWEEP_ORIG_HEAD=${orig_head}
 BUGSWEEP_STASH_REF=none
 BUGSWEEP_START_EPOCH=${start_epoch}
 BUGSWEEP_DEADLINE_EPOCH=${deadline_epoch}
 BUGSWEEP_MAX_RUNTIME_MINUTES=120
 BUGSWEEP_MODE=detect-only
-BUGSWEEP_SCRIPT_DIR=${SCRIPT_DIR}
 BUGSWEEP_WORKTREE=
 ENV
 

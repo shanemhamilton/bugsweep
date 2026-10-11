@@ -98,7 +98,6 @@ abs_path() {
 # analysis client sends only the inert literal; the policy proxy injects the
 # mounted provider key and never logs either value.
 print_cmd() {
-  require_docker
   cat <<EOF
 # bench egress reverse-proxy wiring (dry-run; no live forwarder launched)
 network=${BENCH_NETWORK_PREFIX}-<run-id>
@@ -326,7 +325,6 @@ PY
 cmd_start() {
   if [[ "${BENCH_PROXY_NO_LAUNCH:-0}" == "1" && $# -eq 1 ]]; then
     safe_run_id "$1"
-    require_docker
     init_usage_log "$1" >/dev/null
     echo "proxy.sh: BENCH_PROXY_NO_LAUNCH=1 — wiring only, forwarder NOT launched (test-only)"
     return 0
@@ -354,12 +352,13 @@ cmd_stop() {
   [[ $# -eq 1 ]] || usage
   local run_id="$1"
   safe_run_id "${run_id}"
-  require_docker
 
   if [[ "${BENCH_PROXY_NO_LAUNCH:-0}" == "1" ]]; then
     echo "proxy.sh: BENCH_PROXY_NO_LAUNCH=1 — nothing to tear down (test-only)"
     return 0
   fi
+
+  require_docker
 
   local receipt_dir="${BENCH_PROXY_RECEIPTS_DIR:-}" receipt
   [[ "${receipt_dir}" == /* ]] || die "BENCH_PROXY_RECEIPTS_DIR is required for owned teardown"

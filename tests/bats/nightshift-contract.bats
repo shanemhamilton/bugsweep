@@ -346,11 +346,11 @@ BUGSWEEP_RUN_DIR=${killed_run_dir}
 BUGSWEEP_REPO_ROOT=${REPO}
 BUGSWEEP_BRANCH=bugsweep/killed-run
 BUGSWEEP_ORIG_BRANCH=main
+BUGSWEEP_ORIG_HEAD=$(git -C "$REPO" rev-parse main)
 BUGSWEEP_STASH_REF=none
 BUGSWEEP_START_EPOCH=1
 BUGSWEEP_MODE=detect-only
 BUGSWEEP_WORKTREE=${killed_wt}
-BUGSWEEP_SCRIPT_DIR=$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts
 ENV
   touch "${killed_run_dir}/ledger.jsonl"
   _seed_recon_and_finding "$killed_run_dir" "killed.txt" "$killed_wt"

@@ -80,7 +80,10 @@ except Exception:
 PY
   else
     local size
-    size="$(stat -f '%z' "$META" 2>/dev/null || stat -c '%s' "$META" 2>/dev/null || printf '')"
+    # GNU stat -f can print filesystem data before failing on the BSD format
+    # argument. Do not concatenate that output with a fallback size: it makes
+    # every subsequent no-Python reservation read the existing count as zero.
+    size="$(LC_ALL=C wc -c < "$META" 2>/dev/null | tr -d '[:space:]' || true)"
     case "$size" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
     [ "$size" -le "$META_MAX_BYTES" ] || { printf '0'; return 0; }
     grep -o '"runs"[[:space:]]*:[[:space:]]*[0-9]*' "$META" 2>/dev/null \

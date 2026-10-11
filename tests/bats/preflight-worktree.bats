@@ -199,10 +199,11 @@ teardown() {
 @test "preflight --worktree: worktree is anchored under the MAIN repo root, not a nested worktree path" {
   run bash "$PREFLIGHT_SH" --worktree
   [ "$status" -eq 0 ]
-  local wt
+  local wt main_repo_physical
   wt="$(echo "$output" | sed -n 's/^WORKTREE=//p')"
+  main_repo_physical="$(cd "$REPO" && pwd -P)"
   case "$wt" in
-    "${REPO}"/.bugsweep/worktrees/*) : ;;
+    "${main_repo_physical}"/.bugsweep/worktrees/*) : ;;
     *) echo "worktree not under main repo root: $wt"; false ;;
   esac
 }

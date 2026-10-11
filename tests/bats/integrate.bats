@@ -7,6 +7,8 @@
 
 INTEGRATE_SH="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/scripts/integrate.sh"
 
+load integration-fixture
+
 _make_git_repo() {
   local dir="$1"
   git init -q "$dir"
@@ -113,6 +115,7 @@ STUB
 setup() {
   START_CWD="$(pwd)"
   BATS_TMP="$(mktemp -d)"
+  BATS_TMP="$(cd "$BATS_TMP" && pwd -P)"
   REPO="${BATS_TMP}/repo"
   _make_git_repo "$REPO"
   GATE="${BATS_TMP}/stub-gate.sh"
@@ -123,6 +126,13 @@ setup() {
   _write_marker_gate "$MARKER_GATE"
   _write_tree_dirtying_gate "$DIRTY_GATE"
   cd "$REPO"
+  RUN_DIR="${BATS_TMP}/authority"
+  PROVIDER_STUB_DIR="${BATS_TMP}/provider-stub"
+  REAL_PYTHON="$(command -v python3)"
+  _write_integration_authority "$RUN_DIR"
+  _write_integration_provider_stub "$PROVIDER_STUB_DIR" "$REAL_PYTHON"
+  export RUN_DIR PROVIDER_STUB_DIR REAL_PYTHON
+  export PATH="${PROVIDER_STUB_DIR}:${PATH}"
 }
 
 # Emit only the executable (non-comment, non-blank) lines of the script, so a
@@ -158,7 +168,7 @@ teardown() {
   pre_target_sha="$(_current_sha main)"
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/one bugsweep/two bugsweep/three
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/one bugsweep/two bugsweep/three
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/one:merged"
@@ -188,15 +198,15 @@ teardown() {
   git -C "$REPO" merge-base --is-ancestor bugsweep/three main
 }
 
-# --- Acceptance criterion 2: gate regresses AFTER a prior good merge ---------
-# INTERACTION-DRIVEN (TEST HONESTY 8): the marker gate fails only when BOTH
+# --- Acceptance criterion 2: provider regresses AFTER a prior good merge ------
+# INTERACTION-DRIVEN (TEST HONESTY 8): the synthetic provider fails only when BOTH
 # good.txt and regressor.txt are simultaneously present in the tree — a genuine
 # semantic regression that appears only once the second branch lands on the
 # first. Nothing here depends on the gate's call count, so it would catch the
 # WRONG branch being rolled back (if integrate rolled back bugsweep/good instead
 # of bugsweep/regressor, one marker would be absent and the gate would pass).
 
-@test "integrate: gate failure after a prior good merge abandons the bad merge (never git reset --hard on the target), preserves remaining branches, stops cleanly" {
+@test "integrate: provider failure after a prior good merge abandons the bad merge (never git reset --hard on the target), preserves remaining branches, stops cleanly" {
   _make_bugsweep_branch "bugsweep/good" "good.txt" "fix good"
   _make_bugsweep_branch "bugsweep/regressor" "regressor.txt" "fix regressor"
   _make_bugsweep_branch "bugsweep/never-attempted" "never.txt" "fix never"
@@ -206,7 +216,7 @@ teardown() {
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $MARKER_GATE" CALL_LOG="$CALL_LOG" \
     MARKER_A="${REPO}/good.txt" MARKER_B="${REPO}/regressor.txt" \
-    bash "$INTEGRATE_SH" main bugsweep/good bugsweep/regressor bugsweep/never-attempted
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/good bugsweep/regressor bugsweep/never-attempted
 
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/good:merged"
@@ -261,7 +271,7 @@ teardown() {
   pre_target_sha="$(_current_sha main)"
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/conflict bugsweep/after-conflict
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/conflict bugsweep/after-conflict
 
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/conflict:conflict"
@@ -289,16 +299,21 @@ teardown() {
   _make_bugsweep_branch "bugsweep/beta" "beta.txt" "fix beta"
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/alpha bugsweep/beta
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/alpha bugsweep/beta
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/alpha:merged"
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/beta:merged"
+
+  first_suite_receipt="$(find "${RUN_DIR}/integration-check-results" -type f | sort | head -1)"
+  [ -f "$first_suite_receipt" ]
+  cp "$first_suite_receipt" "${BATS_TMP}/first-suite-receipt.json"
+  [ "$(find "${RUN_DIR}/integration-attempts" -type f | wc -l | tr -d ' ')" -eq 1 ]
 
   merge_commit_count_before="$(git -C "$REPO" log --oneline --merges main | wc -l | tr -d ' ')"
 
   # Re-run the exact same invocation — both branches are already contained.
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/alpha bugsweep/beta
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/alpha bugsweep/beta
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/alpha:already_contained"
@@ -312,6 +327,9 @@ teardown() {
 
   merge_commit_count_after="$(git -C "$REPO" log --oneline --merges main | wc -l | tr -d ' ')"
   [ "$merge_commit_count_before" -eq "$merge_commit_count_after" ]
+  cmp "$first_suite_receipt" "${BATS_TMP}/first-suite-receipt.json"
+  [ "$(find "${RUN_DIR}/integration-check-results" -type f | wc -l | tr -d ' ')" -eq 4 ]
+  [ "$(find "${RUN_DIR}/integration-attempts" -type f | wc -l | tr -d ' ')" -eq 2 ]
 }
 
 @test "integrate: idempotent re-run after a stop resumes from the failure point without re-attempting merged branches" {
@@ -326,7 +344,7 @@ teardown() {
   git -C "$REPO" commit -m "main diverges on second.txt" -q
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/first bugsweep/second
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/first bugsweep/second
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/first:merged"
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/second:conflict"
@@ -336,7 +354,7 @@ teardown() {
   # Re-run: bugsweep/first is not re-merged, but is re-gated so the new receipt
   # binds its exact source tip to a target tip that passed now.
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/first bugsweep/second
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/first bugsweep/second
 
   [ "$status" -eq 1 ]
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/first:already_contained"
@@ -384,7 +402,7 @@ teardown() {
   printf 'dirty\n' > "${REPO}/dirty.txt"
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/x
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/x
   [ "$status" -ne 0 ]
   echo "$output" | grep -qi "dirty\|clean"
   _branch_exists "bugsweep/x"
@@ -403,38 +421,25 @@ teardown() {
   [ -f "${REPO}/.git/MERGE_HEAD" ]
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/other
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/other
   [ "$status" -ne 0 ]
   echo "$output" | grep -qi "merge\|progress"
 
   git -C "$REPO" merge --abort
 }
 
-@test "integrate: defaults to bash scripts/run_checks.sh verify <RUN_DIR> convention when RUN_DIR given and no override" {
+@test "integrate: ignores the legacy raw gate command when a frozen run dir is supplied" {
   _make_bugsweep_branch "bugsweep/rd" "rd.txt" "fix rd"
   RUN_DIR="${BATS_TMP}/run"
-  mkdir -p "$RUN_DIR"
+  _write_integration_authority "$RUN_DIR"
 
-  # The default quality-gate command is relative ("scripts/run_checks.sh"), the
-  # same convention finalize.sh documents in post-finalize-handoff.json: it is
-  # meant to run from the TARGET repo's root, where bugsweep's own scripts/ is
-  # installed. Simulate that by copying the real run_checks.sh + common.sh into
-  # this throwaway repo (committed, so the working tree stays clean going in —
-  # integrate.sh refuses to run on a dirty tree).
-  mkdir -p "${REPO}/scripts"
-  cp "$(dirname "$INTEGRATE_SH")/run_checks.sh" "${REPO}/scripts/run_checks.sh"
-  cp "$(dirname "$INTEGRATE_SH")/common.sh" "${REPO}/scripts/common.sh"
-  git -C "$REPO" add scripts
-  git -C "$REPO" commit -q -m "vendor run_checks.sh + common.sh for the test"
-
-  # No BUGSWEEP_QUALITY_GATE_COMMAND override: integrate.sh should fall back to
-  # the documented convention. run_checks.sh with no test/build/lint detected
-  # in this throwaway repo reports NO_CHECKS and exits 0, so the merge proceeds.
-  run bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/rd
+  run env BUGSWEEP_QUALITY_GATE_COMMAND="false" CALL_LOG="$CALL_LOG" \
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/rd
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/rd:merged"
   [ -f "${RUN_DIR}/integrate-results.json" ]
+  [ "$(wc -l < "$CALL_LOG" | tr -d ' ')" -eq 1 ]
 }
 
 # --- Output contract: integrate-results.json --------------------------------
@@ -442,7 +447,7 @@ teardown() {
 @test "integrate: writes machine-readable integrate-results.json into RUN_DIR" {
   _make_bugsweep_branch "bugsweep/json" "json.txt" "fix json"
   RUN_DIR="${BATS_TMP}/run2"
-  mkdir -p "$RUN_DIR"
+  _write_integration_authority "$RUN_DIR"
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
     bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/json
@@ -457,54 +462,33 @@ teardown() {
   grep -q '"target_tip"' "${RUN_DIR}/integrate-results.json"
 }
 
-@test "integrate: writes integrate-results.json CWD-adjacent (not inside the repo) when no RUN_DIR is provided" {
+@test "integrate: refuses to run when --run-dir is absent" {
   _make_bugsweep_branch "bugsweep/nord" "nord.txt" "fix nord"
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
     bash "$INTEGRATE_SH" main bugsweep/nord
 
-  [ "$status" -eq 0 ]
-  results_line="$(printf '%s\n' "$output" | grep '^RESULTS_JSON=')"
-  results_path="${results_line#RESULTS_JSON=}"
-  [ -f "$results_path" ]
-  grep -q '"result": *"complete"' "$results_path"
-
-  # Must NOT be written inside the target repo's working tree — that would
-  # leave an untracked file behind and make the "tree is clean" guarantee false.
-  [ ! -f "${REPO}/integrate-results.json" ]
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -qi "run-dir"
+  ! git -C "$REPO" merge-base --is-ancestor bugsweep/nord main
   [ -z "$(git -C "$REPO" status --porcelain)" ]
 }
 
-# --- BLOCKER 2: a tree-dirtying gate must be caught, not carried forward -----
+# --- BLOCKER 2: legacy host gate commands cannot mutate integration state ------
 
-@test "integrate: a quality gate that dirties the working tree yields gate_dirtied_tree, stops, and does not carry into the next branch" {
+@test "integrate: a legacy tree-dirtying gate command is ignored" {
   _make_bugsweep_branch "bugsweep/dirtier" "dirtier.txt" "fix dirtier"
   _make_bugsweep_branch "bugsweep/after-dirty" "after-dirty.txt" "fix after"
 
-  pre_target_sha="$(_current_sha main)"
-
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $DIRTY_GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/dirtier bugsweep/after-dirty
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/dirtier bugsweep/after-dirty
 
-  [ "$status" -eq 1 ]
-  echo "$output" | grep -q "BRANCH_RESULT=bugsweep/dirtier:gate_dirtied_tree"
-  echo "$output" | grep -q "BRANCH_RESULT=bugsweep/after-dirty:skipped_after_stop"
-  echo "$output" | grep -q "INTEGRATE_RESULT=stopped"
-  echo "$output" | grep -q "STOPPED_AT=bugsweep/dirtier"
-  echo "$output" | grep -q "MERGED_COUNT=0"
-  echo "$output" | grep -q "PRESERVED_COUNT=2"
-  _assert_counts_partition_inputs "$output" 2
-
-  # The dirtied branch is NOT landed; the target never advanced.
-  ! git -C "$REPO" merge-base --is-ancestor "bugsweep/dirtier" main
-  [ "$(_current_sha main)" = "$pre_target_sha" ]
-
-  # The gate ran exactly once — it must NOT have proceeded to branch 2 (which
-  # is what "never silently carried into branch N+1" means).
-  [ "$(wc -l < "$CALL_LOG" | tr -d ' ')" -eq 1 ]
-
-  _branch_exists "bugsweep/dirtier"
-  _branch_exists "bugsweep/after-dirty"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "BRANCH_RESULT=bugsweep/dirtier:merged"
+  echo "$output" | grep -q "BRANCH_RESULT=bugsweep/after-dirty:merged"
+  echo "$output" | grep -q "INTEGRATE_RESULT=complete"
+  [ "$(wc -l < "$CALL_LOG" | tr -d ' ')" -eq 2 ]
+  [ ! -f "${REPO}/.gate-leaked-artifact" ]
 }
 
 @test "integrate: header documents that quality-gate commands must be tree-neutral" {
@@ -522,7 +506,7 @@ teardown() {
   git -C "$REPO" commit -m "target diverges" -q
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/cf bugsweep/cf-after
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/cf bugsweep/cf-after
   [ "$status" -eq 1 ]
   _assert_counts_partition_inputs "$output" 2
 }
@@ -531,12 +515,12 @@ teardown() {
   _make_bugsweep_branch "bugsweep/pre" "pre.txt" "fix pre"
   # Land bugsweep/pre first.
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/pre
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/pre
   [ "$status" -eq 0 ]
   # Now add a fresh branch and re-run with both: pre is already_contained, new merges.
   _make_bugsweep_branch "bugsweep/fresh" "fresh.txt" "fix fresh"
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/pre bugsweep/fresh
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/pre bugsweep/fresh
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/pre:already_contained"
   echo "$output" | grep -q "BRANCH_RESULT=bugsweep/fresh:merged"
@@ -546,46 +530,24 @@ teardown() {
   _assert_counts_partition_inputs "$output" 2
 }
 
-# --- MAJOR 4: no-python JSON fallback must be quote/backslash safe -----------
+# --- MAJOR 4: no-python execution must fail closed --------------------------
 
-@test "integrate: no-python fallback JSON is valid for a branch name containing a double-quote" {
-  # git rejects spaces, tabs, and backslash in ref names, but PERMITS a literal
-  # double-quote (verified via git check-ref-format) — the case that breaks a
-  # naive hand-rolled JSON writer. Build such a branch.
-  weird='bugsweep/we"ird'
-  git -C "$REPO" check-ref-format "refs/heads/$weird"   # sanity: git allows it
-  git -C "$REPO" checkout -b "$weird" main -q
-  printf 'weird fix\n' > "${REPO}/weird.txt"
-  git -C "$REPO" add weird.txt
-  git -C "$REPO" commit -m "fix weird" -q
-  git -C "$REPO" checkout main -q
+@test "integrate: forced no-python execution fails closed" {
+  _make_bugsweep_branch "bugsweep/no-python" "no-python.txt" "fix no python"
+  run env BUGSWEEP_FORCE_NO_PYTHON=1 \
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/no-python
 
-  RUN_DIR="${BATS_TMP}/run-weird"
-  mkdir -p "$RUN_DIR"
-
-  # Force the degraded (no-python3) path via BUGSWEEP_FORCE_NO_PYTHON.
-  run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    BUGSWEEP_FORCE_NO_PYTHON=1 \
-    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main "$weird"
-
-  [ "$status" -eq 0 ]
-  [ -f "${RUN_DIR}/integrate-results.json" ]
-
-  # The emitted JSON must PARSE and round-trip the branch name exactly. The
-  # script produced it via its no-python fallback; validate with python3 here.
-  if command -v python3 >/dev/null 2>&1; then
-    run python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["branches"][0]["branch"]==sys.argv[2], d; print("VALID")' \
-      "${RUN_DIR}/integrate-results.json" "$weird"
-    [ "$status" -eq 0 ]
-    echo "$output" | grep -q "VALID"
-  fi
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -qi "python3"
+  ! git -C "$REPO" merge-base --is-ancestor bugsweep/no-python main
 }
 
-# --- MINOR 5: --run-dir that does not exist -----------------------------------
+# --- MINOR 5: caller-specified authority path --------------------------------
 
-@test "integrate: creates a non-existent --run-dir rather than silently substituting a temp path" {
+@test "integrate: writes results under the caller-specified frozen run dir" {
   _make_bugsweep_branch "bugsweep/mk" "mk.txt" "fix mk"
   RUN_DIR="${BATS_TMP}/does-not-exist-yet/nested"
+  _write_integration_authority "$RUN_DIR"
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
     bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/mk
@@ -602,7 +564,7 @@ teardown() {
 # another live run's bugsweep-integrate-results.* dir (which may hold an unread
 # integrate-results.json). The prior "reaper" did exactly that; it is removed.
 
-@test "integrate: a concurrent peer's live results dir survives a second no-run-dir run" {
+@test "integrate: a concurrent peer's live results dir survives a second run" {
   _make_bugsweep_branch "bugsweep/peerA" "a.txt" "fix a"
 
   parent="$(dirname "$REPO")"
@@ -612,7 +574,7 @@ teardown() {
   printf '{"live":"peer results not yet read"}\n' > "${peer_dir}/integrate-results.json"
 
   run env BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/peerA
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/peerA
   [ "$status" -eq 0 ]
 
   # The peer's live results dir and its unread JSON MUST still be intact.
@@ -665,7 +627,7 @@ SHIM
   chmod +x "${SHIM_DIR}/git"
 
   run env PATH="${SHIM_DIR}:${PATH}" BUGSWEEP_QUALITY_GATE_COMMAND="bash $GATE" CALL_LOG="$CALL_LOG" \
-    bash "$INTEGRATE_SH" main bugsweep/cas bugsweep/cas-after
+    bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" main bugsweep/cas bugsweep/cas-after
 
   # The run must fail loudly, not lie about success.
   [ "$status" -ne 0 ]

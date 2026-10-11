@@ -1,118 +1,105 @@
 #!/usr/bin/env bats
-#
-# Regression guard (bugsweep-hcj): a single Referee adjudication is not enough
-# independent evidence to decide whether a HIGH/CRITICAL finding becomes
-# fix-eligible (and therefore gets auto-edited). prompts/referee.md must
-# instruct K independent adjudications with varied framing and a STRICT
-# MAJORITY requirement for severity >= high, while leaving the medium/low
-# single-pass path unchanged. config/bugsweep.config.json must carry the K
-# knob (adversarial.referee_votes) and its hard cap (adversarial.referee_votes_cap).
-#
-# The majority-gate MATH itself (2/3 eligible, 1/3 / ties not eligible) is
-# unit-tested directly against mocked verdict lists in
-# bench/tests/unit/test_run_summary.py::test_majority_gate_* — this file only
-# guards the prompt content and config shape, the same static-content pattern
-# as tests/bats/prompts-guardrails.bats.
+# Static contract guards for the native Referee gate.  The executable majority
+# math is covered by the Python unit tests; this file protects the prompt and
+# configuration boundary that decides when that gate applies.
 
 REFEREE_MD="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/prompts/referee.md"
 CONFIG_JSON="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)/config/bugsweep.config.json"
 
 setup() {
+  REFEREE_TEXT="$(tr '\n' ' ' < "$REFEREE_MD" | sed 's/  */ /g; s/\*\*//g')"
   [ -f "$REFEREE_MD" ]
   [ -f "$CONFIG_JSON" ]
 }
 
-# ---------------------------------------------------------------------------
-# prompts/referee.md — "K-vote majority for severity >= high" section.
-# ---------------------------------------------------------------------------
-
-@test "referee.md: has a 'K-vote majority for severity >= high' section" {
-  grep -qi "K-vote majority for severity >= high" "$REFEREE_MD"
+referee_has() {
+  printf '%s\n' "$REFEREE_TEXT" | grep -qi -- "$1"
 }
 
-@test "referee.md: references the referee_votes config knob and its cap" {
-  grep -q "adversarial.referee_votes" "$REFEREE_MD"
-  grep -q "adversarial.referee_votes_cap" "$REFEREE_MD"
+@test "referee.md: defines the K-vote majority gate for high and critical findings" {
+  referee_has 'K-vote majority for severity >= high'
+  referee_has 'High and critical findings require the configured `K` fresh native first assessments'
 }
 
-@test "referee.md: requires a strict majority of CONFIRMED votes to promote a finding" {
-  grep -qi "strict majority" "$REFEREE_MD"
-  grep -qi "more CONFIRMED votes than every other outcome combined" "$REFEREE_MD"
+@test "referee.md: binds K to the configured knob and hard cap" {
+  referee_has 'adversarial.referee_votes'
+  referee_has 'adversarial.referee_votes_cap'
+  referee_has 'caps it at'
 }
 
-@test "referee.md: a tie is explicitly NOT eligible (conservative default)" {
-  grep -qi "A tie" "$REFEREE_MD"
-  grep -qi "NOT CONFIRMED\*\* — conservative by design" "$REFEREE_MD"
-}
-
-@test "referee.md: a lone or minority CONFIRMED vote must never promote a finding" {
-  grep -qi "single lone CONFIRMED vote, or a minority of CONFIRMED" "$REFEREE_MD"
-  grep -qi "must never promote a high/critical finding" "$REFEREE_MD"
-}
-
-@test "referee.md: instructs recording each vote to the ledger as referee_vote" {
-  grep -q '"event":"referee_vote"' "$REFEREE_MD"
-  grep -q '"bug_id":"<BUG-ID>"' "$REFEREE_MD"
-}
-
-@test "referee.md: votes must use varied framing, not a repeated rubber-stamp" {
-  grep -qi "vary the framing" "$REFEREE_MD"
-  grep -qi "not a repeated rubber-stamp" "$REFEREE_MD"
-}
-
-@test "referee.md: low/medium severity is explicitly unchanged by the K-vote rule" {
-  grep -qi "Severity \*\*below\*\* high (medium/low) is entirely unaffected" "$REFEREE_MD"
-  grep -qi "adjudication, no K-vote, no \`referee_vote\` ledger events" "$REFEREE_MD"
-}
-
-@test "referee.md: the K-vote rule is documented as strictly MORE conservative, never less" {
-  grep -qi "conservative than the prior single-pass rule, never less" "$REFEREE_MD"
-}
-
-@test "referee.md: references run-summary.json's vote_split field and majority_gate" {
-  grep -q "vote_split" "$REFEREE_MD"
-  grep -q "majority_gate" "$REFEREE_MD"
-}
-
-# ---------------------------------------------------------------------------
-# config/bugsweep.config.json — .adversarial.referee_votes / referee_votes_cap
-# ---------------------------------------------------------------------------
-
-@test "config: is valid JSON" {
-  run python3 -m json.tool "$CONFIG_JSON"
-  [ "$status" -eq 0 ]
-}
-
-@test "config: .adversarial.referee_votes is a small positive integer" {
+@test "config: referee vote and cap are bounded validator integers" {
   run python3 -c "
 import json
-d = json.load(open('${CONFIG_JSON}'))
-k = d['adversarial']['referee_votes']
-assert isinstance(k, int) and not isinstance(k, bool), k
-assert 1 <= k <= 10, k
+adv = json.load(open('${CONFIG_JSON}'))['adversarial']
+for key in ('referee_votes', 'referee_votes_cap'):
+    value = adv[key]
+    assert isinstance(value, int) and not isinstance(value, bool), (key, value)
+    assert 1 <= value <= 5, (key, value)
+assert adv['referee_votes'] <= adv['referee_votes_cap'], adv
 "
   [ "$status" -eq 0 ]
 }
 
-@test "config: .adversarial.referee_votes_cap is >= referee_votes (a real ceiling)" {
-  run python3 -c "
-import json
-d = json.load(open('${CONFIG_JSON}'))
-adv = d['adversarial']
-assert adv['referee_votes_cap'] >= adv['referee_votes'], adv
-assert adv['referee_votes_cap'] <= 20, adv  # a 'cap' that isn't small isn't a cap
-"
-  [ "$status" -eq 0 ]
+@test "referee.md: medium and low use one verified native first assessment" {
+  referee_has 'Medium and low findings require `K=1`'
+  referee_has 'one verified native first assessment is sufficient'
 }
 
-@test "config: .adversarial block still has the pre-existing referee/challenge flags" {
+@test "referee.md: first assessments are blind and use fresh sessions" {
+  referee_has 'Blindness and fresh sessions'
+  referee_has 'before revealing any prior verdict'
+  referee_has 'fresh session'
+  referee_has 'Do not reuse a session'
+}
+
+@test "referee.md: native capture binds immutable evidence and source identity" {
+  referee_has 'Native capture and immutable evidence'
+  referee_has 'one source identity'
+  referee_has 'immutable captured artifacts'
+  referee_has 'request digest'
+  referee_has 'execution digest'
+}
+
+@test "referee.md: host, untimed, fabricated, and textual votes are ineligible" {
+  referee_has 'host evaluation'
+  referee_has 'untimed run'
+  referee_has 'fabricated receipt'
+  referee_has 'textual vote is ineligible'
+  referee_has 'Do not manufacture `referee_vote` ledger lines'
+}
+
+@test "referee.md: strict majority is required and ties cannot promote" {
+  referee_has 'Strict majority'
+  referee_has 'strictly greater than every other outcome combined'
+  referee_has 'A tie, no strict majority'
+  referee_has 'lone CONFIRMED vote'
+  referee_has 'minority of CONFIRMED votes'
+  referee_has 'must never.*promote a high/critical finding'
+}
+
+@test "referee.md: verifier output controls eligibility" {
+  referee_has 'verified_votes'
+  referee_has 'confirmed_votes'
+  referee_has 'only `eligible: true` makes a finding fix-eligible'
+}
+
+@test "referee.md: missing or failed native review blocks automatic fixes" {
+  referee_has 'Missing, failed, unavailable, or unverified native review blocks the fix'
+  referee_has 'routes it to human action'
+}
+
+@test "config: adversarial referee controls retain the existing enablement flags" {
   run python3 -c "
 import json
-d = json.load(open('${CONFIG_JSON}'))
-adv = d['adversarial']
+adv = json.load(open('${CONFIG_JSON}'))['adversarial']
 assert adv['challenge_enabled'] is True
 assert adv['referee_enabled'] is True
 assert adv['referee_spotchecks_upheld'] is True
 "
+  [ "$status" -eq 0 ]
+}
+
+@test "config: remains valid JSON" {
+  run python3 -m json.tool "$CONFIG_JSON"
   [ "$status" -eq 0 ]
 }

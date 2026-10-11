@@ -426,6 +426,19 @@ def test_suite_validator_rejects_existing_or_new_failures() -> None:
     assert validate_suite_receipt(receipt, "run-1", source)["complete"] is False
 
 
+def test_baseline_receipt_requires_explicit_phase_and_preserves_evidence_checks() -> None:
+    source = {"src.py": _sha("fixed")}
+    receipt = _suite_receipt(source)
+    receipt["phase"] = "baseline"
+    assert validate_suite_receipt(receipt, "run-1", source)["complete"] is False
+    assert validate_suite_receipt(receipt, "run-1", source, expected_phase="baseline")["complete"] is True
+    assert validate_suite_receipt(receipt, "other-run", source, expected_phase="baseline")["complete"] is False
+    assert validate_suite_receipt(receipt, "run-1", {"src.py": _sha("changed")}, expected_phase="baseline")["complete"] is False
+    assert validate_suite_receipt(receipt, "run-1", source, expected_phase="unknown")["complete"] is False
+    receipt["checks"][0]["status"] = "fail"
+    assert validate_suite_receipt(receipt, "run-1", source, expected_phase="baseline")["complete"] is False
+
+
 def test_suite_check_hashes_must_bind_the_execution_receipt() -> None:
     source = {"src.py": _sha("fixed")}
     receipt = _suite_receipt(source)
