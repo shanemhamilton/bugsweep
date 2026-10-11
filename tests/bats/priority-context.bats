@@ -299,7 +299,7 @@ PY
   cd "$REPO"
   bash "$PRIORITY_SH" build "$RUN_DIR" >/dev/null
   cat > "${RUN_DIR}/recon.json" <<'JSON'
-{"schema_version":1,"files_in_scope":3,"batch_count":2,"large_repo_mode":true,"budget_batches":1,"batches":[{"id":1,"dir":"tests","tier":"normal","files":["tests/test_checkout.py"],"deferred":false},{"id":2,"dir":"src","tier":"normal","files":["src/checkout.py","src/other.py"],"deferred":true}],"modeled":[1],"covered":[]}
+{"schema_version":1,"files_in_scope":3,"batch_count":2,"large_repo_mode":true,"budget_batches":1,"batches":[{"id":1,"dir":"tests","tier":"normal","files":["tests/test_checkout.py"],"deferred":false},{"id":2,"dir":"src","tier":"normal","files":["src/checkout.py","src/other.py"],"deferred":true}],"modeled":[1],"covered":[1]}
 JSON
 
   run bash "$PRIORITY_SH" apply "$RUN_DIR"
@@ -317,9 +317,15 @@ assert sorted(f for b in d["batches"] for f in b["files"]) == [
     "src/checkout.py", "src/other.py", "tests/test_checkout.py"
 ]
 assert d["modeled"] == [1]
-assert d["covered"] == []
+assert d["covered"] == [1]
+assert d["admission"] == {
+    "schema_version": 1,
+    "base_batch_ids": [1],
+    "promoted_batch_ids": [2],
+}, d
 application = json.load(open(sys.argv[2]))
 jsonschema.validate(application, json.load(open(sys.argv[3])))
+assert application["already_in_budget_candidates"] == [], application
 assert application["promoted_batches"] == ["2"], application
 assert application["added_file_count"] == 2, application
 PY

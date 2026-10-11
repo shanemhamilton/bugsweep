@@ -4,8 +4,8 @@ The development harness compares Claude and Codex separately across current-skil
 previous-release and no-skill arms. It freezes the schedule and seeded execution order,
 records every attempted slot, and retains missing results, errors and unknown costs.
 
-**Current evidence status:** this checkout does not claim a local test or CI run for
-the current harness changes. Fresh native corpus oracles, actual host and Docker runs,
+**Current evidence status:** automated contract checks are separate from runtime
+efficacy evidence. Fresh native corpus oracles, actual host and Docker runs,
 calibrated human labels and final independent review are not complete. The 20 held-out
 and five pilot case records are unverified inventory; several oracle tests failed review
 because they did not exercise the stated defect.
@@ -124,8 +124,8 @@ Create the three proxy/profile directories first. The source map maps case IDs t
 archive paths; each other map uses host names as keys and absolute file paths as values.
 Host templates contain `execution_policy` and `benchmark_static` (`analysis`, `client`,
 `arms`); the coordinator fills actual proxy identities from the startup receipt.
-Lifecycle contract tests were not run for the current harness changes; actual Docker
-execution and final cap/drain verification remain unavailable. Post-stop evidence
+Lifecycle fixtures do not establish actual Docker execution or final cap/drain
+verification; those remain unavailable. Post-stop evidence
 preserves that limitation explicitly.
 
 ## Evidence and scoring
