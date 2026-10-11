@@ -121,6 +121,7 @@ assert_no_remote_op() { :; }
 # share a single .bugsweep/state/ (this is why the meta.json lock below exists
 # — many processes legitimately target the same files at once).
 _bugsweep_target_root="${BUGSWEEP_TARGET_ROOT:-}"
+_bugsweep_common_dir_base=""
 if [ -n "$_bugsweep_target_root" ]; then
   case "$_bugsweep_target_root" in
     /*) : ;;
@@ -129,17 +130,21 @@ if [ -n "$_bugsweep_target_root" ]; then
   # Explicit target roots are the source of truth for helper invocations launched from a
   # different checkout (or outside Git). Their common dir still owns shared learning/state.
   _bugsweep_git_common_dir="$(git -C "$_bugsweep_target_root" rev-parse --git-common-dir 2>/dev/null || true)"
+  _bugsweep_common_dir_base="$_bugsweep_target_root"
 else
   _bugsweep_target_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  # Git reports a relative common-dir relative to the caller's CWD (for example
-  # `../.git` from a repository subdirectory). Resolve it through the canonical
-  # target root so state never lands in the parent of the audited repository.
-  _bugsweep_git_common_dir="$(git -C "$_bugsweep_target_root" rev-parse --git-common-dir 2>/dev/null || true)"
+  # Preserve Git's path spelling from the caller's checkout. In particular, macOS commonly
+  # exposes /var through /private/var; resolving the common dir through Git's absolute
+  # --show-toplevel changes the shared-state path spelling and breaks callers that compare
+  # recorded lease/run paths. The direct command also resolves a relative common-dir from the
+  # actual CWD, matching the historical helper contract.
+  _bugsweep_git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+  _bugsweep_common_dir_base="${PWD:-$(pwd)}"
 fi
 if [ -n "$_bugsweep_git_common_dir" ]; then
   case "$_bugsweep_git_common_dir" in
     /*) : ;;                                            # already absolute
-    *)  _bugsweep_git_common_dir="$(cd "$_bugsweep_target_root" 2>/dev/null \
+    *)  _bugsweep_git_common_dir="$(cd "$_bugsweep_common_dir_base" 2>/dev/null \
           && cd "$_bugsweep_git_common_dir" 2>/dev/null && pwd || true)" ;;
   esac
 fi
@@ -152,7 +157,7 @@ fi
 # shellcheck disable=SC2034  # consumed by preflight.sh after sourcing common.sh
 BUGSWEEP_GIT_COMMON_DIR="$_bugsweep_git_common_dir"
 BUGSWEEP_REPO_ROOT="${_bugsweep_git_common_dir:+$(dirname "$_bugsweep_git_common_dir")}"
-unset _bugsweep_git_common_dir
+unset _bugsweep_git_common_dir _bugsweep_common_dir_base
 BUGSWEEP_STATE_DIR="${BUGSWEEP_REPO_ROOT:+${BUGSWEEP_REPO_ROOT}/.bugsweep/state}"
 # Where linked worktrees for `preflight.sh --worktree` are created. Anchored the
 # same way as BUGSWEEP_STATE_DIR so every concurrent subagent creates its own

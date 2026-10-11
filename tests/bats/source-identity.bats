@@ -59,6 +59,19 @@ PY
   [ "$output" = "$REPO" ]
 }
 
+@test "common keeps a symlinked checkout's logical shared root while target identity stays physical" {
+  local alias="${BATS_TMP}/repo-alias"
+  ln -s "$REPO" "$alias"
+  run bash -c 'cd "$1/src" && . "$2/scripts/common.sh" && printf "%s\\n%s\\n" "$BUGSWEEP_REPO_ROOT" "$BUGSWEEP_TARGET_ROOT"' \
+    _ "$alias" "$SKILL_ROOT"
+  [ "$status" -eq 0 ]
+  local shared_root target_root
+  shared_root="$(printf '%s\n' "$output" | sed -n '1p')"
+  target_root="$(printf '%s\n' "$output" | sed -n '2p')"
+  [ "$shared_root" = "$alias" ]
+  [ "$(cd "$target_root" && pwd -P)" = "$(cd "$REPO" && pwd -P)" ]
+}
+
 @test "preflight honors an explicit target when launched elsewhere" {
   run bash -c 'cd "$1" && env BUGSWEEP_TARGET_ROOT="$2" bash "$3" --worktree' \
     _ "$SKILL_ROOT" "$REPO" "$PREFLIGHT_SH"
@@ -66,12 +79,15 @@ PY
   local target
   target="$(printf '%s\n' "$output" | sed -n 's/^TARGET_ROOT=//p')"
   [ -n "$target" ]
-  case "$target" in
-    "$REPO"/.bugsweep/worktrees/*) ;;
+  local target_real repo_real
+  target_real="$(cd "$target" && pwd -P)"
+  repo_real="$(cd "$REPO" && pwd -P)"
+  case "$target_real" in
+    "$repo_real"/.bugsweep/worktrees/*) ;;
     *) false ;;
   esac
   git -C "$target" rev-parse --show-toplevel >/dev/null
-  [ "$(git -C "$target" rev-parse --show-toplevel)" = "$target" ]
+  [ "$(cd "$(git -C "$target" rev-parse --show-toplevel)" && pwd -P)" = "$target_real" ]
 }
 
 @test "source manifest is unavailable when a tracked file is missing" {
