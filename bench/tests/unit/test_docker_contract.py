@@ -1,6 +1,8 @@
 """Static WU6 image-contract checks; no Docker build, CLI, or network use."""
 
 import os
+import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -80,7 +82,7 @@ def test_review_adapter_streams_fake_native_json_without_scratch_artifacts(tmp_p
     output.mkdir()
     for host, endpoint, binary in (("claude", "ANTHROPIC_BASE_URL", "claude"), ("codex", "CODEX_BENCH_BASE_URL", "codex")):
         executable = fake_bin / binary
-        executable.write_text("#!/bin/sh\nprintf '{\\\"type\\\":\\\"safe-event\\\"}\\n'\n")
+        executable.write_text("#!/bin/sh\nprintf '%s\\n' '{\"type\":\"safe-event\"}'\n")
         executable.chmod(0o755)
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", endpoint: "http://owned-proxy:8888",
                "BENCH_INERT_CLIENT_ID": "benchmark-inert-client-credential", "BUGSWEEP_OUTPUT_DIR": str(output)}
@@ -94,12 +96,21 @@ def test_benchmark_adapter_imports_fake_native_json_and_metadata(tmp_path: Path)
     output = tmp_path / "output"; output.mkdir()
     for host, endpoint, binary in (("claude", "ANTHROPIC_BASE_URL", "claude"), ("codex", "CODEX_BENCH_BASE_URL", "codex")):
         executable = fake_bin / binary
-        executable.write_text("#!/bin/sh\nprintf '{\\\"text\\\":\\\"FINDING: app.py:1\\\"}\\n'\n")
+        message = json.dumps({"candidates": [{"bug_id": "b1"}]})
+        native = {"type": "result", "result": message} if host == "claude" else {
+            "type": "item.completed", "item": {"type": "agent_message", "text": message}
+        }
+        native_line = json.dumps(native)
+        executable.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(native_line) + "\n")
         executable.chmod(0o755)
         env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}", endpoint: "http://owned-proxy:8888",
                "BENCH_INERT_CLIENT_ID": "benchmark-inert-client-credential", "BUGSWEEP_OUTPUT_DIR": str(output)}
         result = subprocess.run(["bash", str(ROOT / "bench/runners" / f"{host}_json.sh"), "pinned", "benchmark prompt", "no_skill_baseline"], env=env, check=True, text=True, capture_output=True)
-        assert "FINDING:" in result.stdout
+        assert result.stdout == native_line + "\n"
         metadata = (output / "adapter-metadata.json").read_text()
         assert '"loaded_skill_sha256":null' in metadata
+        events = json.loads((output / "candidate-events.json").read_text())
+        assert len(events) == 1 and events[0]["candidate_id"] == "b1"
+        assert events[0]["capture_source"] == "adapter"
+        assert events[0]["capture_granularity"] == "adapter_completion"
         (output / "response.jsonl").unlink(); (output / "adapter-metadata.json").unlink(); (output / "candidate-events.json").unlink()

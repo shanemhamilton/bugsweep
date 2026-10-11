@@ -9,6 +9,13 @@ allowed_tools="Read"
 loaded_skill_json="null"
 export HOME="${TMPDIR:-/tmp}/claude-bench-home"
 mkdir -p "${HOME}"
+sha256_digest() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$@"
+  else
+    shasum -a 256 "$@"
+  fi | awk '{print $1}'
+}
 case "${arm}" in
   current_skill | previous_release)
     # The selected immutable SKILL.md is inserted into the native prompt. This
@@ -16,7 +23,7 @@ case "${arm}" in
     # visible in the captured invocation command/prompt provenance.
     skill_root="/opt/bugsweep-benchmark-arms/${arm}"
     [[ -f "${skill_root}/SKILL.md" ]] || { echo "missing pinned ${arm} SKILL.md" >&2; exit 65; }
-    skill_sha="$(sha256sum "${skill_root}/SKILL.md" | awk '{print $1}')"
+    skill_sha="$(sha256_digest "${skill_root}/SKILL.md")"
     loaded_skill_json="\"${skill_sha}\""
     skill_excerpt="$(head -c 49152 "${skill_root}/SKILL.md")"
     prompt+=$'\n\nIMMUTABLE BENCHMARK SKILL EXCERPT (detect-only methodology only; no operational commands):\nsha256='"${skill_sha}"$'\n---\n'"${skill_excerpt}"
@@ -34,7 +41,7 @@ if [[ "${arm}" == "review" ]]; then
   exec claude -p "${prompt}" --model "${model}" --output-format stream-json --verbose \
     --allowedTools "${allowed_tools}" --permission-mode default
 fi
-prompt_sha="$(printf '%s' "${prompt}" | sha256sum | awk '{print $1}')"
+prompt_sha="$(printf '%s' "${prompt}" | sha256_digest)"
 claude -p "${prompt}" --model "${model}" --output-format stream-json --verbose \
   --allowedTools "${allowed_tools}" --permission-mode default \
   | tee "${BUGSWEEP_OUTPUT_DIR}/response.jsonl"
@@ -60,5 +67,5 @@ for line in open(source, encoding="utf-8"):
 with open(destination, "w", encoding="utf-8") as stream:
     json.dump(events, stream, separators=(",", ":"))
 PY
-events_sha="$(sha256sum "${BUGSWEEP_OUTPUT_DIR}/candidate-events.json" | awk '{print $1}')"
+events_sha="$(sha256_digest "${BUGSWEEP_OUTPUT_DIR}/candidate-events.json")"
 printf '{"effective_prompt_sha256":"%s","loaded_skill_sha256":%s,"candidate_events_sha256":"%s"}\n' "${prompt_sha}" "${loaded_skill_json}" "${events_sha}" >"${BUGSWEEP_OUTPUT_DIR}/adapter-metadata.json"
