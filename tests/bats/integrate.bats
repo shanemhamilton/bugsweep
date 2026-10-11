@@ -218,7 +218,8 @@ teardown() {
 }
 
 @test "integrate: rejects an incoming tracked authority path before merge" {
-  local audited_worktree="${REPO}/.bugsweep/worktrees/tracked-authority" run_id="tracked-authority" incoming=".bugsweep/run-${run_id}/incoming.txt"
+  local audited_worktree="${REPO}/.bugsweep/worktrees/tracked-authority" run_id="tracked-authority" incoming
+  incoming=".bugsweep/run-${run_id}/incoming.txt"
   mkdir -p "${REPO}/.bugsweep/worktrees"
   git -C "$REPO" worktree add -q -b bugsweep/audited-tracked-authority "$audited_worktree" main
   RUN_DIR="${REPO}/.bugsweep/run-${run_id}"
