@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-11
+
 ### Changed
 
 - Bound context batches by configurable file and byte limits, retain deferred work,
@@ -367,7 +369,8 @@ unattended.
 - **Version-pinned installs.** `install.sh --version vX.Y.Z` checks out a tagged
   release instead of tracking `main`.
 
-[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/shanemhamilton/bugsweep/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/shanemhamilton/bugsweep/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/shanemhamilton/bugsweep/compare/v0.5.0...v0.6.0
