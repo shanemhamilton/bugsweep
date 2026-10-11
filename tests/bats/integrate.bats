@@ -393,6 +393,7 @@ teardown() {
   echo "$output" | grep -q "MERGED_COUNT=0"
   echo "$output" | grep -q "ALREADY_CONTAINED_COUNT=2"
   echo "$output" | grep -q "PRESERVED_COUNT=0"
+  [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "main" ]
   # BLOCKER 3 invariant: 2 already-contained branches must be counted (2+0+0=2).
   _assert_counts_partition_inputs "$output" 2
 

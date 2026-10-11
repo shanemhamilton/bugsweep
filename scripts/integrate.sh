@@ -292,6 +292,16 @@ integrate_one() {
       printf 'gate_failed'
       return 1
     fi
+    # Reattach without checking out an unchecked tree. The initial checkout is
+    # detached, so an invocation containing only already-landed branches must
+    # restore the target's symbolic HEAD after its exact tip passes the gate.
+    if [ "$(git rev-parse HEAD)" != "$tip" ] \
+      || [ "$(git rev-parse "refs/heads/${TARGET_BRANCH}")" != "$tip" ] \
+      || ! git symbolic-ref HEAD "refs/heads/${TARGET_BRANCH}"; then
+      log "target moved while re-verifying $branch — preserving, stopping"
+      printf 'update_failed'
+      return 1
+    fi
     printf 'already_contained'
     return 0
   fi

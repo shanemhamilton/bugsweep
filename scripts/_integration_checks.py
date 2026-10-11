@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import uuid
 from pathlib import Path, PurePosixPath
@@ -161,6 +162,7 @@ def _validate_authority_boundary(
     tracked_paths: Sequence[str] | None = None,
     projection: Path | None = None,
     scratch_root: Path | None = None,
+    common_git_dir: Path | None = None,
 ) -> None:
     """Validate host-side authority separation from the frozen source boundary.
 
@@ -177,6 +179,10 @@ def _validate_authority_boundary(
         raise ValueError("target and authority overlap")
     if authority == source_repo or authority in source_repo.parents:
         raise ValueError("authority contains the source repository")
+    if common_git_dir is not None:
+        common_git_dir = common_git_dir.resolve(strict=True)
+        if _is_within(authority, common_git_dir):
+            raise ValueError("authority is under Git metadata")
     if source_repo in authority.parents:
         relative_parts = authority.relative_to(source_repo).parts
         if ".git" in relative_parts:
@@ -226,6 +232,32 @@ def _git_tree_paths(git_path: Path, repo: Path, tree_sha: str, output_dir: Path)
     return tuple(paths)
 
 
+def _git_common_directory(git_path: Path, repo: Path) -> Path:
+    """Resolve Git's common metadata directory using the pinned executable."""
+
+    # The authority has not been validated yet. Keep discovery output outside
+    # both its directory and the checkout, including for malformed run paths.
+    with tempfile.TemporaryDirectory(prefix="bugsweep-git-identity-") as temporary:
+        output = Path(temporary) / "common-dir.txt"
+        _control(git_path, ["-C", str(repo), "rev-parse", "--git-common-dir"], output)
+        raw = _read_bounded_bytes(output, 4096)
+    if not raw.endswith(b"\n"):
+        raise ValueError("Git common directory identity is malformed")
+    value = raw[:-1].decode("utf-8")
+    if not value or "\x00" in value or "\n" in value or "\r" in value:
+        raise ValueError("Git common directory identity is malformed")
+    common = Path(value)
+    if not common.is_absolute():
+        common = repo / common
+    try:
+        common = common.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("Git common directory is unavailable") from exc
+    if not common.is_dir():
+        raise ValueError("Git common directory is not a directory")
+    return common
+
+
 def validate_authority_tree(
     run_dir: Path, repo: Path, git_path: Path, tree_sha: str
 ) -> dict[str, object]:
@@ -236,9 +268,12 @@ def validate_authority_tree(
         raise ValueError("integration source identity is invalid")
     plan, _ = _read_json_with_sha(run / "check-plan.json")
     target = _frozen_target_root(plan)
-    _validate_authority_boundary(run, target, source_repo)
+    common_git_dir = _git_common_directory(executable, source_repo)
+    _validate_authority_boundary(run, target, source_repo, common_git_dir=common_git_dir)
     tracked = _git_tree_paths(executable, source_repo, tree_sha, run)
-    _validate_authority_boundary(run, target, source_repo, tracked_paths=tracked)
+    _validate_authority_boundary(
+        run, target, source_repo, tracked_paths=tracked, common_git_dir=common_git_dir
+    )
     return {"status": "valid", "tree_sha": tree_sha}
 
 
@@ -586,7 +621,14 @@ def run_integration_checks(
     if not isinstance(scratch_value, str):
         raise ValueError("frozen execution policy lacks scratch_root")
     scratch_root = Path(scratch_value).resolve(strict=True)
-    _validate_authority_boundary(run, target_root, source_repo, scratch_root=scratch_root)
+    common_git_dir = _git_common_directory(executable, source_repo)
+    _validate_authority_boundary(
+        run,
+        target_root,
+        source_repo,
+        scratch_root=scratch_root,
+        common_git_dir=common_git_dir,
+    )
     projection: Path | None = None
     destination = _receipt_path(run, attempt_id, merge_sha, branch)
     results_root = run / "integration-check-results"
@@ -608,6 +650,7 @@ def run_integration_checks(
             tracked_paths=tuple(sources),
             projection=projection,
             scratch_root=scratch_root,
+            common_git_dir=common_git_dir,
         )
         identity = {
             "kind": "content-manifest-sha256",

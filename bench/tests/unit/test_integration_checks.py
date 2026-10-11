@@ -263,6 +263,29 @@ def test_authority_boundary_rejects_target_overlap_and_git_metadata(tmp_path: Pa
         )
 
 
+def test_authority_boundary_rejects_external_common_git_metadata(tmp_path: Path) -> None:
+    module = _load_module()
+    source_repo = tmp_path / "audited-worktree"
+    target = tmp_path / "frozen-target"
+    common_git_dir = tmp_path / "main-repo.git"
+    authority = common_git_dir / "worktrees" / "authority"
+    source_repo.mkdir()
+    target.mkdir()
+    authority.mkdir(parents=True)
+
+    plan = {
+        "target_root": str(target),
+        "execution_policy": {"target_root": str(target)},
+    }
+    with pytest.raises(ValueError, match="Git metadata"):
+        module._validate_authority_boundary(
+            authority,
+            module._frozen_target_root(plan),
+            source_repo,
+            common_git_dir=common_git_dir,
+        )
+
+
 def test_frozen_target_requires_plan_and_policy_roots_to_match(tmp_path: Path) -> None:
     module = _load_module()
     first = tmp_path / "first"
