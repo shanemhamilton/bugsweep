@@ -38,7 +38,7 @@ teardown() {
   [ -n "${FIXTURE:-}" ] && rm -rf "$FIXTURE"
 }
 
-@test "real installer repeats both hosts preserving config and unrelated registration" {
+@test "real installer repeats all three hosts preserving config and unrelated registration" {
   run bash "$ROOT/install.sh" --all --version v0.7.0 --json
   [ "$status" -eq 0 ]
   printf '{"custom":true}\n' > "$CODEX_DIR/skills/bugsweep/config/bugsweep.config.json"
@@ -83,7 +83,9 @@ PY
   run bash "$ROOT/install.sh" --codex --version v0.7.0
   [ "$status" -eq 0 ]
   [ -f "$CODEX_SKILLS_DIR/bugsweep/install-metadata.json" ]
+  [ ! -e "$FIXTURE/modern-codex/instructions.md" ]
   grep -q '"host": "codex"' "$CODEX_SKILLS_DIR/bugsweep/install-metadata.json"
+  export CODEX_DIR="$FIXTURE/conflicting-legacy-codex"
   run bash "$CODEX_SKILLS_DIR/bugsweep/scripts/update-install.sh"
   [ "$status" -eq 0 ]
   [ -f "$CODEX_SKILLS_DIR/bugsweep/install-metadata.json" ]
@@ -103,6 +105,45 @@ PY
   [ "$status" -eq 0 ]
   [ -f "$HOME/.agents/skills/bugsweep/install-metadata.json" ]
   [ ! -e "$HOME/.codex/skills/bugsweep" ]
+}
+
+@test "unmanaged legacy Codex instructions do not redirect modern installation" {
+  unset CODEX_DIR CODEX_SKILLS_DIR
+  export HOME="$FIXTURE/unmanaged-home"
+  mkdir -p "$HOME/.codex"
+  printf 'unrelated instructions\n' > "$HOME/.codex/instructions.md"
+  run bash "$ROOT/install.sh" --codex --version v0.7.0
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.agents/skills/bugsweep/install-metadata.json" ]
+  [ ! -e "$HOME/.codex/skills/bugsweep" ]
+}
+
+@test "Antigravity auto-detects the IDE2 skills root when the CLI root is absent" {
+  unset AGY_SKILLS_DIR
+  export HOME="$FIXTURE/agy-home"
+  mkdir -p "$HOME/.gemini/config/skills"
+  run bash "$ROOT/install.sh" --agy --version v0.7.0
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.gemini/config/skills/bugsweep/install-metadata.json" ]
+  [ ! -e "$HOME/.gemini/antigravity-cli/skills/bugsweep" ]
+}
+
+@test "modern host installation rejects a source payload without its capability marker" {
+  python3 - "$REMOTE/install.sh" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+marker = 'INSTALLER_CAPABILITIES="portable-hosts-v1"'
+assert marker in text
+open(path, "w", encoding="utf-8").write(text.replace(marker, "INSTALLER_CAPABILITIES=legacy", 1))
+PY
+  git -C "$REMOTE" add install.sh
+  git -C "$REMOTE" commit -qm 'fixture old installer payload'
+  git -C "$REMOTE" tag -f v0.7.0 >/dev/null
+  run bash "$ROOT/install.sh" --agy --version v0.7.0
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"selected release does not support portable host installation"* ]]
+  [ ! -e "$AGY_SKILLS_DIR/bugsweep" ]
 }
 
 @test "real installer refuses unrelated edits without overwriting them" {

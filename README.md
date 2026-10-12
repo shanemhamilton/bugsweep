@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/shanemhamilton/bugsweep?sort=semver&label=release)](https://github.com/shanemhamilton/bugsweep/releases)
 [![License: MIT](https://img.shields.io/github/license/shanemhamilton/bugsweep)](LICENSE)
 
-Bugsweep is a skill for Claude Code and Codex. It investigates runtime bugs across a
+Bugsweep is a skill for Codex, Claude Code, and Google Antigravity (AGY). It investigates runtime bugs across a
 repository, challenges each finding, and can fix confirmed defects in an isolated
 worktree. It records unresolved work in the project's tracker and verifies cleanup of
 the exact temporary resources it owns.
@@ -32,12 +32,17 @@ uncalibrated; repeated model reviews do not establish statistical independence.
 
 ## Install
 
+AGY installation, modern Codex discovery, and optional Metaswarm workflows are currently
+in development for the next release. The v0.8.0 installer supports Claude and legacy
+Codex installations. Use a reviewed development checkout with `--edge` for the new
+host support once it is on main; do not pass new flags to the v0.8.0 bootstrap.
+
 Download and inspect the installer, then choose a host:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/shanemhamilton/bugsweep/main/install.sh -o /tmp/bugsweep-install.sh
 bash /tmp/bugsweep-install.sh --claude
-# or --codex / --all
+# or --codex; --agy / --all require a release with the new host support
 ```
 
 The current installer defaults to the latest non-draft, non-prerelease stable release,
@@ -46,8 +51,14 @@ for an exact release or `--edge` to explicitly select current main. The download
 installer itself should also be pinned and reviewed when reproducible bootstrap matters.
 See the [published releases](https://github.com/shanemhamilton/bugsweep/releases).
 
-`CLAUDE_SKILLS_DIR` controls the Claude skills root. `CODEX_DIR` controls the Codex root,
-including its skills and registration file. Updates preserve local configuration, refuse
+The development installer uses native discovery: `CLAUDE_SKILLS_DIR` defaults to
+`~/.claude/skills`, `CODEX_SKILLS_DIR` to `~/.agents/skills`, and `AGY_SKILLS_DIR` to
+`~/.gemini/antigravity-cli/skills` (CLI). For Antigravity IDE/2.0, select
+`AGY_SKILLS_DIR="$HOME/.gemini/config/skills"`. Explicit `CODEX_DIR` and existing managed
+legacy Codex installations retain their roots and registration. See
+[host adaptation](references/hosts.md) for invocation and capability mapping.
+
+Updates preserve local configuration, refuse
 unrelated modified installed files, and use recoverable staged replacement. Failed
 multi-host installs report prior successes and the failed destination.
 
@@ -56,6 +67,10 @@ that installation's custom root; it does not silently switch to another host's d
 copy. Update before starting a run, then invoke the skill again.
 
 ## Use
+
+Select or mention Bugsweep in the current host. Codex supports `$bugsweep`; Claude and
+AGY support `/bugsweep`. The table uses `/bugsweep` as shorthand; the same modes can
+be requested in natural language. All hosts follow the same evidence and closeout rules.
 
 | Request | Outcome |
 | --- | --- |
@@ -83,6 +98,11 @@ policy pins the Docker executable and image, non-root identity, resources, exact
 environment and denied network. The provider checks Docker's effective settings before
 start and records actual readback. Tests write declared outputs to `/bugsweep-output`.
 See [execution evidence](references/execution-evidence.md) for fields and repro examples.
+
+The coordinating host is independent of the isolated review providers. The bundled
+review/benchmark adapters currently support Claude and Codex; an AGY coordinator can
+use those same approved providers. Native AGY review/benchmark execution is not yet
+verified or supported. No host gets weaker proof gates when a capability is missing.
 
 `adversarial.hosts` pins approved native host/model IDs. Native reviews require a separately
 configured approved proxy profile with explicit caps, pinned adapter and native clients.
@@ -127,6 +147,10 @@ complete operational skill, and actual stage effects remain unverified.
 It retains failed slots and unknown accounting, source-bound finding evidence, human
 calibration, rejected-candidate audits and uncertainty. A test fixture is not live evidence.
 Fresh corpus and gold-oracle execution must be validated before results count as held-out.
+
+Metaswarm is optional contributor tooling, not a skill dependency. The self-reflection,
+planning, and review workflows in [AGENTS.md](AGENTS.md) work directly on all three hosts.
+Managed installations exclude contributor instructions and Metaswarm configuration.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for pure local checks and separate Git-backed CI.
 The [skill](SKILL.md) is the concise operating contract; [phase prompts](prompts/) contain

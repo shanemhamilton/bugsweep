@@ -1,7 +1,7 @@
 # Orchestrator contract — fanning out N worktree-isolated subagents
 
 This is the playbook for the pattern `references/autonomous-maintenance.md` doesn't cover:
-one Opus (or equivalent) **orchestrator** session that fans out up to 5 worktree-isolated
+one Codex, Claude Code, or AGY **orchestrator** session that fans out up to 5 worktree-isolated
 bugsweep subagents to find and fix bugs in parallel, then reviews and locally integrates
 eligible results — while the orchestrator itself never hunts. If you want a single sequential
 `/bugsweep --autonomous` run on a schedule, see `references/autonomous-maintenance.md`
@@ -10,6 +10,10 @@ instead; this doc is for the multi-subagent fan-out case.
 Every mechanic below is cited to a real script/flag/field in this repo. Nothing here invents
 a flag, a code, or a file that doesn't exist — see the failure-taxonomy table for grep
 evidence on every stable token.
+
+The host must expose suitable subagent/task capabilities for parallel dispatch; otherwise
+use the sequential maintenance workflow. See [host adaptation](hosts.md). Metaswarm is
+optional, and no host-specific tool name or model tier is required.
 
 ## The contract, in one paragraph
 

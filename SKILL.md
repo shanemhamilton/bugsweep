@@ -13,6 +13,14 @@ Find reproducible behavioral defects, preserve evidence, and leave each run eith
 locally landed with verification or recorded with recovery and tracker receipts.
 Separate investigation, review, executable proof, and operational completion.
 
+## Host support
+
+Use this same workflow in Codex, Claude Code, or Google Antigravity (AGY).
+No Metaswarm or other orchestration plugin is required. Read [host adaptation](references/hosts.md)
+for installation, invocation, tool mapping, and the distinction between the coordinating
+host and an isolated native-review provider. Use available host tools; never invent a
+tool name or treat same-session roleplay as fresh review evidence.
+
 ## Contract
 
 1. Honor the user's scope and authorization. Detect is the default. Never push,
@@ -49,9 +57,12 @@ Separate investigation, review, executable proof, and operational completion.
 
 ## Modes
 
+Use the host’s skill selector or natural language; `/bugsweep` is shorthand in the
+examples, not a required slash-command API. Codex also supports `$bugsweep`.
+
 | Request | Behavior |
 | --- | --- |
-| `/bugsweep [path]` | Detect and record a bounded audit; no source changes. |
+| Bugsweep with optional `[path]` | Detect and record a bounded audit; no source changes. |
 | `--fix` | Review, prove and fix within one planned pass; locally land eligible work. |
 | `--approve` | Ask before each test or fix edit; approval never replaces proof. |
 | `--autonomous` | Repeat the fix workflow until the frontier or a cap ends the run. |
@@ -60,7 +71,7 @@ Separate investigation, review, executable proof, and operational completion.
 | `--update` | Run `bash scripts/update-install.sh` from the active installation, then stop. |
 
 Updates default to a stable release. Edge and exact-version installation are explicit
-installer choices. Preserve `CLAUDE_SKILLS_DIR` / `CODEX_DIR` and active-install metadata;
+installer choices. Preserve the configured host root and active-install metadata;
 see [installation](README.md#install). Do not update during an active audit.
 
 ## Prepare

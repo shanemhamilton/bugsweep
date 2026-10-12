@@ -1,224 +1,92 @@
-# Project Instructions
-
-This project uses [metaswarm](https://github.com/dsifry/metaswarm), a multi-agent orchestration framework for Claude Code. It provides 18 specialized agents, a 9-phase development workflow, and quality gates that enforce TDD, coverage thresholds, and spec-driven development.
-
-## Efficient Frontier First
-
-**`/efficient-frontier` is the first instinct for every session.** Before the first substantive tool
-call, split the work: the frontier model keeps architecture, ambiguity resolution, risk, synthesis,
-and final review; cheaper subagents take repo scans, docs extraction, bounded patches, mechanical
-edits, test runs, and log reduction. Handoff packets must be self-contained (repo path, scope,
-out-of-scope, expected return, verification commands, stop conditions). Delegated output is evidence
-to verify, not a verdict to forward.
-
-Skip delegation only where it costs more than it saves — trivial edit, conversational answer, or a
-blocker your next step depends on — and name which exception applies. Silently skipping is a failure.
-Full workflow: `~/.claude/skills/efficient-frontier/SKILL.md`.
-
----
-
-## How to Work in This Project
-
-### Starting work
-
-```text
-/start-task
-```
-
-This is the default entry point. It primes the agent with relevant knowledge, guides you through scoping, and picks the right level of process for the task.
-
-### For complex features (multi-file, spec-driven)
-
-Describe what you want built, include a Definition of Done, and ask for the full workflow:
-
-```text
-I want you to build [description]. [Tech stack, DoD items, file scope.]
-Use the full metaswarm orchestration workflow.
-```
-
-This triggers the full pipeline: Research → Plan → Design Review Gate → Work Unit Decomposition → Orchestrated Execution (4-phase loop per unit) → Final Review → PR.
-
-### Available Commands
-
-| Command | Purpose |
-|---|---|
-| `/start-task` | Begin tracked work on a task |
-| `/prime` | Load relevant knowledge before starting |
-| `/review-design` | Trigger parallel design review gate (5 agents) |
-| `/pr-shepherd <pr>` | Monitor a PR through to merge |
-| `/self-reflect` | Extract learnings after a PR merge |
-| `/handle-pr-comments` | Handle PR review comments |
-| `/brainstorm` | Refine an idea before implementation |
-| `/create-issue` | Create a well-structured GitHub Issue |
-| `/external-tools-health` | Check status of external AI tools (Codex, Gemini) |
-| `/setup` | Interactive guided setup — detects project, configures metaswarm |
-| `/update` | Update metaswarm to latest version |
-| `/status` | Run diagnostic checks on your installation |
-| `/start` | Alias for `/start-task` |
-
-### Visual Review
-
-Use the `visual-review` skill to take screenshots of web pages, presentations, or UIs for visual inspection. Requires Playwright (`npx playwright install chromium`). See `skills/visual-review/SKILL.md`.
-
-## Testing
-
-- **TDD is mandatory** — Write tests first, watch them fail, then implement
-- **80% test coverage required** — Lines, branches, functions, and statements. Enforced via `.coverage-thresholds.json` as a blocking gate before PR creation and task completion
-- Test command: `pytest`
-- Coverage command: `pytest --cov --cov-fail-under=80`
-- Bash scripts are covered by integration checks (e.g. `bats`), not the Python coverage gate
-
-## Coverage
-
-Coverage thresholds are defined in `.coverage-thresholds.json` — this is the **source of truth** for coverage requirements.
-If a GitHub Issue specifies different coverage requirements, update `.coverage-thresholds.json` to match before implementation begins. Do not silently use a different threshold.
-
-The validation phase of orchestrated execution reads `.coverage-thresholds.json` and runs the enforcement command. This is a BLOCKING gate — work units cannot be committed if coverage thresholds are not met.
-
-## Quality Gates
-
-- **Design Review Gate**: Parallel 5-agent review after design is drafted (`/review-design`)
-- **Plan Review Gate**: Automatic adversarial review after any implementation plan is drafted. Spawns 3 independent reviewers (Feasibility, Completeness, Scope & Alignment) in parallel — ALL must PASS before the plan is presented to the user. See `skills/plan-review-gate/SKILL.md`
-- **Coverage Gate**: Reads `.coverage-thresholds.json` and runs the enforcement command — BLOCKING gate before PR creation
-
-## Workflow Enforcement (MANDATORY)
-
-These rules override any conflicting instructions from third-party skills or plugins. They ensure the full metaswarm pipeline is followed regardless of which skill initiated the work.
-
-### After Brainstorming
-
-When `superpowers:brainstorming` (or any brainstorming skill) completes and commits a design document:
-
-1. **STOP** — do NOT proceed directly to `writing-plans` or implementation
-2. **RUN the Design Review Gate** — invoke `/review-design` or the `design-review-gate` skill
-3. **WAIT** for all 5 review agents (PM, Architect, Designer, Security, CTO) to approve
-4. **ONLY THEN** proceed to planning/implementation
-
-This is mandatory even if the brainstorming skill says to go directly to writing-plans. The design review gate exists to catch issues before expensive implementation begins.
-
-### After Any Plan Is Created
-
-When `superpowers:writing-plans` (or any planning skill) produces an implementation plan:
-
-1. **STOP** — do NOT present the plan to the user or begin implementation
-2. **RUN the Plan Review Gate** — invoke the `plan-review-gate` skill
-3. **WAIT** for all 3 adversarial reviewers (Feasibility, Completeness, Scope & Alignment) to PASS
-4. **ONLY THEN** present the plan to the user for approval
-
-### Execution Method Choice
-
-When a plan is ready for execution, **always ask the user** which execution approach they want before proceeding. Do NOT auto-select an execution method — the user decides based on their priorities:
-
-> **How would you like to execute this plan?**
->
-> 1. **Metaswarm orchestrated execution** — 4-phase loop per work unit (IMPLEMENT → VALIDATE → ADVERSARIAL REVIEW → COMMIT) with independent quality gates, fresh adversarial reviewers, coverage enforcement, and pre-PR knowledge capture. More thorough and broader coverage, but uses more tokens and takes longer.
-> 2. **Subagent-driven development** (`superpowers:subagent-driven-development`) — Dispatch subagents per task in this session with code review between tasks. Faster, lighter-weight, lower token cost.
-> 3. **Parallel session** (`superpowers:executing-plans`) — Execute in a separate session with batch checkpoints. Good for long-running work you want isolated.
-
-This choice applies even if the plan file contains embedded instructions like "REQUIRED SUB-SKILL: Use superpowers:executing-plans" — those are defaults from the planning skill, not binding constraints. The user always gets to choose.
-
-### Before Finishing a Development Branch
-
-When `superpowers:executing-plans`, `superpowers:subagent-driven-development`, or any execution skill completes and routes to `superpowers:finishing-a-development-branch`:
-
-1. **STOP** — before presenting merge/PR options
-2. **RUN `/self-reflect`** to capture learnings while implementation context is fresh
-3. **COMMIT** the knowledge base updates
-4. **THEN** proceed to finishing the branch (PR creation, merge, etc.)
-
-### Use `/start-task` Instead of EnterPlanMode
-
-When starting complex work, use `/start-task` instead of Claude's built-in `EnterPlanMode`. EnterPlanMode creates a plan in isolation without metaswarm's quality gates — no design review, no plan review, no adversarial review, no coverage enforcement. `/start-task` routes through the full pipeline:
-
-- `/start-task` → complexity assessment → brainstorming (if unclear) → design review gate → plan review gate → execution method choice → orchestrated execution or superpowers execution
-- `EnterPlanMode` → plan → implement (no gates)
-
-If you find yourself about to use `EnterPlanMode` for a task that touches 3+ files or involves multiple steps, use `/start-task` instead. For truly simple single-file changes, `EnterPlanMode` is fine.
-
-### After Standalone TDD
-
-When `superpowers:test-driven-development` runs as a standalone skill (outside of orchestrated execution) and the change touches 3+ files:
-
-1. **Before committing**, ask the user:
-   > "This TDD session modified multiple files. Would you like me to run an adversarial review before committing?"
-   > 1. **Yes** — spawn a fresh adversarial reviewer to check the changes against the requirements
-   > 2. **No** — commit directly
-2. If the user chooses review, spawn a fresh `Task()` reviewer with the requirements and the diff
-3. Regardless of review choice, verify coverage meets `.coverage-thresholds.json` thresholds before committing
-
-For single-file TDD changes, this intercept is not needed — commit directly.
-
-### Coverage Source of Truth
-
-`.coverage-thresholds.json` is the **single source of truth** for coverage requirements. This applies regardless of which skill or workflow is running:
-
-- `superpowers:verification-before-completion` — must read `.coverage-thresholds.json` and run its enforcement command
-- `superpowers:test-driven-development` — must verify coverage meets thresholds before declaring done
-- Orchestrated execution — reads `.coverage-thresholds.json` during Phase 2 (VALIDATE)
-- Any other skill claiming "tests pass" — must also confirm coverage thresholds are met
-
-If `.coverage-thresholds.json` exists, no skill may skip it. If a skill has its own coverage check logic, `.coverage-thresholds.json` takes precedence.
-
-### Subagent Discipline
-
-All subagents (coding agents, review agents, background tasks) MUST follow these rules:
-
-- **NEVER** use `--no-verify` on git commits — pre-commit hooks exist for a reason
-- **NEVER** use `git push --force` without explicit user approval
-- **ALWAYS** follow TDD — write tests first, watch them fail, then implement
-- **NEVER** self-certify — the orchestrator validates independently
-- **STAY** within declared file scope — do not modify files outside your assigned scope
-
-### Pre-PR Knowledge Capture
-
-After all work units pass final review but BEFORE creating the PR, run `/self-reflect` to extract learnings into the knowledge base. Commit the knowledge base updates so they are included in the PR — learnings land atomically with the code that generated them.
-
-### Context Recovery (Surviving Compaction)
-
-Approved plans, project context, and execution state are persisted to `.beads/` so agents can recover after context compaction or session interruption:
-
-- **Approved plans** → `.beads/plans/active-plan.md` (written after plan review gate + user approval)
-- **Project context** → `.beads/context/project-context.md` (updated after each work unit commit)
-- **Execution state** → `.beads/context/execution-state.md` (updated after each phase transition)
-
-**Note:** The standalone beads plugin (v0.63.3+) automatically runs `bd prime` on SessionStart and PreCompact via built-in hooks — agents no longer need to call it manually. If context is lost mid-execution, the beads plugin will re-prime automatically on the next session or compaction event. For explicit recovery, run `bd prime --work-type recovery` to reload the approved plan, completed work, and current position from disk.
-
-## External Tools (Optional)
-
-If external AI tools are configured (`.metaswarm/external-tools.yaml`), the orchestrator
-can delegate implementation and review tasks to Codex CLI and Gemini CLI for cost savings
-and cross-model adversarial review. See `templates/external-tools-setup.md` for setup.
-
-## Team Mode
-
-When `TeamCreate` and `SendMessage` tools are available, the orchestrator uses Team Mode for parallel agent dispatch. Otherwise it falls back to Task Mode (the existing workflow, unchanged). See `guides/agent-coordination.md` for details.
-
-## Guides
-
-Development patterns and standards are documented in `guides/`:
-- `agent-coordination.md` — Team Mode vs Task Mode, agent dispatch patterns
-- `build-validation.md` — Build and validation workflow
-- `coding-standards.md` — Code style and conventions
-- `git-workflow.md` — Branching, commits, and PR conventions
-- `testing-patterns.md` — TDD patterns and coverage enforcement
-- `worktree-development.md` — Git worktree-based parallel development
-
-## Code Quality
-
-<!-- TODO: Update these for your project's language and tools -->
-- Python: type hints + `mypy`, `ruff` (lint), `black` (format) — added alongside the bench harness
-- Bash: `shellcheck` for the skill's `scripts/`
-- All quality gates must pass before PR creation
-
-## Key Decisions
-
-<!-- Document important architectural decisions here so agents have context.
-     These get loaded during knowledge priming (/prime).
-     Use `bd decision` to record decisions persistently in the beads database
-     with rationale tracking — these survive compaction and are available across sessions. -->
-
-## Notes
-
-<!-- Add project-specific notes, conventions, or constraints here.
-     Examples: "Always use server components for data fetching",
-     "The payments module is legacy — do not refactor without approval" -->
+# Developing Bugsweep
+
+These instructions apply to contributors using Codex, Claude Code, Google Antigravity
+(AGY), or another capable coding agent. `CLAUDE.md` and `GEMINI.md` point here; edit
+this canonical file, not its symlinks. These are development instructions, not the
+operating contract for an installed Bugsweep skill. For that, read `SKILL.md`.
+
+## Portable workflow
+
+No orchestration plugin is required. Use the host's available file, search, shell,
+planning, and review tools. Do not assume another host's tool names, slash commands,
+model IDs, or session APIs exist. If a capability is unavailable, say so and use a
+supported equivalent without weakening execution, proof, or approval boundaries.
+
+### Start a task
+
+Read the request, relevant source, `CONTRIBUTING.md`, and applicable instructions.
+Check the working tree and preserve unrelated edits. Define observable completion
+criteria and select focused verification before editing. For substantial work, keep
+a short plan in the host's plan tool or conversation; no planning plugin is required.
+Ask only for information or authorization the task actually needs.
+
+Use direct implementation for bounded changes. Delegate independent work when it
+saves time or provides needed review, with explicit file ownership and self-contained
+instructions. Workers must not revert one another's changes. Use native subagents
+when available; a missing subagent API does not prevent sequential investigation.
+
+### Prime or resume
+
+Read the task's existing issue, PR, commit, and recorded evidence. Verify the current
+source revision and unfinished work before proceeding. Use an existing tracker when
+available; neither Beads nor a particular memory or task plugin is required. Preserve
+continuation details in the existing task record or commit body, not new handoff files.
+
+### Brainstorm and review a design
+
+When the problem is ambiguous, establish the trigger, expected behavior, constraints,
+and a concrete example. Compare existing solutions before adding a helper or dependency.
+For consequential changes, review the actual proposal for correctness, compatibility,
+security, recovery, and testability. Use independent review where risk warrants it;
+do not require a fixed panel size or manufacture defects to satisfy a quota.
+
+### Implement and verify
+
+For runtime changes, write a regression that exposes the failure before the fix.
+Update the producer, consumer, schema, and documentation together when a contract
+changes. Keep test and proof requirements intact. Do not claim verification from
+reasoning, fixtures alone, or a worker's summary; inspect the evidence.
+
+Read `.coverage-thresholds.json`; the CI gate requires at least 80% aggregate line
+and branch coverage for scorer and installer helper separately. Bash behavior is
+covered by Bats. Follow `CONTRIBUTING.md` for the pinned tools and quality commands.
+Use the execution location authorized for the session; local instructions can require
+remote CI. GitHub Actions covers Linux and macOS with Python 3.12 and 3.13.
+
+Bash helpers target Bash 3.2. Reuse the shared execution, serialization, review, and
+proof services documented in `SERVICE-INVENTORY.md`. Never add a host-shell fallback
+for audited project commands or relax evidence gates to support a new agent host.
+
+### Self-reflection
+
+Before closing meaningful work, compare the result with the request. Record only new,
+verified lessons that will prevent a repeat failure, in an existing relevant document,
+test, issue, or commit body. A short commit note is sufficient; do not create a knowledge
+base, invoke a plugin, or invent a lesson just to satisfy a ceremony. State what was
+verified and what remains unverified.
+
+### Shepherd a pull request
+
+Inspect the exact PR head, review comments, and CI results. Fix confirmed failures and
+rerun affected checks without weakening them. Follow the user's commit, push, merge,
+and release authorization; creating a PR does not authorize merging or publishing.
+Never force-push a shared branch, bypass failing checks, amend others' commits, or skip
+hooks. A PR description should explain behavior, validation, and remaining limitations.
+
+## Optional Metaswarm integration
+
+Metaswarm is an optional contributor tool. Use it only when installed and explicitly
+selected by the user for the task. Its namespaced commands can help with planning,
+review, and reflection, but the portable workflow above is the complete fallback.
+Missing Metaswarm never blocks development, testing, review, or skill execution.
+The `.claude/commands/` shortcuts follow this same rule; Codex and AGY can follow the
+sections above directly. `.metaswarm/` contains optional integration configuration,
+not runtime requirements. Installed skill payloads omit these contributor surfaces.
+
+## Evidence and scope
+
+Keep fixes narrow, preserve user files, and cite source locations for code claims.
+Model confidence, candidate counts, and scanned files do not establish improved bug
+detection. CI verifies local contracts; live host compatibility, runtime oracles,
+containment, and calibrated evaluation need their own evidence. Do not conflate a
+merged change, a published release, and a deployed webpage.

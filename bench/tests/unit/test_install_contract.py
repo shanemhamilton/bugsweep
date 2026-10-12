@@ -243,6 +243,8 @@ def test_installer_defaults_to_stable_and_uses_commit_bound_staging() -> None:
     assert 'AGY_SKILLS_DIR' in text
     assert '--agy' in text
     assert 'DO_AGY' in text
+    assert 'INSTALLER_CAPABILITIES="portable-hosts-v1"' in text
+    assert 'selected release does not support portable host installation' in text
     assert 'sparse-checkout' in text
     for development_path in ('AGENTS.md', 'CLAUDE.md', 'GEMINI.md', '.claude', '.metaswarm'):
         assert development_path in text
