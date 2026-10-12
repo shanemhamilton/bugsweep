@@ -54,7 +54,12 @@ teardown() {
     for development_path in AGENTS.md CLAUDE.md GEMINI.md .claude .metaswarm; do
       [ ! -e "$destination/$development_path" ]
     done
-    [ -z "$(git -C "$destination" status --porcelain)" ]
+    if [ "$destination" = "$CODEX_DIR/skills/bugsweep" ]; then
+      # This fixture deliberately preserved the user's only allowed modification.
+      [ "$(git -C "$destination" status --porcelain)" = " M config/bugsweep.config.json" ]
+    else
+      [ -z "$(git -C "$destination" status --porcelain)" ]
+    fi
     [ -n "$(git -C "$destination" rev-parse HEAD)" ]
   done
   [ -z "$(find "$FIXTURE/claude" "$CODEX_DIR" "$FIXTURE/agy" -name '.bugsweep.stage.*' -o -name '.bugsweep.backup.*' -o -name '.bugsweep.install-recovery.json')" ]
