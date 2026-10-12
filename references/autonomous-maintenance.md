@@ -28,7 +28,7 @@ each merge, and never hunting itself), see
 1. Point the scheduler at the installed skill directory so the scripts keep their shared
    `common.sh` dependency:
    ```bash
-   SKILL_ROOT="$HOME/.claude/skills/bugsweep"  # or ~/.codex/skills/bugsweep
+   SKILL_ROOT="/absolute/path/to/the/loaded/bugsweep"  # use the installer result
    ```
 2. Configure the external `required-untrusted` Docker policy and explicit
    `adversarial.hosts` operator model IDs. The default empty hosts map means an unattended
@@ -52,9 +52,9 @@ each merge, and never hunting itself), see
 > remaining action, then remove only this run's exact branch/worktree and read back the
 > result. Do not push, raise caps, or bypass a safety script.
 >
-> 1. Invoke bugsweep in autonomous mode with a high severity floor. In interactive Claude
->    Code that is `/bugsweep --autonomous --severity high`; in headless `-p` mode, request
->    it in natural language (slash skills aren't available there) — e.g. "run an unattended
+> 1. Invoke bugsweep in autonomous mode with a high severity floor. In an interactive host
+>    with slash skills that is `/bugsweep --autonomous --severity high`; in headless mode, request
+>    it in natural language (do not depend on slash expansion) — e.g. "run an unattended
 >    autonomous bug-hunt-and-fix audit, high severity only." Let bugsweep's coverage-first
 >    state set the file order; in hunting, prioritize high-risk backend/runtime paths first,
 >    then iOS, then frontend.
@@ -130,20 +130,16 @@ TARGET_BRANCH=<branch>
 
 ## Scheduling
 
-In headless mode, drive it with Claude Code's print flag and grant the tools the run needs:
+Use the host-specific entrypoint and permission setup in [host adaptation](hosts.md):
+Claude Code, Codex, and AGY all follow the same maintenance prompt and evidence gates.
+Supply the actual installed skill path and target working directory. Use native task
+scheduling when available, or an operator-owned scheduler that invokes the host CLI.
+No Metaswarm workflow is required.
 
-```bash
-claude -p "$(cat maintenance-prompt.txt)" \
-  --allowedTools "Bash,Read,Edit" \
-  --permission-mode acceptEdits
-```
-
-Wrap that in `cron`/`launchd` (one invocation per repo, each run from a clean checkout).
-To stop two cycles overlapping on the same repo, serialize them with a lock, e.g.
-`flock -n /tmp/bugsweep-<repo>.lock claude -p ...` — `flock` exits without running if the
-previous cycle is still going. Remember: in `-p` mode you describe the task; the bugsweep skill auto-triggers from the
-description rather than from a typed `/bugsweep`. Tune cost/runtime via the caps in
-`config/bugsweep.config.json` rather than instructing the AI to override them.
+Serialize scheduled runs per repository. A scheduler lock must cover the entire host
+process, and a subsequent invocation must reconcile an unfinished recorded run before
+starting another. Tune runtime and cost through the configured caps, not instructions
+to override them. A scheduler or CLI exit alone is not proof of terminal closeout.
 
 ## Lowering risk
 

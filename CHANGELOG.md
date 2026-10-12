@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add AGY installation and active-root updates, modern Codex skill discovery, and
+  shared host guidance for Codex, Claude Code, and Antigravity. Isolated native-review
+  and benchmark adapters remain limited to Claude/Codex pending AGY verification.
+
+### Changed
+
+- Make Metaswarm explicitly optional: contributor planning, review, and self-reflection
+  have self-contained workflows usable from all three hosts.
+- Exclude contributor instruction files and orchestration configuration from managed
+  skill checkouts while preserving source identity and recoverable updates.
+
 ## [0.8.0] - 2026-10-11
 
 ### Changed

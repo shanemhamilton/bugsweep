@@ -2,7 +2,9 @@
 # Commit-bound Bugsweep installer. Staging precedes every activation.
 set -euo pipefail
 REPO_URL="https://github.com/shanemhamilton/bugsweep.git"
-SKILL_NAME=bugsweep; CHANNEL="stable"; VERSION_REF=""; DO_CLAUDE=false; DO_CODEX=false; EXPLICIT=false; JSON=false
+SKILL_NAME=bugsweep
+INSTALLER_CAPABILITIES="portable-hosts-v1"
+CHANNEL="stable"; VERSION_REF=""; DO_CLAUDE=false; DO_CODEX=false; DO_AGY=false; EXPLICIT=false; JSON=false
 RESULTS_FILE=""; RECOVERY_FILE=""; FAILED_HOST=""; FAILED_ROOT=""; RECOVERY_HINT=""; SCRIPT_ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 fail() { if $JSON; then python3 "$SCRIPT_ROOT/scripts/installer_helper.py" failure-json "$RESULTS_FILE" "$RECOVERY_FILE" "$FAILED_HOST" "$FAILED_ROOT" "$CHANNEL" "${SELECTED_TAG:-}" "${EXPECTED_COMMIT:-}" "$RECOVERY_HINT" "$1"; else printf 'bugsweep installer: %s\n' "$1" >&2; fi; exit 1; }
@@ -44,7 +46,7 @@ select_source() {
   case "$EXPECTED_COMMIT" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]* );; *) fail "remote did not provide an expected commit";; esac
 }
 validate_stage() {
-  local stage="$1" required actual
+  local stage="$1" host="${2:-}" legacy_root="${3:-}" required actual
   for required in SKILL.md VERSION install.sh scripts scripts/installer_helper.py; do [ -e "$stage/$required" ] || fail "staged install is missing $required"; done
   [ -s "$stage/VERSION" ] || fail "staged install has an empty VERSION"
   if [ "$CHANNEL" != edge ] && [ "$(tr -d '\r\n' < "$stage/VERSION")" != "${SELECTED_TAG#v}" ]; then
@@ -52,15 +54,20 @@ validate_stage() {
   fi
   actual="$(git -C "$stage" rev-parse HEAD)"; [ "$actual" = "$EXPECTED_COMMIT" ] || fail "staged commit does not match expected commit"
   [ ! -f "$stage/config/bugsweep.config.json" ] || python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "$stage/config/bugsweep.config.json" || fail "staged config is invalid JSON"
+  if [ "$host" = agy ] || { [ "$host" = codex ] && [ -z "$legacy_root" ]; }; then
+    grep -Fqx "INSTALLER_CAPABILITIES=\"$INSTALLER_CAPABILITIES\"" "$stage/install.sh" || fail "selected release does not support portable host installation; use --edge or a newer release"
+  fi
 }
 stage_source() {
-  local parent="$1" stage
+  local parent="$1" host="${2:-}" legacy_root="${3:-}" stage
   stage="$(mktemp -d "$parent/.${SKILL_NAME}.stage.XXXXXX")" || fail "could not create sibling staging directory"
   git clone --quiet --no-checkout "$REPO_URL" "$stage" || fail "could not stage source"
   if [ "$CHANNEL" = edge ]; then git -C "$stage" fetch --quiet --depth=1 origin "$EXPECTED_COMMIT" || fail "could not fetch expected edge commit"
   else git -C "$stage" fetch --quiet --depth=1 origin "refs/tags/$SELECTED_TAG:refs/tags/$SELECTED_TAG" || fail "could not fetch expected release tag"; fi
   git -C "$stage" checkout --quiet --detach "$EXPECTED_COMMIT" || fail "could not check out expected commit"
-  validate_stage "$stage"
+  git -C "$stage" sparse-checkout init --no-cone || fail "could not initialize sparse staging"
+  git -C "$stage" sparse-checkout set '/*' '!/**/AGENTS.md' '!/**/CLAUDE.md' '!/**/GEMINI.md' '!/.claude/' '!/.metaswarm/' || fail "could not exclude development files from staged install"
+  validate_stage "$stage" "$host" "$legacy_root"
   printf '\n/install-metadata.json\n' >> "$stage/.git/info/exclude"
   printf '%s\n' "$stage"
 }
@@ -81,10 +88,10 @@ EOF
   [ -z "$CONFIG_SOURCE" ] || [ -f "$CONFIG_SOURCE" ] || fail "custom config is not a regular file"
 }
 write_metadata() {
-  python3 - "$1/install-metadata.json" "$2" "$1" "$CHANNEL" "$SELECTED_TAG" "$EXPECTED_COMMIT" "$(tr -d '\r\n' < "$1/VERSION")" <<'PY'
+  python3 - "$1/install-metadata.json" "$2" "$1" "$3" "$4" "$CHANNEL" "$SELECTED_TAG" "$EXPECTED_COMMIT" "$(tr -d '\r\n' < "$1/VERSION")" <<'PY'
 import json,os,sys,tempfile
-path,host,root,channel,tag,commit,version=sys.argv[1:]
-data={"schema_version":1,"host":host,"root":os.path.realpath(root),"canonical_root":os.path.realpath(root),"selected_channel":channel,"tag":tag,"commit":commit,"version":version}
+path,host,root,skills_root,legacy_root,channel,tag,commit,version=sys.argv[1:]
+data={"schema_version":1,"host":host,"root":os.path.realpath(root),"canonical_root":os.path.realpath(root),"skills_root":os.path.realpath(skills_root),"legacy_root":os.path.realpath(legacy_root) if legacy_root else None,"selected_channel":channel,"tag":tag,"commit":commit,"version":version}
 fd,tmp=tempfile.mkstemp(prefix=".install-metadata.",dir=os.path.dirname(path))
 with os.fdopen(fd,"w") as f: json.dump(data,f,sort_keys=True);f.write("\n");f.flush();os.fsync(f.fileno())
 os.replace(tmp,path)
@@ -123,24 +130,24 @@ PY
     python3 "$SCRIPT_ROOT/scripts/installer_helper.py" write-transaction "$journal"
 }
 install_host() {
-  local host="$1" dest="$2" codex_root="${3:-}" parent stage backup journal registration_backup="" instructions="" instructions_existed=false original_exists=false
-  if [ "$host" = codex ]; then mkdir -p "$codex_root"; codex_root="$(CDPATH='' cd -- "$codex_root" && pwd -P)"; dest="$codex_root/skills/$SKILL_NAME"; fi
+  local host="$1" dest="$2" skills_root="$3" legacy_root="${4:-}" parent stage backup journal registration_backup="" instructions="" instructions_existed=false original_exists=false registration_root=""
+  if [ "$host" = codex ] && [ -n "$legacy_root" ]; then registration_root="$legacy_root"; fi
   parent="$(dirname "$dest")"; mkdir -p "$parent"; parent="$(CDPATH='' cd -- "$parent" && pwd -P)"; dest="$parent/$SKILL_NAME"
   FAILED_HOST="$host"; FAILED_ROOT="$dest"; RECOVERY_HINT=""
-  recover_pending "$dest"; assert_clean_existing "$dest"; stage="$(stage_source "$parent")"
-  if [ -n "$CONFIG_SOURCE" ]; then python3 "$SCRIPT_ROOT/scripts/installer_helper.py" copy-config "$CONFIG_SOURCE" "$stage/config/bugsweep.config.json" || fail "custom config is invalid"; validate_stage "$stage"; fi
+  recover_pending "$dest"; assert_clean_existing "$dest"; stage="$(stage_source "$parent" "$host" "$legacy_root")"
+  if [ -n "$CONFIG_SOURCE" ]; then python3 "$SCRIPT_ROOT/scripts/installer_helper.py" copy-config "$CONFIG_SOURCE" "$stage/config/bugsweep.config.json" || fail "custom config is invalid"; validate_stage "$stage" "$host" "$legacy_root"; fi
   [ -e "$dest" ] && original_exists=true
   backup="$parent/.${SKILL_NAME}.backup.$$"; journal="$parent/.${SKILL_NAME}.install-recovery.json"; RECOVERY_HINT="$journal"
-  if [ "$host" = codex ]; then instructions="$codex_root/instructions.md"; [ -f "$instructions" ] && instructions_existed=true; registration_backup="$codex_root/.instructions.bugsweep.backup.$$"; fi
+  if [ "$host" = codex ] && [ -n "$legacy_root" ]; then instructions="$registration_root/instructions.md"; [ -f "$instructions" ] && instructions_existed=true; registration_backup="$registration_root/.instructions.bugsweep.backup.$$"; fi
   [ ! -e "$journal" ] || fail "recovery journal already exists: $journal"
   write_journal "$journal" "$dest" "$stage" "$backup" "$original_exists" "$instructions" "$instructions_existed" "$registration_backup" || fail "could not write recovery journal"
   if $original_exists; then [ ! -e "$backup" ] || fail "recovery backup exists: $backup"; mv "$dest" "$backup"; fi
   if ! mv "$stage" "$dest"; then fail "activation interrupted; recover with the exact journal $journal"; fi
-  if [ "$host" = codex ]; then
+  if [ "$host" = codex ] && [ -n "$legacy_root" ]; then
     if $instructions_existed; then cp "$instructions" "$registration_backup"; fi
-    if ! replace_registration "$codex_root" "$dest"; then fail "registration interrupted; recover with the exact journal $journal"; fi
+    if ! replace_registration "$registration_root" "$dest"; then fail "registration interrupted; recover with the exact journal $journal"; fi
   fi
-  if ! write_metadata "$dest" "$host"; then
+  if ! write_metadata "$dest" "$host" "$skills_root" "$legacy_root"; then
     fail "metadata write failed; recover with the exact journal $journal"
   fi
   python3 "$SCRIPT_ROOT/scripts/installer_helper.py" commit "$journal" || fail "could not commit transaction journal: $journal"
@@ -148,14 +155,46 @@ install_host() {
 }
 
 while [ "$#" -gt 0 ]; do case "$1" in
-  --claude) DO_CLAUDE=true;EXPLICIT=true;; --codex) DO_CODEX=true;EXPLICIT=true;; --all) DO_CLAUDE=true;DO_CODEX=true;EXPLICIT=true;;
+  --claude) DO_CLAUDE=true;EXPLICIT=true;; --codex) DO_CODEX=true;EXPLICIT=true;; --agy) DO_AGY=true;EXPLICIT=true;; --all) DO_CLAUDE=true;DO_CODEX=true;DO_AGY=true;EXPLICIT=true;;
   --edge) [ -z "$VERSION_REF" ] || fail "--edge cannot be combined with --version"; CHANNEL=edge;;
   --version) shift; [ "$#" -gt 0 ] || fail "--version requires an exact release tag"; [ "$CHANNEL" = stable ] || fail "--version cannot be combined with --edge"; VERSION_REF="$1";CHANNEL=exact;;
   --version=*) [ "$CHANNEL" = stable ] || fail "--version cannot be combined with --edge";VERSION_REF="${1#*=}";[ -n "$VERSION_REF" ]||fail "--version requires an exact release tag";CHANNEL=exact;;
-  --json) JSON=true;; --update) :;; --help|-h) printf '%s\n' 'usage: install.sh [--claude|--codex|--all] [--edge|--version TAG] [--json]' 'requires Python 3.12+ and jsonschema==4.26.0; this installer does not install dependencies';exit 0;; *) fail "unknown flag: $1";; esac; shift; done
+  --json) JSON=true;; --update) :;; --help|-h) printf '%s\n' 'usage: install.sh [--claude|--codex|--agy|--all] [--edge|--version TAG] [--json]' 'requires Python 3.12+ and jsonschema==4.26.0; this installer does not install dependencies';exit 0;; *) fail "unknown flag: $1";; esac; shift; done
 require git; require python3; RESULTS_FILE="$(mktemp "${TMPDIR:-/tmp}/bugsweep-install-results.XXXXXX")" || fail "could not create result file"; RECOVERY_FILE="$(mktemp "${TMPDIR:-/tmp}/bugsweep-install-recovery.XXXXXX")" || fail "could not create recovery result file"; trap 'rm -f "$RESULTS_FILE" "$RECOVERY_FILE"' EXIT; require_runtime_dependencies
-claude_root="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"; codex_root="${CODEX_DIR:-$HOME/.codex}"; valid_root "$claude_root";valid_root "$codex_root"
-if ! $EXPLICIT; then { [ -n "${CLAUDE_SKILLS_DIR:-}" ] || [ -d "$HOME/.claude" ]; } && DO_CLAUDE=true; { [ -n "${CODEX_DIR:-}" ] || [ -d "$HOME/.codex" ]; } && DO_CODEX=true; fi
-$DO_CLAUDE || $DO_CODEX || fail "no Claude or Codex root detected; use --claude, --codex, or --all"
-select_source; $DO_CLAUDE && install_host claude "$claude_root/$SKILL_NAME"; $DO_CODEX && install_host codex "$codex_root/skills/$SKILL_NAME" "$codex_root"
+claude_root="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+if [ -n "${AGY_SKILLS_DIR:-}" ]; then
+  agy_root="$AGY_SKILLS_DIR"
+elif [ -d "$HOME/.gemini/antigravity-cli" ]; then
+  agy_root="$HOME/.gemini/antigravity-cli/skills"
+elif [ -d "$HOME/.gemini/config/skills" ]; then
+  agy_root="$HOME/.gemini/config/skills"
+else
+  agy_root="$HOME/.gemini/antigravity-cli/skills"
+fi
+codex_legacy_root=""; codex_skills_root=""
+if [ -n "${CODEX_DIR:-}" ]; then
+  codex_legacy_root="$CODEX_DIR"; codex_skills_root="$codex_legacy_root/skills"
+elif [ -n "${CODEX_SKILLS_DIR:-}" ]; then
+  codex_skills_root="$CODEX_SKILLS_DIR"
+elif [ -d "$HOME/.codex/skills/$SKILL_NAME" ] && { [ -f "$HOME/.codex/skills/$SKILL_NAME/install-metadata.json" ] || { [ -f "$HOME/.codex/instructions.md" ] && grep -qF '<!-- bugsweep-skill -->' "$HOME/.codex/instructions.md"; }; }; then
+  codex_legacy_root="$HOME/.codex"; codex_skills_root="$codex_legacy_root/skills"
+else
+  codex_skills_root="$HOME/.agents/skills"
+fi
+if ! $EXPLICIT; then
+  { [ -n "${CLAUDE_SKILLS_DIR:-}" ] || [ -d "$HOME/.claude" ]; } && DO_CLAUDE=true
+  { [ -n "${CODEX_DIR:-}" ] || [ -n "${CODEX_SKILLS_DIR:-}" ] || [ -d "$HOME/.codex" ] || [ -d "$HOME/.agents" ]; } && DO_CODEX=true
+  { [ -n "${AGY_SKILLS_DIR:-}" ] || [ -d "$HOME/.gemini/antigravity-cli" ] || [ -d "$HOME/.gemini/config/skills" ]; } && DO_AGY=true
+fi
+if $DO_CODEX; then
+  if [ -n "${CODEX_DIR:-}" ] && [ -n "${CODEX_SKILLS_DIR:-}" ]; then fail "CODEX_DIR and CODEX_SKILLS_DIR cannot both be configured"; fi
+  valid_root "$codex_skills_root"; [ -z "$codex_legacy_root" ] || valid_root "$codex_legacy_root"
+fi
+$DO_CLAUDE && valid_root "$claude_root"
+$DO_AGY && valid_root "$agy_root"
+$DO_CLAUDE || $DO_CODEX || $DO_AGY || fail "no Claude, Codex, or Antigravity root detected; use --claude, --codex, --agy, or --all"
+select_source
+$DO_CLAUDE && install_host claude "$claude_root/$SKILL_NAME" "$claude_root"
+$DO_CODEX && install_host codex "$codex_skills_root/$SKILL_NAME" "$codex_skills_root" "$codex_legacy_root"
+$DO_AGY && install_host agy "$agy_root/$SKILL_NAME" "$agy_root"
 if $JSON; then emit_json; else printf 'bugsweep installed from %s (%s)\n' "$SELECTED_TAG" "$EXPECTED_COMMIT"; fi
