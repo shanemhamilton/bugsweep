@@ -11,7 +11,17 @@
   run grep -F 'CODEX_DIR' "$installer"
   [ "$status" -eq 0 ]
   run grep -F 'CODEX_SKILLS_DIR' "$installer"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+  run grep -F 'AGY_SKILLS_DIR' "$installer"
+  [ "$status" -eq 0 ]
+  run grep -F -- '--agy' "$installer"
+  [ "$status" -eq 0 ]
+  run grep -F 'sparse-checkout' "$installer"
+  [ "$status" -eq 0 ]
+  for development_path in AGENTS.md CLAUDE.md GEMINI.md .claude .metaswarm; do
+    run grep -F "$development_path" "$installer"
+    [ "$status" -eq 0 ]
+  done
 }
 
 @test "quality workflow pins actions and does not expose pull request secrets" {

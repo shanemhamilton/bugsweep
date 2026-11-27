@@ -1,3 +1,8 @@
-<!-- Created by metaswarm setup. Routes to the metaswarm plugin. Safe to delete if you uninstall metaswarm. -->
+# pr-shepherd
 
-Invoke the `/metaswarm:pr-shepherd` skill to handle this request. Pass along any arguments the user provided.
+Read the repository's canonical `AGENTS.md` and follow its **Shepherd a pull request** section
+for the user's request. This command works without plugins.
+
+Only when the user explicitly selects Metaswarm and that plugin is available, its
+`/metaswarm:pr-shepherd` command may be used instead, preserving the same task scope
+and verification requirements. Otherwise complete the portable workflow directly.

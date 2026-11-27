@@ -1,6 +1,6 @@
 # Contributing to Bugsweep
 
-Bugsweep combines Claude/Codex instructions with deterministic Bash and Python helpers.
+Bugsweep combines host-neutral instructions for Codex, Claude Code, and Google Antigravity (AGY) with deterministic Bash and Python helpers.
 Keep changes narrow and verify the observable behavior, especially across producer and
 consumer boundaries. Read [SERVICE-INVENTORY.md](SERVICE-INVENTORY.md) before adding a
 helper; reuse the execution provider, canonical serialization and proof validators.
@@ -9,6 +9,14 @@ The model investigates and proposes edits. Coordinator code owns execution, immu
 evidence and exact resource cleanup. Target commands must not execute in a host-shell
 fallback. Preserve unrelated files and the user's checkout; no prefix-based deletion,
 remote mutation or fabricated evidence.
+
+## Agent workflows
+
+[AGENTS.md](AGENTS.md) defines the complete contributor workflow, including reflection
+and PR review. Claude and AGY instruction files point to it. Metaswarm is optional
+and used only when explicitly selected; no plugin is needed to contribute or run the
+skill. Development instructions and plugin configuration are excluded from managed
+skill installations.
 
 ## Local checks
 

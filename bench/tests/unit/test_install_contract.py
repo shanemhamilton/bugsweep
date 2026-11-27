@@ -239,7 +239,29 @@ def test_installer_defaults_to_stable_and_uses_commit_bound_staging() -> None:
     assert 'install-metadata.json' in text
     assert 'CLAUDE_SKILLS_DIR' in text
     assert 'CODEX_DIR' in text
-    assert 'CODEX_SKILLS_DIR' not in text
+    assert 'CODEX_SKILLS_DIR' in text
+    assert 'AGY_SKILLS_DIR' in text
+    assert '--agy' in text
+    assert 'DO_AGY' in text
+    assert 'INSTALLER_CAPABILITIES="portable-hosts-v1"' in text
+    assert 'selected release does not support portable host installation' in text
+    assert 'sparse-checkout' in text
+    for development_path in ('AGENTS.md', 'CLAUDE.md', 'GEMINI.md', '.claude', '.metaswarm'):
+        assert development_path in text
+
+
+def test_installer_keeps_modern_codex_and_legacy_roots_distinct() -> None:
+    text = (ROOT / 'install.sh').read_text(encoding='utf-8')
+    updater = (ROOT / 'scripts' / 'update-install.sh').read_text(encoding='utf-8')
+
+    assert '"$HOME/.agents/skills"' in text
+    assert '"$HOME/.codex"' in text
+    assert 'CODEX_SKILLS_DIR' in text
+    assert 'CODEX_DIR' in text
+    assert 'skills_root' in text
+    assert 'host_root' in text or 'legacy_root' in text
+    assert 'CODEX_SKILLS_DIR' in updater
+    assert 'AGY_SKILLS_DIR' in updater
 
 
 def test_runtime_dependency_is_declared_and_checked_before_staging() -> None:
@@ -265,6 +287,7 @@ def test_updater_is_bound_to_its_own_metadata_root() -> None:
     assert "ACTIVE_ROOT" in text
     assert "canonical_root" in text
     assert "--all" in text
+    assert '"agy"' in text
 
 
 def test_quality_gate_is_session_pure_and_requires_real_evidence() -> None:
