@@ -280,7 +280,9 @@ try:
     from scripts._proof import validate_fix_proof, validate_fix_reverification, validate_suite_receipt
     from scripts._review_evidence import validate_review_set
     from scripts._execution import _capture_source_files
+    from scripts._terminal_lifecycle import _require_preflight_scope
     import jsonschema
+    _require_preflight_scope(run)
     def no_duplicate_object(pairs):
         value = {}
         for key, item in pairs:
@@ -293,7 +295,7 @@ try:
     sources = strict_object(run / "source-digests.json")
     if not isinstance(sources, dict):
         raise ValueError("source digest manifest is not an object")
-    if _capture_source_files(source_root, allow_symlinks=False) != sources:
+    if _capture_source_files(source_root, allow_symlinks=True) != sources:
         raise ValueError("source manifest does not match complete final checkout")
     source_sha256 = hashlib.sha256(json.dumps(sources, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
     summary = strict_object(run / "run-summary.json")

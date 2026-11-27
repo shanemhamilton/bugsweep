@@ -284,10 +284,17 @@ def reconcile_closeout(run_dir: Path, state: dict[str, str]) -> dict[str, Any]:
     return marker
 
 
+def _require_preflight_scope(run_dir: Path) -> None:
+    if os.path.lexists(run_dir / ".preflight-incomplete"):
+        raise LifecycleError("preflight setup incomplete")
+    _regular(run_dir / "scope-files.txt")
+
+
 def read_run_status(run_dir: Path, state: dict[str, str] | None = None) -> dict[str, Any]:
     try:
         run_dir = _run_dir(run_dir)
         state = load_state(run_dir / "state.env") if state is None else state
+        _require_preflight_scope(run_dir)
         marker = reconcile_closeout(run_dir, state)
     except (LifecycleError, OSError, UnicodeError) as error:
         return {"status": "invalid", "reason": str(error), "exit_code": 2}

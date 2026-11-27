@@ -297,3 +297,57 @@ def test_frozen_target_requires_plan_and_policy_roots_to_match(tmp_path: Path) -
         module._frozen_target_root(
             {"target_root": str(first), "execution_policy": {"target_root": str(second)}}
         )
+
+
+def test_extract_archive_and_verify_index_support_canonical_internal_symlinks(tmp_path: Path) -> None:
+    module = _load_module()
+    source_tar = tmp_path / "source.tar"
+    destination = tmp_path / "projection"
+    destination.mkdir()
+    _archive(
+        source_tar,
+        [
+            ("CLAUDE.md", b"AGENTS.md", 0o777, "symlink"),
+            ("AGENTS.md", b"# Agents\n", 0o644, "file"),
+            ("docs", b"", 0o755, "directory"),
+            ("docs/guide.md", b"../AGENTS.md", 0o777, "symlink"),
+        ],
+    )
+
+    files, modes = module._extract_archive(source_tar, destination)
+    assert files == {"AGENTS.md": hashlib.sha256(b"# Agents\n").hexdigest()}
+    assert modes == {"AGENTS.md": "100644"}
+    assert (destination / "CLAUDE.md").is_symlink()
+
+    index_path = tmp_path / "index.nul"
+    agents_blob = module._git_blob_id(b"# Agents\n", 40)
+    claude_blob = module._git_blob_id(b"AGENTS.md", 40)
+    guide_blob = module._git_blob_id(b"../AGENTS.md", 40)
+    index_path.write_bytes(
+        f"100644 {agents_blob} 0\tAGENTS.md\x00"
+        f"120000 {claude_blob} 0\tCLAUDE.md\x00"
+        f"120000 {guide_blob} 0\tdocs/guide.md\x00".encode("utf-8")
+    )
+    parsed = module._parse_index(index_path)
+    module._verify_index(destination, files, modes, parsed)
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [("abs", b"/etc/passwd", 0o777, "symlink"), ("a.txt", b"x", 0o644, "file")],
+        [("broken", b"missing.md", 0o777, "symlink"), ("a.txt", b"x", 0o644, "file")],
+        [("a", b"b", 0o777, "symlink"), ("b", b"a", 0o777, "symlink"), ("a.txt", b"x", 0o644, "file")],
+        [("sub", b"real", 0o777, "symlink"), ("sub/pwn", b"x", 0o644, "file")],
+    ],
+)
+def test_extract_archive_rejects_unsafe_symlinks_and_symlink_parent_traversal(
+    tmp_path: Path, entries: list[tuple[str, bytes, int, str]]
+) -> None:
+    module = _load_module()
+    source_tar = tmp_path / "unsafe.tar"
+    destination = tmp_path / "projection"
+    destination.mkdir()
+    _archive(source_tar, entries)
+    with pytest.raises(ValueError):
+        module._extract_archive(source_tar, destination)

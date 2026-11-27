@@ -47,6 +47,14 @@ case "$report_is_stub" in
   *) die "usage: summarize.sh <RUN_DIR> <REPORT_IS_STUB: true|false> [MODE] [--recall]" ;;
 esac
 
+# Fail closed: a run without complete preflight setup and a non-empty regular
+# frozen scope inventory can never report status "complete".
+_bugsweep_scope_reason="$(_bsw_preflight_incomplete_reason "$run_dir")"
+if [ -n "$_bugsweep_scope_reason" ] && [ "$report_is_stub" = "false" ]; then
+  log "WARNING: ${_bugsweep_scope_reason}; refusing complete status."
+  report_is_stub="true"
+fi
+
 # --recall (bugsweep-dxh): gates ONLY whether run-summary.json's near_misses[]
 # is populated from near_miss ledger events (Referee-recorded, confidence
 # 50-67 — see bench/scorer/run_summary.py's reduce_run 'recall' param). It can

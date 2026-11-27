@@ -36,6 +36,7 @@ def _state(run: Path) -> dict[str, str]:
 def test_closeout_is_monotonic_and_receipt_is_last(tmp_path: Path) -> None:
     run = tmp_path / "run"
     run.mkdir()
+    (run / "scope-files.txt").write_text("app.py\n", encoding="utf-8")
     state = _state(run)
     initialize_closeout(run, state, "PENDING_CLOSEOUT")
 
@@ -57,6 +58,7 @@ def test_completed_status_requires_exact_absence_and_rejects_replay(tmp_path: Pa
     from scripts._terminal_lifecycle import record_absence_observation
 
     run = tmp_path / "run"; run.mkdir()
+    (run / "scope-files.txt").write_text("app.py\n", encoding="utf-8")
     state = _state(run)
     initialize_closeout(run, state, "PENDING_CLOSEOUT")
     for stage in ("READY_FOR_CLEANUP", "WORKTREE_REMOVED", "BRANCH_REMOVED", "RECEIPT_PENDING"):
@@ -86,6 +88,7 @@ def test_completed_status_requires_exact_absence_and_rejects_replay(tmp_path: Pa
 
 def test_receipt_pending_recovers_and_bad_utf8_or_schema_is_invalid(tmp_path: Path) -> None:
     run = tmp_path / "run"; run.mkdir()
+    (run / "scope-files.txt").write_text("app.py\n", encoding="utf-8")
     state = _state(run)
     initialize_closeout(run, state, "PENDING_CLOSEOUT")
     for stage in ("READY_FOR_CLEANUP", "WORKTREE_REMOVED", "BRANCH_REMOVED", "RECEIPT_PENDING"):
@@ -102,6 +105,7 @@ def test_receipt_pending_recovers_and_bad_utf8_or_schema_is_invalid(tmp_path: Pa
 
 def test_missing_worktree_key_is_invalid_but_empty_is_allowed(tmp_path: Path) -> None:
     run = tmp_path / "run"; run.mkdir()
+    (run / "scope-files.txt").write_text("app.py\n", encoding="utf-8")
     state = _state(run)
     state["BUGSWEEP_WORKTREE"] = ""
     initialize_closeout(run, state, "PENDING_CLOSEOUT")
@@ -114,6 +118,7 @@ def test_missing_worktree_key_is_invalid_but_empty_is_allowed(tmp_path: Path) ->
 
 def test_preflight_state_accepts_source_bindings_and_rejects_unknown_keys(tmp_path: Path) -> None:
     run = tmp_path / "run"; run.mkdir()
+    (run / "scope-files.txt").write_text("app.py\n", encoding="utf-8")
     state = _state(run)
     initialize_closeout(run, state, "PENDING_CLOSEOUT")
     state_path = run / "state.env"
@@ -145,6 +150,7 @@ def test_preflight_state_accepts_source_bindings_and_rejects_unknown_keys(tmp_pa
 def test_run_directory_identity_accepts_an_absolute_symlink_alias(tmp_path: Path) -> None:
     real_run = tmp_path / "real-run"
     real_run.mkdir()
+    (real_run / "scope-files.txt").write_text("app.py\n", encoding="utf-8")
     alias = tmp_path / "run-alias"
     alias.symlink_to(real_run, target_is_directory=True)
     state = _state(real_run)
@@ -181,3 +187,35 @@ def test_state_and_marker_tampering_fails_closed(tmp_path: Path) -> None:
     invalid = read_run_status(run)
     assert invalid["exit_code"] == 2
     assert "duplicate" in invalid["reason"]
+
+
+def test_read_run_status_rejects_missing_scope_or_incomplete_preflight(tmp_path: Path) -> None:
+    from scripts._terminal_lifecycle import record_absence_observation
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "scope-files.txt").write_text("app.py\n", encoding="utf-8")
+    state = _state(run)
+    initialize_closeout(run, state, "PENDING_CLOSEOUT")
+    for stage in ("READY_FOR_CLEANUP", "WORKTREE_REMOVED", "BRANCH_REMOVED", "RECEIPT_PENDING"):
+        advance_closeout(run, state, stage)
+    write_terminal_receipt(run, state, "COMPLETED_RECORDED")
+    record_absence_observation(run, state)
+    assert read_run_status(run, state)["status"] == "verified_completed"
+
+    (run / "scope-files.txt").unlink()
+    missing = read_run_status(run, state)
+    assert missing["status"] == "invalid"
+    assert missing["exit_code"] == 2
+
+    (run / "scope-files.txt").symlink_to(tmp_path / "elsewhere")
+    symlinked = read_run_status(run, state)
+    assert symlinked["status"] == "invalid"
+    assert symlinked["exit_code"] == 2
+    (run / "scope-files.txt").unlink()
+
+    (run / "scope-files.txt").write_text("app.py\n", encoding="utf-8")
+    (run / ".preflight-incomplete").write_text("stage=setup\n", encoding="utf-8")
+    incomplete = read_run_status(run, state)
+    assert incomplete["status"] == "invalid"
+    assert incomplete["exit_code"] == 2

@@ -82,8 +82,8 @@ def snapshot(target, files):
     for relative in files:
         _relative(relative)
     # Share the provider's complete inventory: new files and deletions must be
-    # visible, and a checkout containing repository metadata cannot be mounted.
-    return _capture_source_files(target, allow_symlinks=False)
+    # visible, canonical internal symlinks are validated, and checkout metadata cannot be mounted.
+    return _capture_source_files(target, allow_symlinks=True)
 
 
 def _checks(target, config):

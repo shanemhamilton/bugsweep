@@ -69,6 +69,8 @@ _report_content_looks_like_stub() {
     | grep -q '^\*\*WARNING: INCOMPLETE RUN\*\*'
 }
 
+_bugsweep_preflight_incomplete_reason="$(_bsw_preflight_incomplete_reason "$run_dir")"
+
 # Emit a stub report when report.md was never written (silent-failure backstop).
 # A large-repo run may stall during context-build or the architectural hunt before
 # the model ever reaches the report template. This backstop ensures the user always
@@ -82,8 +84,9 @@ _emit_stub_report() {
     # stale — clear it so classification isn't pinned to a superseded stub.
     # An unrelated RETRIED finalize on an UNCHANGED stub must keep the
     # sentinel (and keep classifying stalled) — only clear when the content
-    # actually changed underneath it.
-    if [ -f "${run_dir}/.report-is-stub" ] && ! _report_content_looks_like_stub; then
+    # actually changed underneath it. Never clear when preflight scope is
+    # missing/incomplete.
+    if [ -z "$_bugsweep_preflight_incomplete_reason" ] && [ -f "${run_dir}/.report-is-stub" ] && ! _report_content_looks_like_stub; then
       rm -f "${run_dir}/.report-is-stub" 2>/dev/null || true
     fi
     return 0                            # real report exists — do not overwrite
@@ -186,7 +189,12 @@ _emit_stub_report
 #      BEFORE the script-appended '## Findings (machine-readable)' heading —
 #      see _report_content_looks_like_stub.
 _bugsweep_report_was_stub=false
-if [ -f "${run_dir}/.report-is-stub" ]; then
+if [ -n "$_bugsweep_preflight_incomplete_reason" ]; then
+  rm -f "${run_dir}/.report-is-real" 2>/dev/null || true
+  : > "${run_dir}/.report-is-stub"
+  _bugsweep_report_was_stub=true
+  log "WARNING: ${_bugsweep_preflight_incomplete_reason} — run cannot be marked complete."
+elif [ -f "${run_dir}/.report-is-stub" ]; then
   _bugsweep_report_was_stub=true
 elif [ -f "${run_dir}/.report-is-real" ]; then
   _bugsweep_report_was_stub=false

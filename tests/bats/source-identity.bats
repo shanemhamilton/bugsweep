@@ -233,3 +233,47 @@ PY
   env BUGSWEEP_TARGET_ROOT="$REPO" BUGSWEEP_RUN_DIR="$run_dir" bash "$CONCLUSIONS_SH" prime "$run_dir" >/dev/null
   grep -qx 'src/app.py' "${run_dir}/reopened-conclusions.txt"
 }
+
+@test "worktree preflight prepares execution cleanly when repo contains canonical internal symlinks" {
+  printf '%s\n' '# Canonical agents' > "${REPO}/AGENTS.md"
+  ln -s "AGENTS.md" "${REPO}/CLAUDE.md"
+  ln -s "AGENTS.md" "${REPO}/GEMINI.md"
+  git -C "$REPO" add AGENTS.md CLAUDE.md GEMINI.md
+  git -C "$REPO" commit -qm "add canonical symlinks"
+
+  run bash "$PREFLIGHT_SH" --worktree
+  [ "$status" -eq 0 ]
+  local run_dir wt
+  run_dir="$(printf '%s\n' "$output" | sed -n 's/^RUN_DIR=//p')"
+  wt="$(printf '%s\n' "$output" | sed -n 's/^WORKTREE=//p')"
+  [ -f "${run_dir}/source-digests.json" ]
+  [ -f "${run_dir}/execution-preparation.json" ]
+  [ -L "${wt}/CLAUDE.md" ]
+  python3 - "${run_dir}/source-digests.json" "${run_dir}/execution-preparation-result.json" <<'PY'
+import json, sys
+digests = json.load(open(sys.argv[1]))
+prep = json.load(open(sys.argv[2]))
+assert "AGENTS.md" in digests
+assert "src/app.py" in digests
+assert prep == {"available": False, "reason": "external_execution_policy_not_configured"}
+PY
+}
+
+@test "execution preparation fails closed when worktree contains an escaping symlink" {
+  printf '%s\n' 'outside secret' > "${BATS_TMP}/outside.txt"
+  ln -s "../outside.txt" "${REPO}/escape.txt"
+  git -C "$REPO" add escape.txt
+  git -C "$REPO" commit -qm "add escaping symlink"
+
+  run bash "$PREFLIGHT_SH" --worktree
+  [ "$status" -eq 0 ]
+  local run_dir
+  run_dir="$(printf '%s\n' "$output" | sed -n 's/^RUN_DIR=//p')"
+  [ ! -f "${run_dir}/source-digests.json" ]
+  python3 - "${run_dir}/execution-preparation-result.json" <<'PY'
+import json, sys
+prep = json.load(open(sys.argv[1]))
+assert prep["available"] is False
+assert "symlink escapes" in prep["error"]
+PY
+}

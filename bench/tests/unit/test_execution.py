@@ -1151,3 +1151,56 @@ def test_cli_runs_argv_and_emits_only_the_receipt(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout)["command"][-1] == "print('cli')"
     assert (output / "stdout.log").read_text(encoding="utf-8") == "cli\n"
+
+
+def test_internal_symlinks_allowed_in_worktree_rw_and_blocked_in_archive_ro(tmp_path: Path) -> None:
+    module = _load_module()
+    target = tmp_path / "target"
+    scratch = tmp_path / "scratch"
+    authority = tmp_path / "authority"
+    (target / "docs").mkdir(parents=True)
+    scratch.mkdir()
+    authority.mkdir()
+    policy = _native_policy(target, scratch)
+    (target / "CLAUDE.md").symlink_to("source.txt")
+    (target / "GEMINI.md").symlink_to("CLAUDE.md")
+    (target / "docs" / "guide.md").symlink_to("../source.txt")
+
+    receipt = module.run_command(
+        [str(Path(sys.executable).resolve(strict=True)), "-c", "print('ok')"],
+        target,
+        authority / "invocation",
+        time.time() + 5,
+        policy,
+        {},
+        (),
+    )
+    assert receipt["exit_code"] == 0
+    assert module._capture_source_files(target, allow_symlinks=True) == policy["source_identity"]["source_file_sha256"]
+
+    # archive-ro mode still rejects symlinks strictly (provider isolation preserved).
+    with pytest.raises(ValueError, match="archive source contains a symbolic link"):
+        module._verify_source_identity(
+            target,
+            policy["source_identity"],
+            source_mount_mode="archive-ro",
+        )
+
+    # Modifying an allowed internal symlink target invalidates _mount_inventory while broken/escaping fail closed.
+    before_inventory = module._mount_inventory(target)
+    (target / "broken").symlink_to("does-not-exist")
+    with pytest.raises(ValueError, match="broken symlink"):
+        module._capture_source_files(target, allow_symlinks=True)
+    with pytest.raises(ValueError, match="broken symlink"):
+        module._mount_inventory(target)
+    (target / "broken").unlink()
+
+    (target / "CLAUDE.md").unlink()
+    (target / "CLAUDE.md").symlink_to("docs/guide.md")
+    assert module._mount_inventory(target) != before_inventory
+
+    (target / "escape").symlink_to("../outside")
+    with pytest.raises(ValueError, match="symlink escapes"):
+        module._capture_source_files(target, allow_symlinks=True)
+    with pytest.raises(ValueError, match="symlink escapes"):
+        module._mount_inventory(target)

@@ -118,3 +118,78 @@ def test_run_provenance_freezes_installed_helpers_and_effective_config(tmp_path,
     assert state["run_provenance_sha256"] == hashlib.sha256(raw).hexdigest()
     helper.write_text("changed\n"); config.write_text('{"changed":true}')
     assert (run / "run-provenance.json").read_bytes() == raw
+
+
+def test_prepare_allows_canonical_internal_symlinks_end_to_end(tmp_path):
+    target, run = tmp_path / "target", tmp_path / "authority"
+    (target / "docs").mkdir(parents=True)
+    run.mkdir()
+    (target / "AGENTS.md").write_text("# Instructions\n")
+    (target / "CLAUDE.md").symlink_to("AGENTS.md")
+    (target / "GEMINI.md").symlink_to("AGENTS.md")
+    (target / "docs" / "guide.md").symlink_to("../AGENTS.md")
+    (target / "app.py").write_text("answer = 0\n")
+    (target / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+    inventory, config, policy = (tmp_path / name for name in ("files.nul", "config.json", "policy.json"))
+    inventory.write_bytes(b"AGENTS.md\x00CLAUDE.md\x00GEMINI.md\x00app.py\x00docs/guide.md\x00pyproject.toml\x00")
+    config.write_text(json.dumps({"commands": {}}))
+    policy.write_text(json.dumps({"mode": "required-untrusted", "backend": "docker"}))
+
+    initialize(run, target, "run-1", 9999999999, config, inventory, policy)
+    digests = json.loads((run / "source-digests.json").read_text())
+    assert set(digests) == {"AGENTS.md", "app.py", "pyproject.toml"}
+    assert (target / "CLAUDE.md").is_symlink()
+
+    (target / "test_app.py").write_text("def test_answer():\n    assert False\n")
+    spec = tmp_path / "repro.json"
+    spec.write_text(json.dumps({
+        "command": ["python3", "-m", "pytest", "test_app.py", "--junitxml=/bugsweep-output/repro.xml"],
+        "test": {"path": "test_app.py", "native_id": "test_app::test_answer",
+                 "expected_failure_type": "assertion", "expected_failure_message": "assert False"},
+        "intended_source_files": ["app.py"],
+        "junit_path": "repro.xml",
+        "review_source_file_sha256": digests,
+    }))
+    repro_pre(run, "BUG-1", spec)
+    (target / "app.py").write_text("answer = 1\n")
+    (run / "check-results-verify.json").write_text(json.dumps({
+        "immutable_path": "checks/result.json", "immutable_sha256": "a" * 64,
+    }))
+    post_path = repro_post(run, "BUG-1")["path"]
+    post = json.loads(open(post_path).read())
+    assert post["source_file_sha256"]["app.py"] == hashlib.sha256(b"answer = 1\n").hexdigest()
+
+
+@pytest.mark.parametrize(
+    "kind,rel,dest",
+    [
+        ("escape", "escape", "../outside.txt"),
+        ("traversal_roundtrip", "sub/reenter", "../../target/AGENTS.md"),
+        ("broken", "dangling", "missing.md"),
+        ("absolute_outside", "abs_out", "/etc/passwd"),
+        ("absolute_inside", "abs_in", "{TARGET}/AGENTS.md"),
+        ("git_meta", "git_alias", ".git"),
+    ],
+)
+def test_snapshot_rejects_escaping_broken_absolute_and_git_symlinks(tmp_path, kind, rel, dest):
+    from scripts._prepare_execution import snapshot
+    target = tmp_path / "target"
+    (target / "sub").mkdir(parents=True)
+    (tmp_path / "outside.txt").write_text("secret\n")
+    (target / "AGENTS.md").write_text("# Agents\n")
+    (target / ".git").write_text("gitdir: /metadata\n")
+    link = target / rel
+    link.symlink_to(dest.replace("{TARGET}", str(target)))
+    with pytest.raises(ValueError):
+        snapshot(target, ["AGENTS.md"])
+
+
+def test_snapshot_rejects_cyclic_symlinks(tmp_path):
+    from scripts._prepare_execution import snapshot
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "AGENTS.md").write_text("# Agents\n")
+    (target / "loop_a").symlink_to("loop_b")
+    (target / "loop_b").symlink_to("loop_a")
+    with pytest.raises(ValueError, match="broken symlink"):
+        snapshot(target, ["AGENTS.md"])

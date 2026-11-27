@@ -211,13 +211,67 @@ def _validate_source_identity(value: object) -> dict[str, object]:
     return {"kind": kind, "sha256": digest, "source_file_sha256": files}
 
 
+def _validate_symlink_target_syntax(relative: str, raw_target: str) -> str:
+    """Reject empty, non-POSIX, absolute, or parent-escaping symlink targets."""
+
+    if (
+        not raw_target
+        or "\x00" in raw_target
+        or "\\" in raw_target
+        or len(raw_target.encode("utf-8")) > MAX_PATH_BYTES
+        or os.path.isabs(raw_target)
+        or PurePosixPath(raw_target).is_absolute()
+    ):
+        raise ValueError(f"source symlink escapes allowed root: {relative}")
+    parts = list(PurePosixPath(relative).parent.parts)
+    for part in PurePosixPath(raw_target).parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                raise ValueError(f"source symlink escapes allowed root: {relative}")
+            parts.pop()
+        else:
+            parts.append(part)
+    if not parts or parts[0] == ".git":
+        raise ValueError(f"source symlink escapes allowed root: {relative}")
+    return raw_target
+
+
+def _validate_internal_symlink(root: Path, path: Path, relative: str) -> tuple[Path, str]:
+    """Validate that a symlink is canonical, non-broken, and strictly inside root."""
+
+    try:
+        raw_target = os.readlink(path)
+    except OSError as exc:
+        raise ValueError(f"source tree contains a broken symlink: {relative}") from exc
+    _validate_symlink_target_syntax(relative, raw_target)
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"source tree contains a broken symlink: {relative}") from exc
+    if resolved == root or not _is_within(resolved, root):
+        raise ValueError(f"source symlink escapes allowed root: {relative}")
+    rel_resolved = resolved.relative_to(root).parts
+    if not rel_resolved or rel_resolved[0] == ".git":
+        raise ValueError(f"source symlink escapes allowed root: {relative}")
+    return resolved, raw_target
+
+
 def _capture_source_files(
     cwd: Path, *, allow_git_pointer: bool = True, allow_symlinks: bool = True
 ) -> dict[str, str]:
     """Hash every mounted regular source file, excluding only exact .git metadata."""
 
+    try:
+        root = cwd.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("source tree cannot be read safely") from exc
+    if not root.is_dir():
+        raise ValueError("source tree cannot be read safely")
+
     files: dict[str, str] = {}
-    pending = [cwd]
+    pending = [root]
     while pending:
         directory = pending.pop()
         try:
@@ -227,7 +281,7 @@ def _capture_source_files(
             raise ValueError("source tree cannot be read safely") from exc
         for entry in entries:
             path = Path(entry.path)
-            relative = path.relative_to(cwd).as_posix()
+            relative = path.relative_to(root).as_posix()
             if PurePosixPath(relative).parts[0] == ".git":
                 if not allow_git_pointer:
                     raise ValueError("archive source must not contain .git metadata")
@@ -248,7 +302,7 @@ def _capture_source_files(
                 if info.st_nlink != 1 or len(files) >= MAX_SOURCE_FILES:
                     raise ValueError("source tree has hard links or too many regular files")
                 try:
-                    digest, _ = _sha256_relative(cwd, relative, MAX_SOURCE_FILE_BYTES)
+                    digest, _ = _sha256_relative(root, relative, MAX_SOURCE_FILE_BYTES)
                 except (OSError, ExecutionError) as exc:
                     raise ValueError(
                         f"source identity path is not a bounded regular file: {relative}"
@@ -257,6 +311,7 @@ def _capture_source_files(
             elif stat.S_ISLNK(info.st_mode):
                 if not allow_symlinks:
                     raise ValueError(f"archive source contains a symbolic link: {relative}")
+                _validate_internal_symlink(root, path, relative)
             else:
                 raise ValueError(f"source tree contains a special file: {relative}")
     if not files:
@@ -331,13 +386,8 @@ def _mount_inventory(root: Path) -> str:
                     raise ValueError(f"target mount contains a hard-linked file: {relative}")
                 records.append([*base, "regular"])
             elif stat.S_ISLNK(info.st_mode):
-                try:
-                    resolved = path.resolve(strict=True)
-                except OSError as exc:
-                    raise ValueError(f"target mount contains a broken symlink: {relative}") from exc
-                if not _is_within(resolved, root):
-                    raise ValueError(f"target mount symlink escapes allowed root: {relative}")
-                records.append([*base, "symlink", os.readlink(path)])
+                _, raw_target = _validate_internal_symlink(root, path, relative)
+                records.append([*base, "symlink", raw_target])
             else:
                 raise ValueError(f"target mount contains a special file: {relative}")
     return _digest(sorted(records))

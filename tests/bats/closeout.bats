@@ -41,6 +41,7 @@ BUGSWEEP_STASH_REF='none'
 BUGSWEEP_WORKTREE='${WT}'
 ENV
   : > "${RUN_DIR}/ledger.jsonl"
+  git -C "$REPO" ls-files > "${RUN_DIR}/scope-files.txt"
   REAL_PYTHON="$(command -v python3)"
   PROVIDER_STUB_DIR="${TMP}/provider-stub"
   _write_integration_provider_stub "$PROVIDER_STUB_DIR" "$REAL_PYTHON"
@@ -403,4 +404,13 @@ _write_summary() {
   [ "$status" -ne 0 ]
   echo "$output" | grep -q 'lacks a valid severity required for authorization'
   [ -d "$WT" ]
+}
+
+@test "closeout landed and run-status fail closed when scope-files.txt is missing" {
+  local run_status_sh="${ROOT}/scripts/run-status.sh"
+  rm -f "${RUN_DIR}/scope-files.txt"
+
+  run bash "$run_status_sh" "$RUN_DIR" --json
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -q '"status": "invalid"'
 }

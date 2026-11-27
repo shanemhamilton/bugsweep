@@ -49,6 +49,7 @@ BUGSWEEP_WORKTREE='${repo}'
 ENV
 
   touch "${run_dir}/ledger.jsonl"
+  printf 'audit-fixtures/batch-1.txt\n' > "${run_dir}/scope-files.txt"
 }
 
 _make_recon_json() {
@@ -794,4 +795,28 @@ assert 'BUG-NM1' not in on['fixed'] + on['quarantined'] + on['confirmed_unfixed'
 assert off['near_misses'] == []
 assert len(on['near_misses']) == 1 and on['near_misses'][0]['bug_id'] == 'BUG-NM1'
 "
+}
+
+@test "summarize.sh refuses status complete when scope-files.txt is missing or .preflight-incomplete exists" {
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 1 1
+
+  rm -f "${RUN_DIR}/scope-files.txt"
+  run bash "$SUMMARIZE_SH" "$RUN_DIR" "false" "fix"
+  [ "$status" -eq 0 ]
+  python3 - "${RUN_DIR}/run-summary.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["status"] in {"stalled", "partial"}, d
+PY
+
+  printf 'audit-fixtures/batch-1.txt\n' > "${RUN_DIR}/scope-files.txt"
+  printf 'stage=setup\n' > "${RUN_DIR}/.preflight-incomplete"
+  BUGSWEEP_NO_PYTHON=1 run bash "$SUMMARIZE_SH" "$RUN_DIR" "false" "fix"
+  [ "$status" -eq 0 ]
+  python3 - "${RUN_DIR}/run-summary.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["status"] in {"stalled", "partial"}, d
+PY
 }

@@ -29,6 +29,8 @@ from scripts._execution import (
     execution_environment_sha256,
     _mount_inventory,
     _read_bounded_bytes,
+    _validate_internal_symlink,
+    _validate_symlink_target_syntax,
 )
 from scripts._proof import _check_record, validate_suite_receipt
 
@@ -277,11 +279,20 @@ def validate_authority_tree(
     return {"status": "valid", "tree_sha": tree_sha}
 
 
+def _ensure_no_symlink_ancestors(destination: Path, relative: str) -> None:
+    current = destination
+    for part in PurePosixPath(relative).parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("archive member traverses a symbolic link")
+
+
 def _extract_archive(archive_path: Path, destination: Path) -> tuple[dict[str, str], dict[str, str]]:
-    """Extract regular Git archive members without tarfile's filesystem extractor."""
+    """Extract regular and validated internal-symlink Git archive members safely."""
 
     files: dict[str, str] = {}
     modes: dict[str, str] = {}
+    symlinks: list[tuple[Path, str]] = []
     seen: set[str] = set()
     total = 0
     with tarfile.open(archive_path, mode="r:") as archive:
@@ -290,11 +301,24 @@ def _extract_archive(archive_path: Path, destination: Path) -> tuple[dict[str, s
             if relative in seen or len(seen) >= MAX_FILES:
                 raise ValueError("archive contains duplicate or excessive members")
             seen.add(relative)
+            _ensure_no_symlink_ancestors(destination, relative)
             target = destination.joinpath(*PurePosixPath(relative).parts)
             if member.isdir():
                 if member.mode & 0o777 != 0o755:
                     raise ValueError("archive directory mode is invalid")
-                target.mkdir(mode=0o755, parents=True, exist_ok=False)
+                if target.is_symlink() or (target.exists() and not target.is_dir()):
+                    raise ValueError("archive contains a conflicting member")
+                target.mkdir(mode=0o755, parents=True, exist_ok=True)
+                continue
+            if member.issym():
+                if member.size != 0:
+                    raise ValueError("archive symlink member has non-zero payload")
+                _validate_symlink_target_syntax(relative, member.linkname)
+                if target.exists() or target.is_symlink():
+                    raise ValueError("archive contains a conflicting member")
+                target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                os.symlink(member.linkname, target)
+                symlinks.append((target, relative))
                 continue
             if not member.isreg() or member.size < 0 or member.size > MAX_FILE_BYTES:
                 raise ValueError("archive contains a link or special member")
@@ -304,6 +328,8 @@ def _extract_archive(archive_path: Path, destination: Path) -> tuple[dict[str, s
             total += member.size
             if total > MAX_TOTAL_BYTES:
                 raise ValueError("archive exceeds its total byte limit")
+            if target.exists() or target.is_symlink():
+                raise ValueError("archive contains a conflicting member")
             target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
             source = archive.extractfile(member)
             if source is None:
@@ -334,6 +360,10 @@ def _extract_archive(archive_path: Path, destination: Path) -> tuple[dict[str, s
                     target.unlink(missing_ok=True)
             files[relative] = digest.hexdigest()
             modes[relative] = "100755" if permission == 0o755 else "100644"
+    if symlinks:
+        resolved_destination = destination.resolve(strict=True)
+        for link_path, link_relative in symlinks:
+            _validate_internal_symlink(resolved_destination, link_path, link_relative)
     if not files:
         raise ValueError("merged source export is empty")
     return dict(sorted(files.items())), dict(sorted(modes.items()))
@@ -353,7 +383,7 @@ def _parse_index(path: Path) -> dict[str, tuple[str, str]]:
             raise ValueError("Git index inventory is malformed") from exc
         if (
             stage != "0"
-            or mode not in {"100644", "100755"}
+            or mode not in {"100644", "100755", "120000"}
             or not _SHA_RE.fullmatch(object_id)
             or name in result
             or len(result) >= MAX_FILES
@@ -370,15 +400,39 @@ def _git_blob_id(content: bytes, hexadecimal_length: int) -> str:
     return algorithm(b"blob " + str(len(content)).encode("ascii") + b"\x00" + content).hexdigest()
 
 
+def _projection_symlinks(resolved_projection: Path) -> set[str]:
+    symlinks: set[str] = set()
+    pending = [resolved_projection]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as iterator:
+            for entry in iterator:
+                path = Path(entry.path)
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(path)
+                elif stat.S_ISLNK(info.st_mode):
+                    symlinks.add(path.relative_to(resolved_projection).as_posix())
+    return symlinks
+
+
 def _verify_index(
     projection: Path,
     files: Mapping[str, str],
     modes: Mapping[str, str],
     index: Mapping[str, tuple[str, str]],
 ) -> None:
-    if set(files) != set(index) or set(modes) != set(index):
+    regular_index = {name: entry for name, entry in index.items() if entry[0] != "120000"}
+    symlink_index = {name: entry for name, entry in index.items() if entry[0] == "120000"}
+    resolved_projection = projection.resolve(strict=True)
+    actual_symlinks = _projection_symlinks(resolved_projection)
+    if (
+        set(files) != set(regular_index)
+        or set(modes) != set(regular_index)
+        or actual_symlinks != set(symlink_index)
+    ):
         raise ValueError("Git archive does not contain the complete tracked index")
-    for relative, (expected_mode, expected_object) in index.items():
+    for relative, (expected_mode, expected_object) in regular_index.items():
         path = projection.joinpath(*PurePosixPath(relative).parts)
         content = _read_bounded_bytes(path, MAX_FILE_BYTES)
         if (
@@ -387,6 +441,11 @@ def _verify_index(
             or _git_blob_id(content, len(expected_object)) != expected_object
         ):
             raise ValueError("Git archive bytes or modes differ from the merged index")
+    for relative, (_, expected_object) in symlink_index.items():
+        path = resolved_projection.joinpath(*PurePosixPath(relative).parts)
+        _, link_target = _validate_internal_symlink(resolved_projection, path, relative)
+        if _git_blob_id(link_target.encode("utf-8"), len(expected_object)) != expected_object:
+            raise ValueError("Git archive symlink targets differ from the merged index")
 
 
 def _control(git_path: Path, argv: Sequence[str], output: Path) -> None:

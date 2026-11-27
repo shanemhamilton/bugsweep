@@ -819,3 +819,17 @@ _bsw_state_env_get() {
       ;;
   esac
 }
+
+# Print a non-empty reason string when preflight did not complete or frozen
+# scope-files.txt is absent, symlinked, or empty; print nothing when valid.
+_bsw_preflight_incomplete_reason() {
+  local _run_dir="$1"
+  if [ -e "${_run_dir}/.preflight-incomplete" ] || [ -L "${_run_dir}/.preflight-incomplete" ]; then
+    printf 'preflight setup did not finish (.preflight-incomplete present)'
+    return 0
+  fi
+  if [ -L "${_run_dir}/scope-files.txt" ] || [ ! -f "${_run_dir}/scope-files.txt" ]; then
+    printf 'frozen scope inventory (scope-files.txt) is missing'
+    return 0
+  fi
+}

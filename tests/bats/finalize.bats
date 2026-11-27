@@ -43,6 +43,7 @@ BUGSWEEP_WORKTREE=''
 ENV
 
   touch "${run_dir}/ledger.jsonl"
+  printf 'audit-fixtures/batch-1.txt\n' > "${run_dir}/scope-files.txt"
 }
 
 _make_recon_json() {
@@ -490,4 +491,42 @@ AWK
   [ -f "${RUN_DIR}/post-finalize-handoff.json" ]
   [ ! -f "${RUN_DIR}/.rollup-appended" ]
   [ "$(cat "${BATS_TMP}/blocked-parent")" = preserve ]
+}
+
+@test "finalize and run-status never report complete when scope-files.txt is missing or preflight is incomplete" {
+  local run_status_sh
+  run_status_sh="$(dirname "$FINALIZE_SH")/run-status.sh"
+
+  _make_run_dir "$REPO" "$RUN_DIR" "$ORIG_BRANCH"
+  _make_recon_json "$RUN_DIR" 5 5
+  _make_real_report "$RUN_DIR"
+  rm -f "${RUN_DIR}/scope-files.txt"
+
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+  python3 - "${RUN_DIR}/run-summary.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["status"] in {"stalled", "partial"}, d
+PY
+
+  run bash "$run_status_sh" "$RUN_DIR" --json
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -q '"status": "invalid"'
+
+  printf 'audit-fixtures/batch-1.txt\n' > "${RUN_DIR}/scope-files.txt"
+  printf 'stage=setup\n' > "${RUN_DIR}/.preflight-incomplete"
+  rm -f "${RUN_DIR}/.report-is-real" "${RUN_DIR}/run-summary.json"
+
+  run bash "$FINALIZE_SH" "$RUN_DIR"
+  [ "$status" -eq 0 ]
+  python3 - "${RUN_DIR}/run-summary.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["status"] in {"stalled", "partial"}, d
+PY
+
+  run bash "$run_status_sh" "$RUN_DIR" --json
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -q '"status": "invalid"'
 }
