@@ -97,7 +97,8 @@ recorded_repo_root="$(cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null && pwd -P)" \
 recorded_worktrees_root="${recorded_repo_root}/.bugsweep/worktrees"
 
 if [ "$bs_scope" != "." ] \
-  && [ -z "$(git -C "$target_root" --literal-pathspecs ls-files -- "$bs_scope")" ]; then
+  && { ! git -C "$target_root" rev-parse --verify HEAD >/dev/null 2>&1 \
+       || [ -z "$(git -C "$target_root" --literal-pathspecs ls-tree -r --name-only HEAD -- "$bs_scope")" ]; }; then
   die "scope contains no tracked files: $bs_scope"
 fi
 
@@ -241,38 +242,29 @@ _bsw_mark_preflight_incomplete() {
 # Freeze the exact tracked-file scope and source inventory atomically BEFORE
 # exposing run state, acquiring leases, or creating branches/worktrees.
 _bsw_write_frozen_scope() {
-  local repo="$1" tree_ref="${2:-}"
-  if [ -n "$tree_ref" ]; then
-    if [ "$bs_scope" = "." ]; then
-      _bsw_atomic_write_stdout "${run_dir}/scope-files.txt" \
-        git -C "$repo" --literal-pathspecs ls-tree -r --name-only "$tree_ref" \
-        || die "Failed to freeze scope inventory."
-    else
-      _bsw_atomic_write_stdout "${run_dir}/scope-files.txt" \
-        git -C "$repo" --literal-pathspecs ls-tree -r --name-only "$tree_ref" -- "$bs_scope" \
-        || die "Failed to freeze scope inventory."
-    fi
+  local repo="$1" tree_ref="$2"
+  local _err=0
+  if [ "$bs_scope" = "." ]; then
+    _bsw_atomic_write_stdout "${run_dir}/scope-files.txt" \
+      git -C "$repo" --literal-pathspecs ls-tree -r --name-only "$tree_ref" \
+      || _err=1
+  else
+    _bsw_atomic_write_stdout "${run_dir}/scope-files.txt" \
+      git -C "$repo" --literal-pathspecs ls-tree -r --name-only "$tree_ref" -- "$bs_scope" \
+      || _err=1
+  fi
+  if [ "$_err" -eq 0 ]; then
     _bsw_atomic_write_stdout "${run_dir}/source-files.nul" \
       git -C "$repo" --literal-pathspecs ls-tree -r -z --name-only "$tree_ref" \
-      || die "Failed to freeze source inventory."
-  else
-    if [ "$bs_scope" = "." ]; then
-      _bsw_atomic_write_stdout "${run_dir}/scope-files.txt" \
-        git -C "$repo" --literal-pathspecs ls-files \
-        || die "Failed to freeze scope inventory."
-    else
-      _bsw_atomic_write_stdout "${run_dir}/scope-files.txt" \
-        git -C "$repo" --literal-pathspecs ls-files -- "$bs_scope" \
-        || die "Failed to freeze scope inventory."
-    fi
-    _bsw_atomic_write_stdout "${run_dir}/source-files.nul" \
-      git -C "$repo" --literal-pathspecs ls-files -z \
-      || die "Failed to freeze source inventory."
+      || _err=1
   fi
-  [ -f "${run_dir}/scope-files.txt" ] && [ ! -L "${run_dir}/scope-files.txt" ] || die "Failed to freeze scope inventory."
-  [ -f "${run_dir}/source-files.nul" ] && [ ! -L "${run_dir}/source-files.nul" ] || die "Failed to freeze source inventory."
-  if [ "$bs_scope" != "." ]; then
-    [ -s "${run_dir}/scope-files.txt" ] || die "scope contains no tracked files: $bs_scope"
+  if [ "$_err" -ne 0 ] \
+    || [ ! -f "${run_dir}/scope-files.txt" ] || [ -L "${run_dir}/scope-files.txt" ] \
+    || [ ! -f "${run_dir}/source-files.nul" ] || [ -L "${run_dir}/source-files.nul" ]; then
+    return 1
+  fi
+  if [ "$bs_scope" != "." ] && [ ! -s "${run_dir}/scope-files.txt" ]; then
+    return 1
   fi
 }
 
@@ -349,7 +341,10 @@ if [ "$bs_worktree" = "yes" ]; then
   mkdir -p "${recorded_worktrees_root}"
   stash_ref="none"
 
-  _bsw_write_frozen_scope "$target_root" "$orig_head"
+  if ! _bsw_write_frozen_scope "$target_root" "$orig_head"; then
+    rm -rf "$run_dir" 2>/dev/null || true
+    die "scope contains no tracked files: $bs_scope"
+  fi
   if [ -n "${_PREFLIGHT_TEST_PRE_STATE_HOOK:-}" ]; then
     eval "$_PREFLIGHT_TEST_PRE_STATE_HOOK"
   fi
@@ -422,7 +417,11 @@ else
     fi
   fi
 
-  _bsw_write_frozen_scope "$target_root" "$orig_head"
+  if ! _bsw_write_frozen_scope "$target_root" "$orig_head"; then
+    rm -rf "$run_dir" 2>/dev/null || true
+    [ "$stash_ref" != "none" ] && git stash pop >/dev/null 2>&1 || true
+    die "scope contains no tracked files: $bs_scope"
+  fi
   if [ -n "${_PREFLIGHT_TEST_PRE_STATE_HOOK:-}" ]; then
     eval "$_PREFLIGHT_TEST_PRE_STATE_HOOK"
   fi

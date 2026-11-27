@@ -406,9 +406,47 @@ _write_summary() {
   [ -d "$WT" ]
 }
 
-@test "closeout landed and run-status fail closed when scope-files.txt is missing" {
+@test "closeout landed and run-status fail closed when scope-files.txt is missing or preflight is incomplete" {
   local run_status_sh="${ROOT}/scripts/run-status.sh"
+  _set_fixed_summary
+  cd "$REPO"
+  run "$REAL_PYTHON" "$LANDED_FIXTURE" prepare-reviews "$RUN_DIR" "$WT" "$RUN_ID" BUG-1
+  [ "$status" -eq 0 ]
+
+  printf 'fix\n' >> "${WT}/app.txt"
+  git -C "$WT" add app.txt
+  git -C "$WT" commit -q -m 'fix(bugsweep): landed scope check fixture'
+  local fix_commit
+  fix_commit="$(git -C "$REPO" rev-parse "$BRANCH")"
+  for _ in 1 2 3; do
+    printf '{"event":"referee_vote","bug_id":"BUG-1","severity":"medium","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  done
+  printf '{"event":"referee_verdict","bug_id":"BUG-1","verdict":"CONFIRMED"}\n' >> "${RUN_DIR}/ledger.jsonl"
+  printf '{"event":"fix_committed","bug_id":"BUG-1","severity":"medium","commit":"%s"}\n' "$fix_commit" >> "${RUN_DIR}/ledger.jsonl"
+
+  _write_integration_authority "$RUN_DIR" "$RUN_ID"
+  run env BUGSWEEP_QUALITY_GATE_COMMAND=true bash "$INTEGRATE_SH" --run-dir "$RUN_DIR" "$ORIG" "$BRANCH"
+  [ "$status" -eq 0 ]
+
+  run "$REAL_PYTHON" "$LANDED_FIXTURE" finalize-evidence "$RUN_DIR" "$REPO" "$WT" "$RUN_ID" "$BRANCH" BUG-1
+  [ "$status" -eq 0 ]
+
   rm -f "${RUN_DIR}/scope-files.txt"
+  run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
+  [ "$status" -ne 0 ]
+  [ -d "$WT" ]
+  [ -n "$(git -C "$REPO" branch --list "$BRANCH")" ]
+
+  run bash "$run_status_sh" "$RUN_DIR" --json
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -q '"status": "invalid"'
+
+  git -C "$REPO" ls-files > "${RUN_DIR}/scope-files.txt"
+  printf 'stage=setup\n' > "${RUN_DIR}/.preflight-incomplete"
+  run bash "$CLOSEOUT_SH" "$RUN_DIR" landed
+  [ "$status" -ne 0 ]
+  [ -d "$WT" ]
+  [ -n "$(git -C "$REPO" branch --list "$BRANCH")" ]
 
   run bash "$run_status_sh" "$RUN_DIR" --json
   [ "$status" -eq 2 ]

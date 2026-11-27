@@ -53,26 +53,20 @@ PY
   fi
 
   if command -v jq >/dev/null 2>&1; then
-    jq -s -e 'all(.[]; type == "object")' "$ledger" >/dev/null 2>&1 || die "malformed ledger: $ledger"
     jq -s -e '
-      all(.[]; .confirmed == null or ((.confirmed | type) == "number" and .confirmed >= 0 and (.confirmed | floor) == .confirmed))
+      all(.[]; type == "object" and (
+        .confirmed == null or (
+          (.confirmed | type) == "number"
+          and (.confirmed | tostring | test("^(0|[1-9][0-9]*)$"))
+          and (.confirmed | tojson | test("^(0|[1-9][0-9]*)$"))
+        )
+      ))
     ' "$ledger" >/dev/null 2>&1 || die "malformed ledger: $ledger"
     jq -s '[.[] | (.confirmed // 0)] | add // 0' "$ledger"
     return 0
   fi
 
-  awk '
-    /^[[:space:]]*$/ { next }
-    !/^[[:space:]]*\{.*\}[[:space:]]*$/ { exit 2 }
-  ' "$ledger" || die "malformed ledger: $ledger"
-  local matches rc=0
-  matches="$(grep -o '"confirmed":[0-9][0-9]*' "$ledger")" || rc=$?
-  [ "$rc" -le 1 ] || die "failed reading ledger: $ledger"
-  if [ -z "$matches" ]; then
-    printf '0\n'
-  else
-    printf '%s\n' "$matches" | sed 's/^"confirmed"://' | awk '{s+=$1} END{print s+0}'
-  fi
+  die "session.sh requires python3 or jq to verify ledger: $ledger"
 }
 
 ledger="${run_dir}/ledger.jsonl"

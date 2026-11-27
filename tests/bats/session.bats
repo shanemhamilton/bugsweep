@@ -108,20 +108,55 @@ EOF
   fi
 }
 
-@test "session.sh checkpoint BUGSWEEP_NO_PYTHON fallback handles zero matches and malformed lines" {
+@test "session.sh checkpoint jq fallback sums confirmed ints and rejects floats/negatives/malformed JSON" {
+  local jq_bin
+  jq_bin="$(command -v jq)"
+  local fakebin="${TMP}/jq-only-bin"
+  mkdir -p "$fakebin"
+  ln -s "$jq_bin" "${fakebin}/jq"
+  for cmd in awk bash cat date dirname grep mkdir mv printf rm sed tr wc; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      ln -s "$(command -v "$cmd")" "${fakebin}/${cmd}"
+    fi
+  done
+
   cat > "${RUN_DIR}/ledger.jsonl" <<'EOF'
 {"event":"preflight"}
 {"event":"batch_covered","batch_id":"batch-001"}
+{"event":"iteration","confirmed": 2}
 EOF
 
-  BUGSWEEP_NO_PYTHON=1 run bash "$SESSION_SH" checkpoint "$RUN_DIR"
+  PATH="$fakebin" BUGSWEEP_NO_PYTHON=1 run bash "$SESSION_SH" checkpoint "$RUN_DIR"
   [ "$status" -eq 0 ]
   [ -f "${RUN_DIR}/SESSION.md" ]
-  grep -qF "confirmed total 0" "${RUN_DIR}/SESSION.md"
+  grep -qF "confirmed total 2" "${RUN_DIR}/SESSION.md"
 
-  rm -f "${RUN_DIR}/SESSION.md"
-  printf 'not json\n' > "${RUN_DIR}/ledger.jsonl"
-  BUGSWEEP_NO_PYTHON=1 run bash "$SESSION_SH" checkpoint "$RUN_DIR"
+  for bad in \
+    '{"event":"iteration","confirmed": 1.0}' \
+    '{"event":"iteration","confirmed": 1e2}' \
+    '{"event":"iteration","confirmed": -1}' \
+    '{"event":"iteration","confirmed": "bad"}' \
+    '{not valid json'
+  do
+    rm -f "${RUN_DIR}/SESSION.md"
+    printf '%s\n' "$bad" > "${RUN_DIR}/ledger.jsonl"
+    PATH="$fakebin" BUGSWEEP_NO_PYTHON=1 run bash "$SESSION_SH" checkpoint "$RUN_DIR"
+    [ "$status" -ne 0 ]
+    [ ! -e "${RUN_DIR}/SESSION.md" ]
+  done
+}
+
+@test "session.sh checkpoint fails closed when neither python3 nor jq is available" {
+  local fakebin="${TMP}/no-python-no-jq"
+  mkdir -p "$fakebin"
+  for cmd in awk bash cat date dirname grep mkdir mv printf rm sed tr wc; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      ln -s "$(command -v "$cmd")" "${fakebin}/${cmd}"
+    fi
+  done
+
+  printf '{"event":"preflight"}\n' > "${RUN_DIR}/ledger.jsonl"
+  PATH="$fakebin" BUGSWEEP_NO_PYTHON=1 run bash "$SESSION_SH" checkpoint "$RUN_DIR"
   [ "$status" -ne 0 ]
   [ ! -e "${RUN_DIR}/SESSION.md" ]
 }

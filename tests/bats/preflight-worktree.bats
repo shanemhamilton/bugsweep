@@ -601,3 +601,19 @@ PY
   [ "$status" -eq 2 ]
   echo "$output" | grep -q '"status": "invalid"'
 }
+
+@test "default preflight rejects a newly staged-only --scope before stashing user work or creating run dir" {
+  mkdir -p "${REPO}/staged_only"
+  printf 'staged content\n' > "${REPO}/staged_only/new.py"
+  git -C "$REPO" add staged_only/new.py
+  printf 'uncommitted edit\n' >> "${REPO}/app.txt"
+
+  run bash "$PREFLIGHT_SH" --scope staged_only
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q 'scope contains no tracked files: staged_only'
+  [ -z "$(git -C "$REPO" stash list)" ]
+  [ -z "$(find "${REPO}/.bugsweep" -maxdepth 1 -type d -name 'run-*' 2>/dev/null)" ]
+  [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "$ORIG_BRANCH" ]
+  grep -q 'uncommitted edit' "${REPO}/app.txt"
+  git -C "$REPO" diff --cached --name-only | grep -qx 'staged_only/new.py'
+}

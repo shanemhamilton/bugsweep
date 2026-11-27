@@ -47,7 +47,7 @@ case "$report_is_stub" in
   *) die "usage: summarize.sh <RUN_DIR> <REPORT_IS_STUB: true|false> [MODE] [--recall]" ;;
 esac
 
-# Fail closed: a run without complete preflight setup and a non-empty regular
+# Fail closed: a run without complete preflight setup and a regular non-symlink
 # frozen scope inventory can never report status "complete".
 _bugsweep_scope_reason="$(_bsw_preflight_incomplete_reason "$run_dir")"
 if [ -n "$_bugsweep_scope_reason" ] && [ "$report_is_stub" = "false" ]; then
