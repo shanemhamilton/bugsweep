@@ -38,7 +38,7 @@ def file_digest(path: Path) -> str:
 
 
 def source_from_root(root: Path) -> dict[str, str]:
-    return execution._capture_source_files(root, allow_git_pointer=True, allow_symlinks=False)
+    return execution._capture_source_files(root, allow_git_pointer=True, allow_symlinks=True)
 
 
 def _copy_source(root: Path, destination: Path, sources: Mapping[str, str]) -> None:

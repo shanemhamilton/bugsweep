@@ -13,14 +13,69 @@ run_dir="$(cd "$run_dir" && pwd)"
 # shellcheck disable=SC1090
 . "${run_dir}/state.env"
 
+_ledger_confirmed_total() {
+  local ledger="$1"
+  [ -f "$ledger" ] && [ ! -L "$ledger" ] && [ -r "$ledger" ] || die "missing or unreadable ledger: $ledger"
+
+  if have_python; then
+    python3 -B - "$ledger" <<'PY' || die "malformed ledger: $ledger"
+import json, sys
+
+path = sys.argv[1]
+total = 0
+with open(path, "r", encoding="utf-8") as fh:
+    try:
+        lines = list(enumerate(fh, 1))
+    except (UnicodeDecodeError, OSError) as exc:
+        sys.stderr.write(f"unreadable ledger: {exc}\n")
+        sys.exit(2)
+for lineno, raw in lines:
+    line = raw.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(f"ledger line {lineno}: invalid JSON: {exc}\n")
+        sys.exit(2)
+    if not isinstance(obj, dict):
+        sys.stderr.write(f"ledger line {lineno}: expected JSON object\n")
+        sys.exit(2)
+    val = obj.get("confirmed")
+    if val is not None:
+        if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+            sys.stderr.write(f"ledger line {lineno}: invalid confirmed count\n")
+            sys.exit(2)
+        total += val
+print(total)
+PY
+    return 0
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -s -e '
+      all(.[]; type == "object" and (
+        .confirmed == null or (
+          (.confirmed | type) == "number"
+          and (.confirmed | tostring | test("^(0|[1-9][0-9]*)$"))
+          and (.confirmed | tojson | test("^(0|[1-9][0-9]*)$"))
+        )
+      ))
+    ' "$ledger" >/dev/null 2>&1 || die "malformed ledger: $ledger"
+    jq -s '[.[] | (.confirmed // 0)] | add // 0' "$ledger"
+    return 0
+  fi
+
+  die "session.sh requires python3 or jq to verify ledger: $ledger"
+}
+
 ledger="${run_dir}/ledger.jsonl"
+confirmed="$(_ledger_confirmed_total "$ledger")"
 
 iters="$(count_event "$ledger" iteration)"
 fixes="$(count_event "$ledger" fix_committed)"
 quarantined="$(count_event "$ledger" quarantine)"
 checkpoints="$(count_event "$ledger" checkpoint)"
-# Confirmed-open = confirmed bugs minus those fixed or quarantined (best-effort from events).
-confirmed="$(grep -o '"confirmed":[0-9]*' "$ledger" 2>/dev/null | grep -o '[0-9]*' | awk '{s+=$1} END{print s+0}')"
 
 every="$(cfg_get '.session.checkpoint_every_iterations' '3')"
 

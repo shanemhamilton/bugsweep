@@ -496,3 +496,124 @@ PY
   grep -qi 'manual' "$SKILL_MD"
   grep -q -- '--reap-worktrees' "$SKILL_MD"
 }
+
+# ---------------------------------------------------------------------------
+# trippro-utxbg: atomic scope freeze + setup-incomplete fail-closed checks
+# ---------------------------------------------------------------------------
+
+@test "preflight --worktree freezes scope-files.txt atomically before state.env and clears .preflight-incomplete on success" {
+  run env _PREFLIGHT_TEST_PRE_STATE_HOOK='
+    [ -s "${run_dir}/scope-files.txt" ] || exit 92
+    [ -s "${run_dir}/source-files.nul" ] || exit 93
+    [ -f "${run_dir}/.preflight-incomplete" ] || exit 94
+    [ ! -e "${run_dir}/state.env" ] || exit 95
+    [ ! -e "$worktree_path" ] || exit 96
+  ' bash "$PREFLIGHT_SH" --worktree
+
+  [ "$status" -eq 0 ]
+  local run_dir
+  run_dir="$(echo "$output" | sed -n 's/^RUN_DIR=//p')"
+  [ -s "${run_dir}/scope-files.txt" ]
+  [ ! -e "${run_dir}/.preflight-incomplete" ]
+}
+
+@test "preflight --worktree SIGKILL at worktree or post-setup boundaries leaves setup-incomplete recovery that never claims complete" {
+  local run_status_sh
+  run_status_sh="$(dirname "$PREFLIGHT_SH")/run-status.sh"
+
+  # 1. Kill before git worktree add (state.env + scope-files.txt + .preflight-incomplete already exist)
+  run env _PREFLIGHT_TEST_PRE_ADD_HOOK='kill -KILL $$' bash "$PREFLIGHT_SH" --worktree
+  [ "$status" -ne 0 ]
+  local killed_run_dir
+  killed_run_dir="$(find "${REPO}/.bugsweep" -maxdepth 1 -type d -name 'run-*' | head -1)"
+  [ -n "$killed_run_dir" ]
+  [ -f "${killed_run_dir}/.preflight-incomplete" ]
+  [ -s "${killed_run_dir}/scope-files.txt" ]
+  [ -f "${killed_run_dir}/state.env" ]
+  [ ! -e "${REPO}/.bugsweep/worktrees/${killed_run_dir##*/run-}" ]
+
+  run bash "$run_status_sh" "$killed_run_dir" --json
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -q '"status": "invalid"'
+  rm -rf "$killed_run_dir" "${REPO}/.bugsweep/state"
+
+  # 2. Kill right after git worktree add before preflight completes indexing/preparation
+  run env _PREFLIGHT_TEST_POST_SETUP_HOOK='kill -KILL $$' bash "$PREFLIGHT_SH" --worktree
+  [ "$status" -ne 0 ]
+  killed_run_dir="$(find "${REPO}/.bugsweep" -maxdepth 1 -type d -name 'run-*' | head -1)"
+  [ -n "$killed_run_dir" ]
+  [ -f "${killed_run_dir}/.preflight-incomplete" ]
+  [ -s "${killed_run_dir}/scope-files.txt" ]
+
+  # Even if report.md is later placed there, finalize.sh must never report status=complete.
+  printf '# Fake report\n' > "${killed_run_dir}/report.md"
+  run bash "$FINALIZE_SH" "$killed_run_dir"
+  [ "$status" -eq 0 ]
+  python3 - "${killed_run_dir}/run-summary.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["status"] in {"stalled", "partial"}, d
+PY
+
+  run bash "$run_status_sh" "$killed_run_dir" --json
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -q '"status": "invalid"'
+}
+
+@test "default preflight freezes scope atomically before branch checkout and interruption restores branch/stash without claiming complete" {
+  local run_status_sh
+  run_status_sh="$(dirname "$PREFLIGHT_SH")/run-status.sh"
+
+  # Kill before git checkout -b: no orphan bugsweep/* branch exists yet, while scope+state+marker already exist.
+  run env _PREFLIGHT_TEST_PRE_BRANCH_HOOK='
+    [ -s "${run_dir}/scope-files.txt" ] || exit 92
+    [ -f "${run_dir}/state.env" ] || exit 93
+    [ -f "${run_dir}/.preflight-incomplete" ] || exit 94
+    ! git -C "$target_root" show-ref --verify --quiet "refs/heads/${branch}" || exit 95
+    kill -KILL $$
+  ' bash "$PREFLIGHT_SH"
+  [ "$status" -ne 0 ]
+  [ -z "$(git -C "$REPO" branch --list 'bugsweep/*')" ]
+  local aborted_run
+  aborted_run="$(find "${REPO}/.bugsweep" -maxdepth 1 -type d -name 'run-*' | head -1)"
+  [ -s "${aborted_run}/scope-files.txt" ]
+  [ -f "${aborted_run}/.preflight-incomplete" ]
+  rm -rf "$aborted_run" "${REPO}/.bugsweep/state"
+
+  # Kill after branch creation: finalize restores dev + stash and never marks complete; run-status returns invalid.
+  printf 'dirty change\n' >> "${REPO}/app.txt"
+  run env _PREFLIGHT_TEST_POST_SETUP_HOOK='kill -KILL $$' bash "$PREFLIGHT_SH"
+  [ "$status" -ne 0 ]
+  aborted_run="$(find "${REPO}/.bugsweep" -maxdepth 1 -type d -name 'run-*' | head -1)"
+  [ -s "${aborted_run}/scope-files.txt" ]
+  [ -f "${aborted_run}/.preflight-incomplete" ]
+
+  run bash "$FINALIZE_SH" "$aborted_run"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "$ORIG_BRANCH" ]
+  grep -q 'dirty change' "${REPO}/app.txt"
+  python3 - "${aborted_run}/run-summary.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["status"] in {"stalled", "partial"}, d
+PY
+  run bash "$run_status_sh" "$aborted_run" --json
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -q '"status": "invalid"'
+}
+
+@test "default preflight rejects a newly staged-only --scope before stashing user work or creating run dir" {
+  mkdir -p "${REPO}/staged_only"
+  printf 'staged content\n' > "${REPO}/staged_only/new.py"
+  git -C "$REPO" add staged_only/new.py
+  printf 'uncommitted edit\n' >> "${REPO}/app.txt"
+
+  run bash "$PREFLIGHT_SH" --scope staged_only
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q 'scope contains no tracked files: staged_only'
+  [ -z "$(git -C "$REPO" stash list)" ]
+  [ -z "$(find "${REPO}/.bugsweep" -maxdepth 1 -type d -name 'run-*' 2>/dev/null)" ]
+  [ "$(git -C "$REPO" symbolic-ref --short HEAD)" = "$ORIG_BRANCH" ]
+  grep -q 'uncommitted edit' "${REPO}/app.txt"
+  git -C "$REPO" diff --cached --name-only | grep -qx 'staged_only/new.py'
+}

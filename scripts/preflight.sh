@@ -97,7 +97,8 @@ recorded_repo_root="$(cd "$BUGSWEEP_REPO_ROOT" 2>/dev/null && pwd -P)" \
 recorded_worktrees_root="${recorded_repo_root}/.bugsweep/worktrees"
 
 if [ "$bs_scope" != "." ] \
-  && [ -z "$(git -C "$target_root" --literal-pathspecs ls-files -- "$bs_scope")" ]; then
+  && { ! git -C "$target_root" rev-parse --verify HEAD >/dev/null 2>&1 \
+       || [ -z "$(git -C "$target_root" --literal-pathspecs ls-tree -r --name-only HEAD -- "$bs_scope")" ]; }; then
   die "scope contains no tracked files: $bs_scope"
 fi
 
@@ -221,6 +222,54 @@ deadline_epoch=$(( start_epoch + (max_runtime_minutes * 60) ))
 run_dir="${recorded_repo_root}/.bugsweep/run-${bs_id}"
 mkdir -p "$run_dir"
 
+_bsw_atomic_write_stdout() {
+  local dest="$1"; shift
+  local tmp="${dest}.tmp.$$"
+  if ! "$@" > "$tmp"; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  mv -f -- "$tmp" "$dest"
+}
+
+_bsw_mark_preflight_incomplete() {
+  local marker="${run_dir}/.preflight-incomplete"
+  local tmp="${marker}.tmp.$$"
+  printf 'stage=%s\npid=%s\n' "${1:-setup}" "$$" > "$tmp"
+  mv -f -- "$tmp" "$marker"
+}
+
+# Freeze the exact tracked-file scope and source inventory atomically BEFORE
+# exposing run state, acquiring leases, or creating branches/worktrees.
+_bsw_write_frozen_scope() {
+  local repo="$1" tree_ref="$2"
+  local _err=0
+  if [ "$bs_scope" = "." ]; then
+    _bsw_atomic_write_stdout "${run_dir}/scope-files.txt" \
+      git -C "$repo" --literal-pathspecs ls-tree -r --name-only "$tree_ref" \
+      || _err=1
+  else
+    _bsw_atomic_write_stdout "${run_dir}/scope-files.txt" \
+      git -C "$repo" --literal-pathspecs ls-tree -r --name-only "$tree_ref" -- "$bs_scope" \
+      || _err=1
+  fi
+  if [ "$_err" -eq 0 ]; then
+    _bsw_atomic_write_stdout "${run_dir}/source-files.nul" \
+      git -C "$repo" --literal-pathspecs ls-tree -r -z --name-only "$tree_ref" \
+      || _err=1
+  fi
+  if [ "$_err" -ne 0 ] \
+    || [ ! -f "${run_dir}/scope-files.txt" ] || [ -L "${run_dir}/scope-files.txt" ] \
+    || [ ! -f "${run_dir}/source-files.nul" ] || [ -L "${run_dir}/source-files.nul" ]; then
+    return 1
+  fi
+  if [ "$bs_scope" != "." ] && [ ! -s "${run_dir}/scope-files.txt" ]; then
+    return 1
+  fi
+}
+
+_bsw_mark_preflight_incomplete setup
+
 # --- Persist run state + acquire this run's lease (bugsweep-p74) --------------
 # Factored into a function so BOTH modes can call it, but at DIFFERENT points
 # relative to worktree/branch creation — see the BLOCKER A comment at the
@@ -232,6 +281,7 @@ _bsw_persist_run_state_and_lease() {
   # attacker-reachable one (an arbitrary git branch NAME), but every other key
   # goes through the exact same helper rather than trusting a per-key judgment
   # call about which values could ever carry unsafe content.
+  local state_tmp="${run_dir}/state.env.tmp.$$"
   {
     _bsw_env_kv BUGSWEEP_TS "$ts"
     # Collision-free durable identity for cross-run learning. BUGSWEEP_TS is
@@ -252,7 +302,8 @@ _bsw_persist_run_state_and_lease() {
     _bsw_env_kv BUGSWEEP_SCOPE "$bs_scope"
     _bsw_env_kv BUGSWEEP_CONCURRENT "$bs_concurrent"
     _bsw_env_kv BUGSWEEP_WORKTREE "$worktree_path"
-  } > "${run_dir}/state.env"
+  } > "$state_tmp"
+  mv -f -- "$state_tmp" "${run_dir}/state.env"
 
   # bugsweep-06y: every interpolated value is also JSON-escaped (common.sh's
   # _bsw_json_escape) so a branch name containing a `"`, `\`, or control
@@ -289,6 +340,14 @@ if [ "$bs_worktree" = "yes" ]; then
   worktree_path="${recorded_worktrees_root}/${bs_id}"
   mkdir -p "${recorded_worktrees_root}"
   stash_ref="none"
+
+  if ! _bsw_write_frozen_scope "$target_root" "$orig_head"; then
+    rm -rf "$run_dir" 2>/dev/null || true
+    die "scope contains no tracked files: $bs_scope"
+  fi
+  if [ -n "${_PREFLIGHT_TEST_PRE_STATE_HOOK:-}" ]; then
+    eval "$_PREFLIGHT_TEST_PRE_STATE_HOOK"
+  fi
 
   # BLOCKER A fix (bugsweep-8d0 dataloss review): persist state.env (with
   # BUGSWEEP_WORKTREE already pointing at the not-yet-created path) and
@@ -334,10 +393,13 @@ if [ "$bs_worktree" = "yes" ]; then
   # The run now audits the newly-created linked checkout. Shared bookkeeping remains anchored
   # at BUGSWEEP_REPO_ROOT, but every extractor receives this explicit target root.
   target_root="$worktree_path"
-  target_state_tmp="${run_dir}/state.env.target-root.tmp"
+  target_state_tmp="${run_dir}/state.env.target-root.tmp.$$"
   grep -v '^BUGSWEEP_TARGET_ROOT=' "${run_dir}/state.env" > "$target_state_tmp" || true
   _bsw_env_kv BUGSWEEP_TARGET_ROOT "$target_root" >> "$target_state_tmp"
   mv -f -- "$target_state_tmp" "${run_dir}/state.env"
+  if [ -n "${_PREFLIGHT_TEST_POST_SETUP_HOOK:-}" ]; then
+    eval "$_PREFLIGHT_TEST_POST_SETUP_HOOK"
+  fi
   log "Working in isolated worktree: $worktree_path (branch: $branch)"
 else
   # --- Default mode: original single-run-per-tree contract, unchanged --------
@@ -350,24 +412,36 @@ else
       stash_ref="$(git rev-parse 'stash@{0}' 2>/dev/null || echo unknown)"
       log "Stashed your uncommitted work (will be restored at finalize)."
     else
+      rm -rf "$run_dir" 2>/dev/null || true
       die "Failed to stash your uncommitted changes. Aborting without making any changes."
     fi
   fi
 
+  if ! _bsw_write_frozen_scope "$target_root" "$orig_head"; then
+    rm -rf "$run_dir" 2>/dev/null || true
+    [ "$stash_ref" != "none" ] && git stash pop >/dev/null 2>&1 || true
+    die "scope contains no tracked files: $bs_scope"
+  fi
+  if [ -n "${_PREFLIGHT_TEST_PRE_STATE_HOOK:-}" ]; then
+    eval "$_PREFLIGHT_TEST_PRE_STATE_HOOK"
+  fi
+  _bsw_persist_run_state_and_lease
+  if [ -n "${_PREFLIGHT_TEST_PRE_BRANCH_HOOK:-}" ]; then
+    eval "$_PREFLIGHT_TEST_PRE_BRANCH_HOOK"
+  fi
+
   # --- Create and switch to the throwaway branch in the shared tree -----------
   if ! git checkout -b "$branch" >/dev/null 2>&1; then
+    bash "${BUGSWEEP_SCRIPT_DIR}/state.sh" lease-release "$run_dir" >/dev/null 2>&1 || true
+    rm -rf "$run_dir" 2>/dev/null || true
     # Roll back the stash if branch creation failed, so we leave things as we found them.
     [ "$stash_ref" != "none" ] && git stash pop >/dev/null 2>&1 || true
     die "Could not create branch '$branch'. No changes made."
   fi
+  if [ -n "${_PREFLIGHT_TEST_POST_SETUP_HOOK:-}" ]; then
+    eval "$_PREFLIGHT_TEST_POST_SETUP_HOOK"
+  fi
   log "Working on throwaway branch: $branch"
-
-  # In-place mode never creates a worktree under BUGSWEEP_WORKTREES_DIR, so
-  # it is never visible to bugsweep-cleanup.sh's reaper in the first place
-  # (reap_one_worktree scopes strictly to that directory) — the lease-before-
-  # branch-creation reordering above is not needed here; this mirrors the
-  # script's pre-existing (byte-for-byte unaffected) in-place-mode contract.
-  _bsw_persist_run_state_and_lease
 fi
 
 # --- Prime coverage-first scope from prior runs (best-effort, never fatal) -----
@@ -456,19 +530,8 @@ if [ -f "${BUGSWEEP_SCRIPT_DIR}/conclusions.sh" ]; then
   [ -n "$reopened_summary" ] && log "Conclusions: ${reopened_summary}"
 fi
 
-# Freeze the exact tracked-file scope consumed by context-build. This prevents a
-# path-scoped request from silently expanding to the whole repository.
+# Preserve the full tracked inventory and frozen scope from the atomic pre-state freeze.
 scope_repo="$target_root"
-if [ "$bs_scope" = "." ]; then
-  git -C "$scope_repo" ls-files > "${run_dir}/scope-files.txt"
-else
-  git -C "$scope_repo" --literal-pathspecs ls-files -- "$bs_scope" > "${run_dir}/scope-files.txt"
-fi
-
-# Preserve the full tracked inventory separately from the requested hunt scope.
-# NUL delimiters preserve literal filenames; no repository command is executed
-# by the preparation helper. Repro tests are explicitly added to this inventory.
-git -C "$scope_repo" ls-files -z > "${run_dir}/source-files.nul"
 if [ -n "$worktree_path" ]; then
   prepare_args=(init "$run_dir" --target-root "$scope_repo" --run-id "$bs_id"
     --deadline-epoch "$deadline_epoch" --config-path "$BUGSWEEP_CONFIG"
@@ -482,6 +545,8 @@ else
   printf '%s\n' '{"available":false,"reason":"execution_requires_isolated_worktree"}' \
     > "${run_dir}/execution-preparation-result.json"
 fi
+
+rm -f -- "${run_dir}/.preflight-incomplete"
 
 # --- Output for the SKILL to read ---------------------------------------------
 echo "RUN_DIR=${run_dir}"
